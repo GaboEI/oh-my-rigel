@@ -40,8 +40,7 @@ The source installation still has material limits:
   and an OpenCode configuration stored as JSON.
 
 Do not use the upstream OmO install command as an installation method for this
-V2 preview. It installs the upstream product described elsewhere in the main
-README, not Oh My Rigel.
+V2 preview. It installs the upstream OmO product, not Oh My Rigel.
 
 ## Install and run the V2 preview
 

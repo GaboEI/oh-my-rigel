@@ -1,3 +1,10 @@
+> [!IMPORTANT]
+> This file is inherited upstream OmO (Oh My OpenAgent) README content in another
+> language, kept for attribution. Oh My Rigel is a community fork of OmO; the
+> official entry points are [README.md](README.md), [OH-MY-RIGEL.md](OH-MY-RIGEL.md)
+> and <https://omr.gabodev.dev/>. Any `get.omo.dev/install.sh` command below installs
+> upstream OmO, not Oh My Rigel.
+
 > [!NOTE]
 > **OmO Бета: OmO ❤️ Pi**
 > Установите одной командой `curl -fsSL https://get.omo.dev/install.sh | bash`: система памяти, CodeMode, подписки Anthropic. Всё включено.

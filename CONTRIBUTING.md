@@ -1,6 +1,6 @@
-# Contributing to Oh My OpenCode
+# Contributing to Oh My Rigel
 
-First off, thanks for taking the time to contribute! This document provides guidelines and instructions for contributing to oh-my-opencode.
+First off, thanks for taking the time to contribute! This document provides guidelines and instructions for contributing to Oh My Rigel.
 
 > [!NOTE]
 > **Contributing to Oh My Rigel's OpenCode V2 migration?** Read
@@ -113,8 +113,8 @@ state paths before running integration QA; stop when isolation is uncertain.
 
 ```bash
 # Clone the repository (with the frontend provenance submodules)
-git clone --recurse-submodules https://github.com/code-yeongyu/oh-my-openagent.git
-cd oh-my-openagent
+git clone --recurse-submodules https://github.com/GaboEI/oh-my-rigel.git
+cd oh-my-rigel
 
 # If you cloned without --recurse-submodules, initialize them now (non-fatal offline):
 git submodule update --init --recursive
@@ -144,7 +144,7 @@ After making changes, you can test your local build in OpenCode:
 
    ```json
    {
-     "plugin": ["file:///absolute/path/to/oh-my-openagent/dist/index.js"]
+     "plugin": ["file:///absolute/path/to/oh-my-rigel/dist/index.js"]
    }
    ```
 
@@ -152,7 +152,7 @@ After making changes, you can test your local build in OpenCode:
 
    ```json
    {
-     "plugin": ["file:///absolute/path/to/oh-my-openagent/packages/omo-opencode/src/index.ts"]
+     "plugin": ["file:///absolute/path/to/oh-my-rigel/packages/omo-opencode/src/index.ts"]
    }
    ```
 
@@ -210,7 +210,7 @@ For containerized environments (Codespaces, Dev Containers, Docker), see [`.devc
 The repository is a monorepo with layered packages under `packages/`.
 
 ```
-oh-my-opencode/
+oh-my-rigel/
 ├── packages/
 │   ├── omo-opencode/          # OpenCode Ultimate edition adapter and build entry
 │   │   └── src/
@@ -384,7 +384,7 @@ surface, results, and limitations.
 
 ## Pull Request Process
 
-1. **Fork** the repository and create your branch from `dev`
+1. **Fork** the repository and create your branch from the integration branch `v2-mirror`
 2. **Make changes** following the conventions above
 3. **Build and test** locally:
    ```bash
@@ -432,4 +432,4 @@ surface, results, and limitations.
 
 ---
 
-Thank you for contributing to Oh My OpenCode! Your efforts help make AI-assisted coding better for everyone.
+Thank you for contributing to Oh My Rigel! Your efforts help make AI-assisted coding better for everyone.
