@@ -16,7 +16,7 @@ const stubSolid = {
   insert: (parent, child) => { parent.children.push(child) },
 }
 
-function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, hostAgents, hostModels, hostModelListThrows = false, withDataOn = true } = {}) {
+function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, hostAgents, hostModels, hostModelListThrows = false, v2Sessions, withDataOn = true, withEventBus = false } = {}) {
   const handlers = new Map()
   const unsubscribed = []
   const slotCalls = []
@@ -55,6 +55,31 @@ function createFakeContext({ options, directory, renderer = { isDestroyed: false
         return () => {}
       },
     },
+  }
+  // The V2 TUI API (`TuiPluginApi`) keeps live sessions on `state.session` with
+  // a per-id `status(id)`/`get(id)` and publishes on `event.on`. Stub both when
+  // the case asks for them, so the real V2 data path is exercised, not a
+  // synthetic flat roster.
+  if (v2Sessions !== undefined) {
+    context.state = {
+      session: {
+        list: () => v2Sessions.map((session) => ({ id: session.id, agent: session.agent })),
+        get: (id) => v2Sessions.find((session) => session.id === id),
+        status: (id) => v2Sessions.find((session) => session.id === id)?.status,
+        count: () => v2Sessions.length,
+      },
+    }
+  }
+  if (withEventBus) {
+    context.event = {
+      on: (name, handler) => {
+        handlers.set(`event:${name}`, handler)
+        return () => {
+          handlers.delete(`event:${name}`)
+          unsubscribed.push(`event:${name}`)
+        }
+      },
+    }
   }
   return { context, handlers, unsubscribed, slotCalls, handler: (name) => handlers.get(name) }
 }
@@ -406,6 +431,83 @@ describe("createSidebarCliSurface", () => {
       const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
       expect(typeof rendered).not.toBe("string")
       expect(nodeText(rendered)).toContain("deep-low")
+    })
+  })
+
+  describe("#given the real V2 TUI host surface", () => {
+    // Distinguishes V1 heritage from V2 proof. V1 heritage: a flat
+    // `data.session.list()` of records that carry their own status. V2 proof:
+    // the `TuiPluginApi` keeps sessions on `state.session` and exposes the status
+    // separately as `state.session.status(id)`. Both must drive the Agents view.
+    test("#given V2 state.session statuses #then the materialized Agents view lists the busy/retry/running roles", () => {
+      const fake = createFakeContext({
+        options: {},
+        directory,
+        v2Sessions: [
+          { id: "ses-a", agent: "atlas", status: "busy" },
+          { id: "ses-b", agent: "oracle", status: "retry" },
+          { id: "ses-c", agent: "sisyphus", status: "running" },
+          { id: "ses-d", agent: "momus", status: "idle" },
+        ],
+      })
+      build(fake, { solid: stubSolid, agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+      const rendered = fake.slotCalls[0].render({ session_id: "ses-a" })
+      expect(typeof rendered).not.toBe("string")
+      const text = nodeText(rendered)
+      expect(text).toContain("Agents")
+      expect(text).toContain("atlas busy")
+      expect(text).toContain("oracle retry")
+      expect(text).toContain("sisyphus running")
+      expect(text).not.toContain("momus idle")
+    })
+
+    test("#given the V1 heritage data.session shape #then the Agents view still renders (functionality not reduced)", () => {
+      const fake = createFakeContext({
+        options: {},
+        directory,
+        sessions: [
+          { id: "ses-1", agent: "atlas", status: "running" },
+          { id: "ses-2", agent: "idle-agent", status: "idle" },
+        ],
+      })
+      build(fake, { solid: stubSolid, agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+      const text = nodeText(fake.slotCalls[0].render({ session_id: "ses-1" }))
+      expect(text).toContain("atlas running")
+      expect(text).not.toContain("idle-agent idle")
+    })
+
+    test("#given a V2 event bus #then setup subscribes and a session event refreshes the view", () => {
+      const v2Sessions = [{ id: "ses-a", agent: "atlas", status: "idle" }]
+      const fake = createFakeContext({ options: {}, directory, v2Sessions, withEventBus: true, withDataOn: false })
+      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+      expect(readReceipt().view.kind).toBe("idle")
+
+      // The host flips the session to busy and emits on the V2 event bus.
+      v2Sessions[0].status = "busy"
+      clock = 500
+      fake.handler("event:session.updated")({ type: "session.updated" })
+
+      const receipt = readReceipt()
+      expect(receipt.updatedAt).toBe(500)
+      expect(receipt.view.kind).toBe("active")
+      expect(receipt.activeAgents).toContainEqual({ name: "atlas", status: "busy" })
+    })
+  })
+
+  describe("#given a single current runtime (no duplicate plugin)", () => {
+    test("#then the idle roster is non-empty with no data.roster and no host inventory", () => {
+      // Regression: a single current runtime must render its real roster from the
+      // co-located manifests. Reverting the adapter to the pre-fix
+      // `context.data.roster` read makes this empty, which is exactly the live
+      // one-plugin regression.
+      const fake = createFakeContext({ options: {}, directory })
+      expect(fake.context.data.roster).toBeUndefined()
+      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+
+      const receipt = readReceipt()
+      expect(receipt.view.kind).toBe("idle")
+      expect(receipt.view.roster.kind).toBe("rows")
+      expect(receipt.view.roster.rows.length).toBeGreaterThan(0)
     })
   })
 })

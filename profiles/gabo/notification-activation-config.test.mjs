@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   DISABLED_BUILTIN_NOTIFICATION,
+  isRigelRuntimeDir,
   parseJsonc,
   registerCompanionCliPlugin,
   registerNotificationCliPlugin,
@@ -9,6 +13,21 @@ import {
   resolveProfileOpenCodeBlock,
   stripJsonComments,
 } from "./notification-activation-config.mjs"
+import { registerRuntimePluginEntry } from "./rigel-v2-runtime-materialize.mjs"
+
+/** Create a Rigel runtime directory (package.json name `rigel-v2-native`). */
+function makeRigelRuntime(dir) {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "rigel-v2-native", type: "module" })}\n`)
+  return dir
+}
+
+/** Create a foreign plugin directory that merely shares the runtime path shape. */
+function makeForeignRuntime(dir) {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "some-other-plugin" })}\n`)
+  return dir
+}
 
 describe("parseJsonc", () => {
   test("#given comments and trailing commas #then the document parses", () => {
@@ -214,5 +233,76 @@ describe("removeRigelCliEntries", () => {
   test("#given only foreign plugins #then nothing is removed", () => {
     const cli = { plugins: ["a.mjs", "b.mjs"] }
     expect(removeRigelCliEntries(cli, { familyRoot }).plugins).toEqual(["a.mjs", "b.mjs"])
+  })
+})
+
+describe("Rigel ownership across state roots (single-runtime regression)", () => {
+  test("#given a prior Rigel CLI registration under a DIFFERENT state root #then it is replaced, not left loadable, and unrelated plugins survive", () => {
+    const root = mkdtempSync(join(tmpdir(), "rigel-crossroot-"))
+    try {
+      const staleRuntime = makeRigelRuntime(join(root, "state", "versions", "1", "runtime"))
+      const currentRuntime = makeRigelRuntime(join(root, "data", "oh-my-rigel", "versions", "nls1", "runtime"))
+      const cli = {
+        plugins: [
+          "unrelated-plugin.mjs",
+          { package: staleRuntime, options: { notification: { enabled: true } } },
+          { package: "/opt/other/plugin", options: { x: 1 } },
+        ],
+      }
+
+      const next = registerCompanionCliPlugin(cli, {
+        runtimeDir: currentRuntime,
+        familyRoot: join(root, "data", "oh-my-rigel"),
+      })
+
+      const rigel = next.plugins.filter((entry) => typeof entry === "object" && isRigelRuntimeDir(entry.package))
+      expect(rigel).toHaveLength(1)
+      expect(rigel[0].package).toBe(currentRuntime)
+      expect(next.plugins).toContain("unrelated-plugin.mjs")
+      expect(next.plugins).toContainEqual({ package: "/opt/other/plugin", options: { x: 1 } })
+      expect(next.plugins).not.toContainEqual({ package: staleRuntime, options: { notification: { enabled: true } } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("#given a foreign plugin shaped like versions/<v>/runtime #then it is preserved", () => {
+    const root = mkdtempSync(join(tmpdir(), "rigel-foreign-"))
+    try {
+      const foreign = makeForeignRuntime(join(root, "other", "versions", "9", "runtime"))
+      const cli = { plugins: [{ package: foreign, options: {} }] }
+      const next = registerCompanionCliPlugin(cli, { runtimeDir: join(root, "current", "runtime"), familyRoot: join(root, "current") })
+      expect(next.plugins).toContainEqual({ package: foreign, options: {} })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("#given a stale Rigel server entry under another state root #then registerRuntimePluginEntry leaves exactly one current entry", () => {
+    const root = mkdtempSync(join(tmpdir(), "rigel-server-crossroot-"))
+    try {
+      const staleRuntime = makeRigelRuntime(join(root, "state", "versions", "1", "runtime"))
+      const currentRuntime = makeRigelRuntime(join(root, "data", "oh-my-rigel", "versions", "nls1", "runtime"))
+      const next = registerRuntimePluginEntry([staleRuntime, "/opt/unrelated-plugin", currentRuntime], {
+        runtimeDir: currentRuntime,
+        familyRoot: join(root, "data", "oh-my-rigel"),
+      })
+      expect(next.filter((entry) => isRigelRuntimeDir(entry))).toEqual([currentRuntime])
+      expect(next).toContain("/opt/unrelated-plugin")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("#given a Rigel CLI entry and the builtin marker #then removeRigelCliEntries leaves only foreign plugins", () => {
+    const root = mkdtempSync(join(tmpdir(), "rigel-remove-"))
+    try {
+      const currentRuntime = makeRigelRuntime(join(root, "data", "oh-my-rigel", "versions", "nls1", "runtime"))
+      const cli = { plugins: ["keep.mjs", { package: currentRuntime, options: {} }, DISABLED_BUILTIN_NOTIFICATION] }
+      const next = removeRigelCliEntries(cli, { familyRoot: join(root, "data", "oh-my-rigel") })
+      expect(next.plugins).toEqual(["keep.mjs"])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

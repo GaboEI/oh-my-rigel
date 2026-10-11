@@ -11,6 +11,9 @@
  * `notification.force_enable` is true.
  */
 
+import fs from "node:fs"
+import path from "node:path"
+
 export const NOTIFICATION_PLUGIN_ID = "oh-my-rigel.notification"
 
 /** `cli.json` plugin entry that disables the always-on host notifier. */
@@ -18,6 +21,26 @@ export const DISABLED_BUILTIN_NOTIFICATION = "-opencode.notifications"
 
 /** V1 default, from `createSessionNotification`'s merged config. */
 export const DEFAULT_IDLE_CONFIRMATION_DELAY = 1500
+
+/**
+ * Content identity for a Rigel-owned runtime directory, matching the identity
+ * `doctor` uses (finding N5/A): the materialized runtime declares
+ * `package.json` name `rigel-v2-native`, and the lab copy's basename is
+ * `rigel-v2-native`. A directory with no readable package.json is classified by
+ * basename only, so a foreign plugin that merely shares a `versions/<v>/runtime`
+ * path shape is never matched: identity is the package name / basename, never a
+ * path substring.
+ */
+export function isRigelRuntimeDir(dir) {
+  if (typeof dir !== "string" || dir.length === 0) return false
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"))
+    if (pkg && pkg.name === "rigel-v2-native") return true
+  } catch {
+    // Missing or unreadable package.json: fall through to the basename check.
+  }
+  return path.basename(dir) === "rigel-v2-native"
+}
 
 /** Strip `//` and block comments plus trailing commas from a JSONC document. */
 export function stripJsonComments(text) {
@@ -149,10 +172,21 @@ function underFamily(candidate, familyRoot) {
   return candidate.startsWith(`${familyRoot}/`) || candidate.startsWith(`${familyRoot}\\`)
 }
 
+/**
+ * A CLI/server entry is Rigel-owned when it targets the active `runtimeDir`,
+ * sits under the current install's family root, OR is a Rigel runtime directory
+ * by content identity ({@link isRigelRuntimeDir}). The content-identity clause is
+ * what removes a prior Rigel registration made under a DIFFERENT state root
+ * (the observed single-runtime regression: a stale runtime from another
+ * install remained registered and the host loaded its pre-fix CLI surface),
+ * while a foreign plugin is never matched because it lacks the Rigel package
+ * name / basename.
+ */
 function isOurRuntimeEntry(entry, { runtimeDir, familyRoot }) {
   const pkg = typeof entry === "string" ? entry : entry && typeof entry === "object" ? entry.package : undefined
   if (typeof pkg !== "string") return false
-  return pkg === runtimeDir || underFamily(pkg, familyRoot)
+  if (pkg === runtimeDir || underFamily(pkg, familyRoot)) return true
+  return isRigelRuntimeDir(pkg)
 }
 
 /**

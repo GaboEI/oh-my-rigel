@@ -136,46 +136,106 @@ function resolveDirectory(context, overrides) {
   )
 }
 
-function readSessions(context) {
-  const data = context?.data
-  if (!data) return []
-  const candidates = [
-    () => data.session?.list?.(),
-    () => data.session?.all?.(),
-    () => (Array.isArray(data.sessions) ? data.sessions : undefined),
-    () => data.sessions?.list?.(),
-  ]
-  for (const candidate of candidates) {
+/** Read a session list from a host source exposing `list()`/`all()` or an array. */
+function sessionListFrom(source) {
+  if (Array.isArray(source)) return source
+  if (!isObject(source)) return undefined
+  for (const method of ["list", "all"]) {
+    const fn = source[method]
+    if (typeof fn !== "function") continue
     try {
-      const value = candidate()
+      const value = fn.call(source)
       if (Array.isArray(value)) return value
+      if (isObject(value) && Array.isArray(value.data)) return value.data
     } catch (error) {
       if (!(error instanceof Error)) throw error
     }
   }
+  return undefined
+}
+
+/**
+ * Read the live sessions from whichever real host source exposes them. The V2
+ * TUI API keeps them on `state.session` (`TuiState.session`); the legacy data
+ * surface used `data.session`/`data.sessions`, and the location-scoped
+ * inventory lives on `data.location.session`. Reading all of them keeps the
+ * Agents view wired regardless of which surface the host version provides, and
+ * never reduces the existing sources.
+ */
+function readSessions(context) {
+  const sources = [
+    context?.state?.session,
+    context?.data?.session,
+    context?.data?.sessions,
+    context?.data?.location?.session,
+  ]
+  for (const source of sources) {
+    const value = sessionListFrom(source)
+    if (Array.isArray(value)) return value
+  }
   return []
 }
 
-function sessionStatus(session) {
-  const candidate = session?.status ?? session?.state ?? session?.type
+function sessionId(session) {
+  return firstString(session?.id, session?.sessionID, session?.session_id, session?.name)
+}
+
+function statusText(candidate) {
   if (typeof candidate === "string") return candidate
   if (isObject(candidate) && typeof candidate.type === "string") return candidate.type
   return undefined
 }
 
-function sessionName(session, id) {
-  return firstString(session?.agent, session?.agentName, session?.title, id)
+/**
+ * The status of a session. The legacy surface carries it on the record; the V2
+ * API exposes it separately as `state.session.status(id)`, so both are read
+ * (record first, live lookup as the fallback).
+ */
+function sessionStatus(session, context) {
+  const direct = statusText(session?.status ?? session?.state ?? session?.type)
+  if (direct) return direct
+  const id = sessionId(session)
+  const stateSession = context?.state?.session
+  const statusOf = stateSession?.status
+  if (typeof statusOf === "function" && id) {
+    try {
+      return statusText(statusOf.call(stateSession, id))
+    } catch (error) {
+      if (!(error instanceof Error)) throw error
+    }
+  }
+  return undefined
+}
+
+/**
+ * The role a session runs as. The V2 session record carries `agent`; when it is
+ * absent the live `state.session.get(id)` record supplies it.
+ */
+function sessionName(session, id, context) {
+  const direct = firstString(session?.agent, session?.agentName, session?.title, id)
+  if (direct) return direct
+  const stateSession = context?.state?.session
+  const get = stateSession?.get
+  if (typeof get === "function" && id) {
+    try {
+      const live = get.call(stateSession, id)
+      return firstString(live?.agent, live?.agentName, live?.title, id)
+    } catch (error) {
+      if (!(error instanceof Error)) throw error
+    }
+  }
+  return id
 }
 
 /** V1 `activeAgentsFromStatuses`: keep only busy/retry/running, name-resolved. */
-function activeAgentsFromSessions(sessions) {
+function activeAgentsFromSessions(sessions, context) {
   const rows = []
   for (const session of sessions) {
     if (!isObject(session)) continue
-    const status = sessionStatus(session)
+    const status = sessionStatus(session, context)
     if (!ACTIVE_AGENT_STATUSES.has(status)) continue
-    const id = firstString(session.id, session.sessionID, session.name)
-    rows.push({ name: sessionName(session, id) ?? "session", status })
+    const id = sessionId(session)
+    rows.push({ name: sessionName(session, id, context) ?? "session", status })
   }
   return rows
 }
@@ -450,7 +510,7 @@ export function createSidebarCliSurface(overrides = {}) {
         const snapshot = buildRuntimeSnapshot({
           projectDir: directory,
           updatedAt: now(),
-          activeAgents: activeAgentsFromSessions(readSessions(context)),
+          activeAgents: activeAgentsFromSessions(readSessions(context), context),
           jobBoard: readBackgroundTasks(context),
           loop: readActiveLoop(directory, now()),
         })
@@ -538,12 +598,25 @@ export function createSidebarCliSurface(overrides = {}) {
       void loadHostRoster()
 
       const subscribe = (name) => {
+        const onChange = () => {
+          refresh()
+          void loadHostRoster()
+        }
+        // The V2 TUI API publishes on `context.event` (`TuiEventBus.on`); the
+        // legacy data surface used `context.data.on`. Subscribe on whichever the
+        // host provides so a status change always refreshes the view.
+        const bus = context?.event
+        if (isObject(bus) && typeof bus.on === "function") {
+          try {
+            const off = bus.on(name, onChange)
+            if (typeof off === "function") disposers.push(off)
+          } catch (error) {
+            logger({ event: "subscribe-failed", bus: "event", name, error: describeError(error) })
+          }
+        }
         if (typeof context?.data?.on !== "function") return
         try {
-          const off = context.data.on(name, () => {
-            refresh()
-            void loadHostRoster()
-          })
+          const off = context.data.on(name, onChange)
           if (typeof off === "function") disposers.push(off)
         } catch (error) {
           logger({ event: "subscribe-failed", name, error: describeError(error) })
