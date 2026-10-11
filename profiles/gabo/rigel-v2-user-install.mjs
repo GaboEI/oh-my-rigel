@@ -181,6 +181,13 @@ function generateAgentManifest({ versionDir, home, configFile }) {
     path.join(generatorProfile, "opencode/prompts/sisyphus-orchestration.md"),
   )
   const bunBin = resolveBunBin()
+  // A clean host has no config yet; both the builder and the runtime
+  // materialization must READ it, and the installer only ADDS the runtime entry
+  // to whatever is there. Create an empty, valid config when the explicit path is
+  // absent (its parent is created too); an existing config is left untouched, so
+  // invalid JSON still fails where it is parsed. The surrounding transaction
+  // restores the absent state on rollback.
+  if (!fs.existsSync(configFile)) writeJsonAtomic(configFile, {})
   const generated = spawnSync(bunBin, [
     path.join(sourceRoot, "profiles/gabo/build-target-agent-manifest.mjs"),
     "--input", configFile, "--output", output,
