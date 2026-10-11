@@ -336,6 +336,63 @@ export function toRosterRow(entry) {
   }
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) return value
+  }
+  return ""
+}
+
+/**
+ * Build the V1-faithful role roster from the Rigel native manifests.
+ *
+ * The runtime generates two data-only manifests the sidebar can read without a
+ * host API: the native agent manifest (`agents` keyed by role id, each carrying
+ * a `model`) and the built-in category manifest (`categories`, each carrying a
+ * `model`). A user's per-agent model override
+ * (`metadata.global.agentOverrides[id].model`) wins over the configured model,
+ * and a user category (`metadata.global.categories[name]`) overlays the
+ * built-in one, mirroring the runtime's own precedence.
+ *
+ * When a role carries no manifest model (the runtime resolves it from the
+ * canonical chain at registration instead), the optional `chains` resolvers
+ * supply the chain head, so the roster stays complete and V1-faithful
+ * (`getEffectiveModel` showed the chain head when there was no override).
+ *
+ * Every row is `{ label, model }` (V1 `resolveRoster` semantics: the role and
+ * its effective model). A role with no usable model is omitted so the card
+ * never claims a model that is not really configured. Pure: the adapter passes
+ * the imported manifest objects and chain resolvers, so this is fully
+ * unit-testable.
+ */
+export function buildRosterRows(agentManifest, categoryManifest, chains) {
+  const rows = []
+  const agentChainModel = typeof chains?.agentModel === "function" ? chains.agentModel : () => undefined
+  const categoryChainModel = typeof chains?.categoryModel === "function" ? chains.categoryModel : () => undefined
+  const agents = isObject(agentManifest?.agents) ? agentManifest.agents : {}
+  const overrides = isObject(agentManifest?.metadata?.global?.agentOverrides)
+    ? agentManifest.metadata.global.agentOverrides
+    : {}
+  for (const [id, definition] of Object.entries(agents)) {
+    const override = isObject(overrides[id]) ? overrides[id] : undefined
+    const row = toRosterRow({
+      label: firstText(definition?.name, id),
+      model: firstText(override?.model, definition?.model, agentChainModel(id)),
+    })
+    if (row.model) rows.push(row)
+  }
+  const builtIn = isObject(categoryManifest?.categories) ? categoryManifest.categories : {}
+  const userCategories = isObject(agentManifest?.metadata?.global?.categories)
+    ? agentManifest.metadata.global.categories
+    : {}
+  for (const [name, config] of Object.entries({ ...builtIn, ...userCategories })) {
+    if (isObject(config) && config.disable === true) continue
+    const row = toRosterRow({ label: name, model: firstText(isObject(config) ? config.model : "", categoryChainModel(name)) })
+    if (row.model) rows.push(row)
+  }
+  return rows
+}
+
 /* ------------------------------------------------------------------ *
  * Derivers (V1 derivers.ts)
  * ------------------------------------------------------------------ */
@@ -704,7 +761,11 @@ function idleNodes(roster, theme) {
 function rosterLines(roster) {
   switch (roster.kind) {
     case "empty":
-      return ["No configured models"]
+      // A last resort only: the adapter fills the roster from the Rigel
+      // manifests and the live host inventory, so this fires only when neither
+      // is available. Keep the card and add a clear next action instead of a
+      // dead end.
+      return ["No configured models", "run doctor to configure models"]
     case "rows":
       return roster.rows.map((row) => `${row.label} ${row.model}`)
     default:

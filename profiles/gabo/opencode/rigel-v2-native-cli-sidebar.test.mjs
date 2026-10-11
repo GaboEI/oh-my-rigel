@@ -16,7 +16,7 @@ const stubSolid = {
   insert: (parent, child) => { parent.children.push(child) },
 }
 
-function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, roster, withDataOn = true } = {}) {
+function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, hostAgents, hostModels, hostModelListThrows = false, withDataOn = true } = {}) {
   const handlers = new Map()
   const unsubscribed = []
   const slotCalls = []
@@ -24,7 +24,17 @@ function createFakeContext({ options, directory, renderer = { isDestroyed: false
     session: { list: () => sessions },
   }
   if (backgroundTasks !== undefined) data.background = { tasks: backgroundTasks }
-  if (roster !== undefined) data.roster = roster
+  // The canonical 2.0.26 host inventory lives under `context.data.location`:
+  // `location.agent.list(...)` and `location.model.list(location)`. Only install
+  // it when the case asks for a host, so the host-missing path stays real.
+  if (hostAgents !== undefined || hostModels !== undefined) {
+    data.location = {
+      ...(hostAgents !== undefined ? { agent: { list: () => hostAgents } } : {}),
+      ...(hostModels !== undefined
+        ? { model: { list: () => { if (hostModelListThrows) throw new Error("model.list unavailable"); return hostModels } } }
+        : {}),
+    }
+  }
   if (withDataOn) {
     data.on = (name, handler) => {
       handlers.set(name, handler)
@@ -47,6 +57,32 @@ function createFakeContext({ options, directory, renderer = { isDestroyed: false
     },
   }
   return { context, handlers, unsubscribed, slotCalls, handler: (name) => handlers.get(name) }
+}
+
+function agentFixture() {
+  return {
+    defaultAgent: "sisyphus",
+    agents: {
+      sisyphus: { name: "sisyphus", model: "anthropic/claude-opus-5-5" },
+      atlas: { name: "atlas", model: "kimi-for-coding/kimi-k3" },
+    },
+    metadata: { global: { agentOverrides: { atlas: { model: "openai/gpt-6-astra" } }, categories: {} } },
+    modes: { defaultUltrawork: false },
+  }
+}
+
+function categoryFixture() {
+  return {
+    categories: {
+      "deep-low": { model: "openai/gpt-6.1-sol", variant: "medium" },
+      writing: { model: "anthropic/claude-opus-5-5" },
+    },
+  }
+}
+
+/** Drain the microtask queue so a fire-and-forget host read settles (no timers). */
+async function flushMicrotasks() {
+  for (let index = 0; index < 20; index += 1) await Promise.resolve()
 }
 
 describe("createSidebarCliSurface", () => {
@@ -147,7 +183,6 @@ describe("createSidebarCliSurface", () => {
           { id: "ses-2", agent: "idle-agent", status: "idle" },
         ],
         backgroundTasks: [{ agent: "atlas", status: "running", title: "bg-task", toolCalls: 2, lastTool: "bash" }],
-        roster: [{ name: "sisyphus", model: "anthropic/claude-sonnet-4" }],
       })
       build(fake)
 
@@ -174,13 +209,14 @@ describe("createSidebarCliSurface", () => {
       expect(text).toContain("Agents")
     })
 
-    test("#then an idle host renders the empty roster notice as a node", () => {
+    test("#given no manifest roles and no host #then the empty roster notice is a node with a next action", () => {
       const fake = createFakeContext({ options: {}, directory })
-      build(fake, { solid: stubSolid })
+      build(fake, { solid: stubSolid, agentManifest: { agents: {}, metadata: { global: {} } }, categoryManifest: { categories: {} } })
       const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
       expect(typeof rendered).not.toBe("string")
       expect(typeof rendered.tag).toBe("string")
       expect(nodeText(rendered)).toContain("No configured models")
+      expect(nodeText(rendered)).toContain("run doctor to configure models")
     })
 
     test("#given a nested host theme #then the section border color is adapted into the tree", () => {
@@ -295,6 +331,81 @@ describe("createSidebarCliSurface", () => {
       for (const name of ["session.created", "session.deleted", "session.execution.succeeded", "session.execution.failed"]) {
         expect(fake.unsubscribed).toContain(name)
       }
+    })
+  })
+
+  describe("#given the model roster sources", () => {
+    test("#given the Rigel manifests #then the receipt carries the effective role roster and ignores a synthetic data.roster", () => {
+      const fake = createFakeContext({ options: {}, directory })
+      // A stale/foreign `data.roster` must be ignored: the roster comes from the
+      // manifests, never from a host field that nothing populates.
+      fake.context.data.roster = [{ name: "ghost", model: "ghost/ghost-model" }]
+      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+
+      const receipt = readReceipt()
+      expect(receipt.view.kind).toBe("idle")
+      expect(receipt.view.roster.kind).toBe("rows")
+      const rows = receipt.view.roster.rows
+      expect(rows).toContainEqual({ label: "atlas", model: "gpt-6-astra" })
+      expect(rows).toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
+      expect(rows).toContainEqual({ label: "deep-low", model: "gpt-6.1-sol" })
+      expect(JSON.stringify(rows)).not.toContain("ghost")
+    })
+
+    test("#given no host endpoint (host-missing) #then the manifest roster still renders", async () => {
+      const fake = createFakeContext({ options: {}, directory })
+      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+      await flushMicrotasks()
+
+      const receipt = readReceipt()
+      expect(receipt.view.kind).toBe("idle")
+      expect(receipt.view.roster.kind).toBe("rows")
+      expect(receipt.view.roster.rows).toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
+    })
+
+    test("#given a live host agent inventory #then the host roster wins over the manifests", async () => {
+      const fake = createFakeContext({
+        options: {},
+        directory,
+        hostAgents: [{ id: "live-oracle", name: "live-oracle", model: "openai/gpt-6-luna-fast" }],
+      })
+      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+      await flushMicrotasks()
+
+      const receipt = readReceipt()
+      expect(receipt.view.roster.rows).toContainEqual({ label: "live-oracle", model: "gpt-6-luna-fast" })
+      expect(receipt.view.roster.rows).not.toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
+    })
+
+    test("#given no roles but an available host model catalog #then the catalog is the truthful state", async () => {
+      const fake = createFakeContext({
+        options: {},
+        directory,
+        hostModels: [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }],
+      })
+      build(fake, { agentManifest: { agents: {}, metadata: { global: {} } }, categoryManifest: { categories: {} } })
+      await flushMicrotasks()
+
+      const receipt = readReceipt()
+      expect(receipt.view.kind).toBe("idle")
+      expect(receipt.view.roster.rows).toContainEqual({ label: "openai", model: "gpt-6-luna-fast" })
+    })
+
+    test("#given a host whose model endpoint throws #then setup never rejects and the manifest roster holds", async () => {
+      const fake = createFakeContext({ options: {}, directory, hostModels: [], hostModelListThrows: true })
+      const cleanup = build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
+      await flushMicrotasks()
+
+      expect(typeof cleanup).toBe("function")
+      expect(readReceipt().view.roster.rows).toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
+    })
+
+    test("#given the bundled manifests #then a category roster renders without any host", () => {
+      const fake = createFakeContext({ options: {}, directory })
+      build(fake, { solid: stubSolid })
+      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
+      expect(typeof rendered).not.toBe("string")
+      expect(nodeText(rendered)).toContain("deep-low")
     })
   })
 })
