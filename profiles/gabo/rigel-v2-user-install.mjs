@@ -138,6 +138,13 @@ function isolatedXdgEnv(home) {
 function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf8")) }
 function writeJson(file, value) { writeJsonAtomic(file, value) }
 
+/** Resolve the Bun runtime the agent-manifest builder requires (BUN override, else PATH). */
+function resolveBunBin() {
+  const fromEnv = process.env.BUN
+  if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv.trim()
+  return "bun"
+}
+
 function generateAgentManifest({ versionDir, home, configFile }) {
   const output = path.join(versionDir, "agent-manifest.mjs")
   const selectionFile = path.join(sourceRoot, "profiles/gabo/v2-agent-selection.json")
@@ -161,17 +168,19 @@ function generateAgentManifest({ versionDir, home, configFile }) {
     path.join(sourceRoot, "profiles/gabo/opencode/prompts/sisyphus-orchestration.md"),
     path.join(generatorProfile, "opencode/prompts/sisyphus-orchestration.md"),
   )
-  const generated = spawnSync(process.execPath, [
-    path.join(sourceRoot, "profiles/gabo/generate-v2-agents.mjs"),
+  const bunBin = resolveBunBin()
+  const generated = spawnSync(bunBin, [
+    path.join(sourceRoot, "profiles/gabo/build-target-agent-manifest.mjs"),
     "--input", configFile, "--output", output,
     "--selection", selectionFile, "--judge", judgeFile,
     "--directory", home, "--profile-root", generatorHome,
   ], {
     cwd: sourceRoot,
-    env: { ...process.env, HOME: generatorHome, XDG_CONFIG_HOME: path.dirname(path.dirname(configFile)), OMO_PROFILE: "gabo", OMO_DISABLE_PROCESS_CLEANUP: "1" },
+    env: { ...process.env, XDG_CONFIG_HOME: path.dirname(path.dirname(configFile)), OMO_PROFILE: "gabo", OMO_DISABLE_PROCESS_CLEANUP: "1" },
     encoding: "utf8",
   })
   fs.rmSync(generatorHome, { recursive: true, force: true })
+  if (generated.error) throw new Error(`la generación del manifiesto requiere bun en PATH (no se pudo ejecutar "${bunBin}"): ${generated.error.message}`)
   if (generated.status !== 0) throw new Error(`la generación del manifiesto falló: ${generated.stderr || generated.stdout}`)
   return output
 }
