@@ -142,4 +142,26 @@ describe("rigel-v2 doctor SYSTEM runtime detection", () => {
     // the declared entry is surfaced so the diagnostic is actionable
     expect(`${issue.title} ${issue.description}`).toContain("some-other-plugin")
   })
+
+  test("#given a foreign path shaped like versions/<n>/runtime outside every Rigel state root #then it is not treated as Rigel", async () => {
+    // given: a plugin that merely happens to sit at a `versions/<n>/runtime`
+    // path — no rigel-v2-native package.json, no lifecycle record, outside every
+    // Rigel state root. The previous bare path-shape fallback classified ANY
+    // such path as the Rigel runtime (false positive).
+    const home = makeHome()
+    const foreign = join(home, "foreign", "versions", "1", "runtime")
+    mkdirSync(foreign, { recursive: true })
+    const configFile = writeConfig(home, [foreign])
+
+    // when
+    const system = await runSystem(configFile, home)
+
+    // then: "not registered" naming the declared foreign entry — never a
+    // "registered but does not resolve" verdict for a non-Rigel plugin.
+    expect(system.status).toBe("fail")
+    const issue = system.issues[0]
+    expect(issue.severity).toBe("error")
+    expect(issue.title).toContain("not registered")
+    expect(issue.description).toContain(foreign)
+  })
 })

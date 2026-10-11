@@ -274,7 +274,14 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
       })
       registered.push(id)
     }
-    if (typeof manifest.defaultAgent === "string" && agents[manifest.defaultAgent]) editor.default(manifest.defaultAgent)
+    // The default agent must be one that was actually registered. When the
+    // manifest default names an agent the eligibility/provider gates skipped,
+    // fall back to the first registered agent so a session can never start on
+    // an agent that is absent from the roster.
+    if (typeof manifest.defaultAgent === "string" && agents[manifest.defaultAgent]) {
+      const target = registered.includes(manifest.defaultAgent) ? manifest.defaultAgent : registered[0]
+      if (target) editor.default(target)
+    }
   })
   await agentDomain.reload()
   return registered

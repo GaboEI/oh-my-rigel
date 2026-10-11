@@ -11,6 +11,7 @@ import { sortAgentsByCanonicalOrder } from "./opencode/rigel-v2-native-agent-ord
 import { deriveNativeGates, deriveNativeMinOpenCodeVersion, resolveNativePluginConfig } from "./opencode/rigel-v2-native-config.mjs"
 import { agentChain } from "./opencode/rigel-v2-native-model-chains.mjs"
 import { SISYPHUS_AGENT_ID, SISYPHUS_PROMPT_IDENTITY_MODELS, applySisyphusFormatExampleFix, disposeBakeHooks, extractModelName, fixSisyphusAgentMap } from "./opencode/rigel-v2-native-sisyphus-prompt.mjs"
+import { evaluateHephaestusGate, isHephaestusAgentId } from "./opencode/rigel-v2-native-hephaestus.mjs"
 import { canonicalAgentKey, resolveDefaultAgent, selectOrchestratedAgents } from "./v2-agent-selection-core.mjs"
 
 const args = process.argv.slice(2)
@@ -170,6 +171,13 @@ try {
   // to HEAD, so the registered body and the reconciliation plan agree while no
   // other agent entry is touched.
   const fixedAgents = fixSisyphusAgentMap(orderedSelected)
+  // The manifest defaultAgent must name an agent the runtime will actually
+  // register. Only the Hephaestus static model gate is decidable at generation
+  // time (its provider gate needs the runtime inventory); the runtime re-checks
+  // the full gate at registration, so this only steers the fallback away from a
+  // statically-ineligible agent (finding: default pointed at a skipped agent).
+  const defaultAgentEligible = (id) =>
+    !isHephaestusAgentId(id) || evaluateHephaestusGate({ definition: fixedAgents[id] }).eligible
   const sisyphusPrompt = await bakeSisyphusPromptVariants(fixedAgents[SISYPHUS_AGENT_ID])
   const gates = deriveNativeGates(pluginView)
   // A V1 tool default can carry a hard global disable for a family the native
@@ -184,7 +192,7 @@ try {
   if (gates.interactive_bash) tools["interactive_bash"] = true
   if (gates.hashline_edit) tools["hashline_edit"] = true
   const materialized = {
-    defaultAgent: resolveDefaultAgent(config.default_agent, fixedAgents),
+    defaultAgent: resolveDefaultAgent(config.default_agent, fixedAgents, defaultAgentEligible),
     agents: fixedAgents,
     metadata: {
       generatedBy: "Oh My Rigel V2 native runtime",

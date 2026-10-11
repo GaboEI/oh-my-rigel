@@ -46,12 +46,21 @@ export function selectOrchestratedAgents({ allAgents = {}, selection = {}, disab
 }
 
 /**
- * The manifest `defaultAgent` must name a selected key. When the configured
- * default was not generated, fall back to the first selected agent so the
- * manifest never points at an absent agent.
+ * The manifest `defaultAgent` must name a selected key that the runtime will
+ * actually register. When the configured default was not generated, or would be
+ * skipped by the runtime's eligibility/provider gates (`isEligible`), fall back
+ * to the first eligible selected agent so the manifest never points at an agent
+ * that `registerNativeAgents` will leave out of the roster. Returns `undefined`
+ * when nothing is selected, and when no selected agent is eligible.
+ *
+ * `isEligible` is optional and defaults to every key being eligible, so the
+ * generator can pass the statically-knowable gate (e.g. the Hephaestus model
+ * check) without this module importing the gate itself.
  */
-export function resolveDefaultAgent(defaultAgent, selected) {
-  if (typeof defaultAgent === "string" && selected && selected[defaultAgent]) return defaultAgent
-  const keys = Object.keys(selected ?? {})
-  return keys.length > 0 ? keys[0] : undefined
+export function resolveDefaultAgent(defaultAgent, selected, isEligible) {
+  const eligible = typeof isEligible === "function" ? isEligible : () => true
+  if (typeof defaultAgent === "string" && selected && selected[defaultAgent] && eligible(defaultAgent)) {
+    return defaultAgent
+  }
+  return Object.keys(selected ?? {}).find((key) => eligible(key))
 }

@@ -59,4 +59,24 @@ describe("resolveDefaultAgent", () => {
   test("#given the configured default was not generated #then the first selected agent is used", () => {
     expect(resolveDefaultAgent("Missing - Agent", { "Sisyphus - ultraworker": {}, atlas: {} })).toBe("Sisyphus - ultraworker")
   })
+
+  test("#given the configured default is absent and the first selected agent is ineligible #then the fallback skips it", () => {
+    // The runtime skips the first manifest agent (e.g. a Hephaestus whose model
+    // gate fails); the default must resolve to the first ELIGIBLE agent, not the
+    // first agent that registerNativeAgents will leave out of the roster.
+    const selected = { "Hephaestus - Deep Agent": {}, "Sisyphus - ultraworker": {}, atlas: {} }
+    const eligible = (id) => id !== "Hephaestus - Deep Agent"
+
+    expect(resolveDefaultAgent("Missing - Agent", selected, eligible)).toBe("Sisyphus - ultraworker")
+  })
+
+  test("#given the configured default is selected but ineligible #then an eligible agent is used", () => {
+    const selected = { "Hephaestus - Deep Agent": {}, sisyphus: {} }
+
+    expect(resolveDefaultAgent("Hephaestus - Deep Agent", selected, (id) => id !== "Hephaestus - Deep Agent")).toBe("sisyphus")
+  })
+
+  test("#given no selected agent is eligible #then the fallback is undefined", () => {
+    expect(resolveDefaultAgent("Missing - Agent", { "Hephaestus - Deep Agent": {}, atlas: {} }, () => false)).toBeUndefined()
+  })
 })

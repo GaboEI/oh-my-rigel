@@ -142,18 +142,20 @@ function underFamily(candidate, root) {
 /**
  * Identify a config entry as the Rigel runtime by evidence that SURVIVES the
  * runtime's deletion: content identity (package.json name / basename), the
- * authoritative lifecycle `pluginEntry` recorded in state, membership in a
+ * authoritative lifecycle `pluginEntry` recorded in state, or membership in a
  * lifecycle state root (the installer's own family identity,
- * `registerRuntimePluginEntry`), or the installer's `versions/<v>/runtime`
- * path shape. An entry substring is never trusted. This is what lets a deleted
- * `versions/<v>/runtime` be reported as registered-but-missing instead of
- * "not registered" (finding A).
+ * `registerRuntimePluginEntry`). An entry substring is never trusted, and a
+ * bare `versions/<v>/runtime` path shape is NOT sufficient on its own: a
+ * foreign plugin that merely shares that shape must never be misclassified as
+ * Rigel. Only a path under a known Rigel state root (or a lifecycle-recorded
+ * entry) counts, which still lets a deleted `<stateRoot>/versions/<v>/runtime`
+ * be reported as registered-but-missing instead of "not registered"
+ * (finding A/N5).
  */
 function identifiesRigelRuntime(source, recordedEntries, stateRoots) {
   if (isRigelRuntimePath(source)) return true
   if (recordedEntries.has(source)) return true
-  if (stateRoots.some((root) => underFamily(source, root))) return true
-  return /(^|\/)versions\/[^/]+\/runtime\/?$/.test(source)
+  return stateRoots.some((root) => underFamily(source, root))
 }
 
 /**
