@@ -123,7 +123,21 @@ export function materializeNativeRuntime({
   fs.writeFileSync(path.join(runtimeDir, "prompts/ultrawork-combo-banner.md"), `${comboBanner}\n`, { mode: 0o600 })
   fs.copyFileSync(agentManifestPath, path.join(runtimeDir, "rigel-v2-native-agent-manifest.mjs"))
   const runtimeExports = { ".": "./index.js", "./tui": `./${cliEntryName}` }
-  fs.writeFileSync(path.join(runtimeDir, "package.json"), `${JSON.stringify({ name: "rigel-v2-native", type: "module", exports: runtimeExports }, null, 2)}\n`, { mode: 0o600 })
+  // The CLI (`./tui`) renders JSX through the host OpenTUI runtime, so the
+  // materialized package declares the OpenTUI peers (optional: a headless host
+  // that never loads `./tui` must not fail the install).
+  const runtimePackage = {
+    name: "rigel-v2-native",
+    type: "module",
+    exports: runtimeExports,
+    peerDependencies: { "@opentui/core": ">=0.5.8", "@opentui/solid": ">=0.5.8", "solid-js": ">=1.9.0" },
+    peerDependenciesMeta: {
+      "@opentui/core": { optional: true },
+      "@opentui/solid": { optional: true },
+      "solid-js": { optional: true },
+    },
+  }
+  fs.writeFileSync(path.join(runtimeDir, "package.json"), `${JSON.stringify(runtimePackage, null, 2)}\n`, { mode: 0o600 })
   for (const file of ["index.js", cliEntryName, ...runtimeModules, "rigel-v2-native-agent-manifest.mjs", ...promptFiles.map(([name]) => `prompts/${name}`), "prompts/ultrawork-combo-banner.md"]) {
     const target = path.join(runtimeDir, file)
     if (fs.existsSync(target)) fs.chmodSync(target, 0o600)

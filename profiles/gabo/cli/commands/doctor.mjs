@@ -73,8 +73,108 @@ function entrySource(entry) {
   return ""
 }
 
-function isRuntimeEntry(entry) {
-  return entrySource(entry).includes("rigel-v2-native")
+function stripFileScheme(source) {
+  return source.replace(/^file:\/\//, "")
+}
+
+function runtimeDirOf(source) {
+  return /\.(mjs|js|cjs)$/.test(source) ? path.dirname(source) : source
+}
+
+function readJsonSafe(file) {
+  try {
+    return JSON.parse(readText(file) ?? "")
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Identify a registered Rigel runtime by its CONTENT, not by a substring in the
+ * entry. The materialized runtime is a directory whose `package.json` name is
+ * `rigel-v2-native` (user install `<stateRoot>/versions/<v>/runtime`, lab
+ * `<labRoot>/rigel/runtime/rigel-v2-native`); the basename check covers a
+ * runtime directory that carries no readable package.json. The earlier
+ * `includes("rigel-v2-native")` test matched neither real install shape, so a
+ * healthy install was reported as "not registered" (finding N5).
+ */
+function isRigelRuntimePath(source) {
+  const dir = runtimeDirOf(source)
+  const pkg = readJsonSafe(path.join(dir, "package.json"))
+  if (pkg && pkg.name === "rigel-v2-native") return true
+  return path.basename(dir) === "rigel-v2-native"
+}
+
+/**
+ * The lifecycle roots this host could have installed the runtime under: an
+ * explicit user root, the default user state root (XDG data), and the V2 lab
+ * state root. Reading their install-state / trial files yields the AUTHORITATIVE
+ * `pluginEntry` the lifecycle recorded — evidence that survives the runtime's
+ * deletion, unlike the runtime directory's own contents.
+ */
+function candidateStateRoots(io) {
+  const data = io.env.XDG_DATA_HOME ?? path.join(io.home, ".local", "share")
+  const roots = []
+  if (io.env.RIGEL_V2_USER_ROOT) roots.push(io.env.RIGEL_V2_USER_ROOT)
+  roots.push(path.join(data, "oh-my-rigel"))
+  const labBase = io.env.RIGEL_V2_LAB_ROOT ?? path.join(data, "opencode-v2-lab")
+  roots.push(path.join(labBase, "rigel"))
+  return roots
+}
+
+function recordedRuntimeEntries(io) {
+  const entries = new Set()
+  for (const root of candidateStateRoots(io)) {
+    for (const file of ["install-state.json", "active-trial.json"]) {
+      const document = readJsonSafe(path.join(root, file))
+      if (document && typeof document.pluginEntry === "string" && document.pluginEntry) {
+        entries.add(document.pluginEntry)
+      }
+    }
+  }
+  return entries
+}
+
+function underFamily(candidate, root) {
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`)
+}
+
+/**
+ * Identify a config entry as the Rigel runtime by evidence that SURVIVES the
+ * runtime's deletion: content identity (package.json name / basename), the
+ * authoritative lifecycle `pluginEntry` recorded in state, or membership in a
+ * lifecycle state root (the installer's own family identity,
+ * `registerRuntimePluginEntry`). An entry substring is never trusted, and a
+ * bare `versions/<v>/runtime` path shape is NOT sufficient on its own: a
+ * foreign plugin that merely shares that shape must never be misclassified as
+ * Rigel. Only a path under a known Rigel state root (or a lifecycle-recorded
+ * entry) counts, which still lets a deleted `<stateRoot>/versions/<v>/runtime`
+ * be reported as registered-but-missing instead of "not registered"
+ * (finding A/N5).
+ */
+function identifiesRigelRuntime(source, recordedEntries, stateRoots) {
+  if (isRigelRuntimePath(source)) return true
+  if (recordedEntries.has(source)) return true
+  return stateRoots.some((root) => underFamily(source, root))
+}
+
+/**
+ * Resolve the registered Rigel runtime among the config plugin entries and
+ * report whether its entry file actually exists. `present` is false when no
+ * entry identifies a Rigel runtime; `loadable` is false when one is registered
+ * but its entry file is missing.
+ */
+function resolveRigelRuntime(plugins, { recordedEntries = new Set(), stateRoots = [] } = {}) {
+  for (const entry of plugins) {
+    const source = stripFileScheme(entrySource(entry))
+    if (!source) continue
+    if (identifiesRigelRuntime(source, recordedEntries, stateRoots)) {
+      const dir = runtimeDirOf(source)
+      const entryFile = /\.(mjs|js|cjs)$/.test(source) ? source : path.join(dir, "index.js")
+      return { present: true, entry, source, dir, entryFile, loadable: existsSync(entryFile) }
+    }
+  }
+  return { present: false }
 }
 
 function loadedRuntimeVersion(entry) {
@@ -151,16 +251,28 @@ async function checkSystem(io, directory) {
   }
   const config = loadConfig(io)
   const plugins = Array.isArray(config.document?.plugin) ? config.document.plugin : []
-  const entry = plugins.find(isRuntimeEntry)
-  if (!entry) {
+  const runtime = resolveRigelRuntime(plugins, {
+    recordedEntries: recordedRuntimeEntries(io),
+    stateRoots: candidateStateRoots(io),
+  })
+  if (!runtime.present) {
+    const declared = plugins.map((entry) => stripFileScheme(entrySource(entry))).filter(Boolean)
     issues.push({
       title: "Rigel runtime plugin is not registered",
-      description: `The lab config ${config.path} does not register the Rigel V2 runtime.`,
-      fix: "Run: rigel-v2 install --platform opencode",
+      description: `No resolvable Rigel V2 runtime in ${config.path}. Declared plugin entries: ${declared.length > 0 ? declared.join(", ") : "none"}.`,
+      fix: "Run: rigel-v2 install --platform opencode, then verify the registered runtime path exists",
+      severity: "error",
+    })
+  } else if (!runtime.loadable) {
+    issues.push({
+      title: "Rigel runtime plugin entry does not resolve",
+      description: `${runtime.source} is registered but its entry file ${runtime.entryFile} is missing, so the runtime cannot load.`,
+      fix: "Run: rigel-v2 install --platform opencode, or restore the registered runtime path",
       severity: "error",
     })
   } else {
-    const loaded = loadedRuntimeVersion(entry)
+    details.push(`runtime: ${runtime.source}`)
+    const loaded = loadedRuntimeVersion(runtime.entry)
     const expected = readJsonVersion(path.join(repoRoot(io), "package.json"))
     if (loaded) details.push(`loaded version: ${loaded}`)
     if (expected) details.push(`repo version: ${expected}`)

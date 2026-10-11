@@ -40,12 +40,22 @@ import {
   deriveJobBoard,
   deriveLoop,
   deriveRoster,
-  describeView,
   isLoopFresh,
   parseLoopDocument,
   toRosterRow,
   viewKey,
 } from "./rigel-v2-sidebar-core.mjs"
+import { buildViewNodes } from "./rigel-v2-sidebar-core.mjs"
+import { materialize } from "./rigel-v2-sidebar-node.mjs"
+import { adaptTheme } from "./rigel-v2-sidebar-theme.mjs"
+// Exact host-injected pattern (OpenCode/OpenTUI `ensurePluginRuntime` injects the
+// `@opentui/solid` virtual module for directory plugins before import; no
+// node_modules needed). Same idiom the goal plugin uses:
+// `import { createElement, insert, setProp } from "@opentui/solid"`.
+import { createElement, insert, setProp } from "@opentui/solid"
+
+/** The OpenTUI Solid runtime the V1 `materialize` consumes. */
+const hostSolid = { createElement, insert, setProp }
 
 export const SIDEBAR_CLI_ID = "oh-my-rigel.sidebar"
 
@@ -328,24 +338,25 @@ export function createSidebarCliSurface(overrides = {}) {
         }
       }
 
-      const renderView = (view) => {
-        try {
-          if (typeof overrides.renderView === "function") return overrides.renderView(view)
-          return describeView(view)
-        } catch (error) {
-          logger({ event: "render-failed", error: describeError(error) })
-          return ""
-        }
-      }
+      // The slot must receive a REAL element tree (the V1 flow): buildViewNodes
+      // -> materialize through the OpenTUI Solid runtime. The runtime is the
+      // host-provided `@opentui/solid`; a test may inject a stub via `overrides.solid`.
+      // A render failure surfaces (logged and rethrown) — the sidebar is never
+      // hidden and no `null` fallback is used.
+      const solidForRender = overrides.solid ?? hostSolid
 
-      const render = () => {
+      const render = (props) => {
         try {
           const { view } = compute()
           currentView = view
-          return renderView(view)
+          // The V2 slot passes `{ sessionID }`; the view is session-independent
+          // (derived from the snapshot). The nested host theme is adapted to the
+          // flat keys `buildViewNodes` expects before materializing.
+          void props
+          return materialize(buildViewNodes(view, adaptTheme(context?.theme)), solidForRender)
         } catch (error) {
           logger({ event: "render-failed", error: describeError(error) })
-          return ""
+          throw error
         }
       }
 

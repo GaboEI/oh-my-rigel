@@ -62,8 +62,15 @@ describe("#given the version command", () => {
 describe("#given the doctor command", () => {
   test("#when every category is healthy #then it reports OK and --json emits the four categories", async () => {
     const home = tempDir("rigel-doctor-home-")
+    // A HEALTHY install: the registered runtime entry must actually resolve, so
+    // the fixture materializes a real runtime dir (package.json + index.js)
+    // instead of a dangling path (finding N5 / resolvability).
+    const runtime = join(tempDir("rigel-doctor-runtime-"), "runtime")
+    mkdirSync(runtime, { recursive: true })
+    writeFileSync(join(runtime, "package.json"), `${JSON.stringify({ name: "rigel-v2-native", type: "module" }, null, 2)}\n`)
+    writeFileSync(join(runtime, "index.js"), "export default {}\n")
     const config = join(tempDir("rigel-doctor-cfg-"), "opencode.json")
-    writeFileSync(config, JSON.stringify({ plugin: ["/opt/rigel/rigel-v2-native"], mcp: { lsp: {} } }, null, 2))
+    writeFileSync(config, JSON.stringify({ plugin: [runtime], mcp: { lsp: {} } }, null, 2))
     const env = { RIGEL_V2_CONFIG: config, XDG_CACHE_HOME: join(home, "cache") }
     const healthy = () => ({ status: 0, stdout: "2.0.22\n", stderr: "" })
     const io = captureIo({ home, env, spawn: healthy })

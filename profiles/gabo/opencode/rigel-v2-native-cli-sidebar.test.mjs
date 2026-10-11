@@ -8,6 +8,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SIDEBAR_CLI_ID, SIDEBAR_SLOT_APPEND, createSidebarCliSurface, resolveSidebarSnapshotPath } from "./rigel-v2-native-cli-sidebar.mjs"
+import { nodeText } from "./rigel-v2-sidebar-node.mjs"
+
+const stubSolid = {
+  createElement: (tag) => ({ tag, props: {}, children: [] }),
+  setProp: (node, name, value) => { node.props[name] = value },
+  insert: (parent, child) => { parent.children.push(child) },
+}
 
 function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, roster, withDataOn = true } = {}) {
   const handlers = new Map()
@@ -156,18 +163,52 @@ describe("createSidebarCliSurface", () => {
       expect(typeof receipt.viewKey).toBe("string")
     })
 
-    test("#then the slot render returns the plain view text", () => {
+    test("#then the slot render returns a host node tree, never a raw string", () => {
       const fake = createFakeContext({ options: {}, directory, sessions: [{ id: "ses-1", agent: "atlas", status: "running" }] })
-      build(fake)
-      const rendered = fake.slotCalls[0].render()
-      expect(rendered).toContain("atlas running")
-      expect(rendered).toContain("Agents")
+      build(fake, { solid: stubSolid })
+      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
+      expect(typeof rendered).not.toBe("string")
+      expect(rendered).toBeTruthy()
+      const text = nodeText(rendered)
+      expect(text).toContain("atlas running")
+      expect(text).toContain("Agents")
     })
 
-    test("#then an idle host renders the empty roster notice", () => {
+    test("#then an idle host renders the empty roster notice as a node", () => {
       const fake = createFakeContext({ options: {}, directory })
-      build(fake)
-      expect(fake.slotCalls[0].render()).toBe("No configured models")
+      build(fake, { solid: stubSolid })
+      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
+      expect(typeof rendered).not.toBe("string")
+      expect(typeof rendered.tag).toBe("string")
+      expect(nodeText(rendered)).toContain("No configured models")
+    })
+
+    test("#given a nested host theme #then the section border color is adapted into the tree", () => {
+      const fake = createFakeContext({ options: {}, directory })
+      fake.context.theme = {
+        text: { base: "T", muted: "M", feedback: { warning: { base: "W" }, success: { base: "S" }, error: { base: "E" }, info: { base: "I" } } },
+        hue: { accent: { 400: "A" } },
+        border: { base: "BORDER" },
+      }
+      build(fake, { solid: stubSolid })
+      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
+      expect(rendered.children[0].props.borderColor).toBe("BORDER")
+    })
+
+    test("#given an ACTIVE view #then the slot render is a valid element with the active text", () => {
+      const fake = createFakeContext({ options: {}, directory, sessions: [{ id: "ses-1", agent: "atlas", status: "running" }] })
+      build(fake, { solid: stubSolid })
+      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
+      expect(typeof rendered.tag).toBe("string")
+      expect(nodeText(rendered)).toContain("atlas running")
+    })
+
+    test("#given a BROKEN config view #then the slot render is a valid element with the notice", () => {
+      const fake = createFakeContext({ options: {}, directory })
+      build(fake, { solid: stubSolid, config: () => ({ valid: false, messages: ["config broken"] }) })
+      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
+      expect(typeof rendered.tag).toBe("string")
+      expect(nodeText(rendered)).toContain("config invalid - run doctor")
     })
   })
 

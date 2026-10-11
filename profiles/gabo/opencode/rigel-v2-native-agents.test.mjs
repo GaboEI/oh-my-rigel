@@ -305,6 +305,59 @@ test("registerNativeAgents still applies the model gate without an inventory", a
   expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
 })
 
+// The manifest default must name an agent that survives the eligibility gates.
+// Before the fix, `editor.default` was set to the manifest default whenever the
+// id existed in the RAW manifest map, even when the Hephaestus gate had skipped
+// it from the roster — a session could start on an absent agent.
+test("registerNativeAgents never defaults to an agent the eligibility gate skipped", async () => {
+  const defaults = []
+  const editor = {
+    update(_id, callback) { callback({ request: { headers: {}, body: {} }, permissions: [] }) },
+    default(id) { defaults.push(id) },
+  }
+  const agentDomain = {
+    transform: async (callback) => { callback(editor); return { dispose() {} } },
+    reload: async () => {},
+  }
+  const manifest = {
+    defaultAgent: "Hephaestus - Deep Agent",
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "opencode-go/kimi-k3" },
+      explore: { name: "Explore", mode: "subagent", model: "kimi-for-coding/kimi-for-coding-highspeed", variant: "off" },
+    },
+  }
+
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    listModels: async () => [{ providerID: "opencode-go", id: "kimi-k3", enabled: true }],
+  })
+
+  expect(registered).toEqual(["explore"])
+  expect(defaults).toEqual(["explore"])
+})
+
+test("registerNativeAgents keeps the manifest default when that agent was registered", async () => {
+  const defaults = []
+  const editor = {
+    update(_id, callback) { callback({ request: { headers: {}, body: {} }, permissions: [] }) },
+    default(id) { defaults.push(id) },
+  }
+  const agentDomain = {
+    transform: async (callback) => { callback(editor); return { dispose() {} } },
+    reload: async () => {},
+  }
+  const manifest = {
+    defaultAgent: "explore",
+    agents: { explore: { name: "Explore", mode: "subagent", model: "kimi-for-coding/kimi-for-coding-highspeed", variant: "off" } },
+  }
+
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    listModels: async () => [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }],
+  })
+
+  expect(registered).toEqual(["explore"])
+  expect(defaults).toEqual(["explore"])
+})
+
 test("registerNativeAgents exposes acceptance tuning from the applied AgentV2Info request bodies", async () => {
   const requests = new Map()
   const editor = {
