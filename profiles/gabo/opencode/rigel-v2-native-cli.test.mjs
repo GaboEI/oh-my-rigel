@@ -14,6 +14,7 @@ function fakeContext({ renderer = { isDestroyed: false } } = {}) {
   const handlers = new Map()
   const toasts = []
   const layers = []
+  const slotCalls = []
   return {
     api: {
       options: {},
@@ -29,12 +30,17 @@ function fakeContext({ renderer = { isDestroyed: false } } = {}) {
       ui: {
         toast: { show: (toast) => toasts.push(toast) },
         dialog: { select: () => {}, clear: () => {}, show: () => {} },
+        slot: (args) => {
+          slotCalls.push(args)
+          return () => {}
+        },
       },
       keymap: { layer: (fn) => { layers.push(fn); return () => {} } },
     },
     handlers,
     toasts,
     layers,
+    slotCalls,
   }
 }
 
@@ -46,6 +52,17 @@ describe("#given the composed companion CLI plugin", () => {
     const dispose = plugin.setup(fake.api)
     expect(typeof dispose).toBe("function")
     // Legacy notice + task toast + nudge each subscribe at least one event.
+    expect(fake.handlers.size).toBeGreaterThan(0)
+    expect(fake.layers.length).toBeGreaterThan(0)
+    expect(() => dispose()).not.toThrow()
+  })
+
+  test("#given the default host options #then the sidebar.content slot is never registered and notifications still register", () => {
+    const fake = fakeContext()
+    const dispose = createCompanionCliPlugin().setup(fake.api)
+    // The sidebar surface is off by default, so `ui.slot` is never called for
+    // its content slot (the Models/Agents panel) while the other surfaces run.
+    expect(fake.slotCalls.some((args) => args?.append === "sidebar.content")).toBe(false)
     expect(fake.handlers.size).toBeGreaterThan(0)
     expect(fake.layers.length).toBeGreaterThan(0)
     expect(() => dispose()).not.toThrow()

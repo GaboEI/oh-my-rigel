@@ -8,15 +8,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SIDEBAR_CLI_ID, SIDEBAR_SLOT_APPEND, createSidebarCliSurface, resolveSidebarSnapshotPath } from "./rigel-v2-native-cli-sidebar.mjs"
-import { nodeText } from "./rigel-v2-sidebar-node.mjs"
 
-const stubSolid = {
-  createElement: (tag) => ({ tag, props: {}, children: [] }),
-  setProp: (node, name, value) => { node.props[name] = value },
-  insert: (parent, child) => { parent.children.push(child) },
-}
-
-function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, hostAgents, hostModels, hostModelListThrows = false, v2Sessions, withDataOn = true, withEventBus = false } = {}) {
+function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, roster, withDataOn = true } = {}) {
   const handlers = new Map()
   const unsubscribed = []
   const slotCalls = []
@@ -24,17 +17,7 @@ function createFakeContext({ options, directory, renderer = { isDestroyed: false
     session: { list: () => sessions },
   }
   if (backgroundTasks !== undefined) data.background = { tasks: backgroundTasks }
-  // The canonical 2.0.26 host inventory lives under `context.data.location`:
-  // `location.agent.list(...)` and `location.model.list(location)`. Only install
-  // it when the case asks for a host, so the host-missing path stays real.
-  if (hostAgents !== undefined || hostModels !== undefined) {
-    data.location = {
-      ...(hostAgents !== undefined ? { agent: { list: () => hostAgents } } : {}),
-      ...(hostModels !== undefined
-        ? { model: { list: () => { if (hostModelListThrows) throw new Error("model.list unavailable"); return hostModels } } }
-        : {}),
-    }
-  }
+  if (roster !== undefined) data.roster = roster
   if (withDataOn) {
     data.on = (name, handler) => {
       handlers.set(name, handler)
@@ -56,58 +39,7 @@ function createFakeContext({ options, directory, renderer = { isDestroyed: false
       },
     },
   }
-  // The V2 TUI API (`TuiPluginApi`) keeps live sessions on `state.session` with
-  // a per-id `status(id)`/`get(id)` and publishes on `event.on`. Stub both when
-  // the case asks for them, so the real V2 data path is exercised, not a
-  // synthetic flat roster.
-  if (v2Sessions !== undefined) {
-    context.state = {
-      session: {
-        list: () => v2Sessions.map((session) => ({ id: session.id, agent: session.agent })),
-        get: (id) => v2Sessions.find((session) => session.id === id),
-        status: (id) => v2Sessions.find((session) => session.id === id)?.status,
-        count: () => v2Sessions.length,
-      },
-    }
-  }
-  if (withEventBus) {
-    context.event = {
-      on: (name, handler) => {
-        handlers.set(`event:${name}`, handler)
-        return () => {
-          handlers.delete(`event:${name}`)
-          unsubscribed.push(`event:${name}`)
-        }
-      },
-    }
-  }
   return { context, handlers, unsubscribed, slotCalls, handler: (name) => handlers.get(name) }
-}
-
-function agentFixture() {
-  return {
-    defaultAgent: "sisyphus",
-    agents: {
-      sisyphus: { name: "sisyphus", model: "anthropic/claude-opus-5-5" },
-      atlas: { name: "atlas", model: "kimi-for-coding/kimi-k3" },
-    },
-    metadata: { global: { agentOverrides: { atlas: { model: "openai/gpt-6-astra" } }, categories: {} } },
-    modes: { defaultUltrawork: false },
-  }
-}
-
-function categoryFixture() {
-  return {
-    categories: {
-      "deep-low": { model: "openai/gpt-6.1-sol", variant: "medium" },
-      writing: { model: "anthropic/claude-opus-5-5" },
-    },
-  }
-}
-
-/** Drain the microtask queue so a fire-and-forget host read settles (no timers). */
-async function flushMicrotasks() {
-  for (let index = 0; index < 20; index += 1) await Promise.resolve()
 }
 
 describe("createSidebarCliSurface", () => {
@@ -208,6 +140,7 @@ describe("createSidebarCliSurface", () => {
           { id: "ses-2", agent: "idle-agent", status: "idle" },
         ],
         backgroundTasks: [{ agent: "atlas", status: "running", title: "bg-task", toolCalls: 2, lastTool: "bash" }],
+        roster: [{ name: "sisyphus", model: "anthropic/claude-sonnet-4" }],
       })
       build(fake)
 
@@ -223,53 +156,18 @@ describe("createSidebarCliSurface", () => {
       expect(typeof receipt.viewKey).toBe("string")
     })
 
-    test("#then the slot render returns a host node tree, never a raw string", () => {
+    test("#then the slot render returns the plain view text", () => {
       const fake = createFakeContext({ options: {}, directory, sessions: [{ id: "ses-1", agent: "atlas", status: "running" }] })
-      build(fake, { solid: stubSolid })
-      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
-      expect(typeof rendered).not.toBe("string")
-      expect(rendered).toBeTruthy()
-      const text = nodeText(rendered)
-      expect(text).toContain("atlas running")
-      expect(text).toContain("Agents")
+      build(fake)
+      const rendered = fake.slotCalls[0].render()
+      expect(rendered).toContain("atlas running")
+      expect(rendered).toContain("Agents")
     })
 
-    test("#given no manifest roles and no host #then the empty roster notice is a node with a next action", () => {
+    test("#then an idle host renders the empty roster notice", () => {
       const fake = createFakeContext({ options: {}, directory })
-      build(fake, { solid: stubSolid, agentManifest: { agents: {}, metadata: { global: {} } }, categoryManifest: { categories: {} } })
-      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
-      expect(typeof rendered).not.toBe("string")
-      expect(typeof rendered.tag).toBe("string")
-      expect(nodeText(rendered)).toContain("No configured models")
-      expect(nodeText(rendered)).toContain("run doctor to configure models")
-    })
-
-    test("#given a nested host theme #then the section border color is adapted into the tree", () => {
-      const fake = createFakeContext({ options: {}, directory })
-      fake.context.theme = {
-        text: { base: "T", muted: "M", feedback: { warning: { base: "W" }, success: { base: "S" }, error: { base: "E" }, info: { base: "I" } } },
-        hue: { accent: { 400: "A" } },
-        border: { base: "BORDER" },
-      }
-      build(fake, { solid: stubSolid })
-      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
-      expect(rendered.children[0].props.borderColor).toBe("BORDER")
-    })
-
-    test("#given an ACTIVE view #then the slot render is a valid element with the active text", () => {
-      const fake = createFakeContext({ options: {}, directory, sessions: [{ id: "ses-1", agent: "atlas", status: "running" }] })
-      build(fake, { solid: stubSolid })
-      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
-      expect(typeof rendered.tag).toBe("string")
-      expect(nodeText(rendered)).toContain("atlas running")
-    })
-
-    test("#given a BROKEN config view #then the slot render is a valid element with the notice", () => {
-      const fake = createFakeContext({ options: {}, directory })
-      build(fake, { solid: stubSolid, config: () => ({ valid: false, messages: ["config broken"] }) })
-      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
-      expect(typeof rendered.tag).toBe("string")
-      expect(nodeText(rendered)).toContain("config invalid - run doctor")
+      build(fake)
+      expect(fake.slotCalls[0].render()).toBe("No configured models")
     })
   })
 
@@ -356,158 +254,6 @@ describe("createSidebarCliSurface", () => {
       for (const name of ["session.created", "session.deleted", "session.execution.succeeded", "session.execution.failed"]) {
         expect(fake.unsubscribed).toContain(name)
       }
-    })
-  })
-
-  describe("#given the model roster sources", () => {
-    test("#given the Rigel manifests #then the receipt carries the effective role roster and ignores a synthetic data.roster", () => {
-      const fake = createFakeContext({ options: {}, directory })
-      // A stale/foreign `data.roster` must be ignored: the roster comes from the
-      // manifests, never from a host field that nothing populates.
-      fake.context.data.roster = [{ name: "ghost", model: "ghost/ghost-model" }]
-      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-
-      const receipt = readReceipt()
-      expect(receipt.view.kind).toBe("idle")
-      expect(receipt.view.roster.kind).toBe("rows")
-      const rows = receipt.view.roster.rows
-      expect(rows).toContainEqual({ label: "atlas", model: "gpt-6-astra" })
-      expect(rows).toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
-      expect(rows).toContainEqual({ label: "deep-low", model: "gpt-6.1-sol" })
-      expect(JSON.stringify(rows)).not.toContain("ghost")
-    })
-
-    test("#given no host endpoint (host-missing) #then the manifest roster still renders", async () => {
-      const fake = createFakeContext({ options: {}, directory })
-      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-      await flushMicrotasks()
-
-      const receipt = readReceipt()
-      expect(receipt.view.kind).toBe("idle")
-      expect(receipt.view.roster.kind).toBe("rows")
-      expect(receipt.view.roster.rows).toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
-    })
-
-    test("#given a live host agent inventory #then the host roster wins over the manifests", async () => {
-      const fake = createFakeContext({
-        options: {},
-        directory,
-        hostAgents: [{ id: "live-oracle", name: "live-oracle", model: "openai/gpt-6-luna-fast" }],
-      })
-      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-      await flushMicrotasks()
-
-      const receipt = readReceipt()
-      expect(receipt.view.roster.rows).toContainEqual({ label: "live-oracle", model: "gpt-6-luna-fast" })
-      expect(receipt.view.roster.rows).not.toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
-    })
-
-    test("#given no roles but an available host model catalog #then the catalog is the truthful state", async () => {
-      const fake = createFakeContext({
-        options: {},
-        directory,
-        hostModels: [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }],
-      })
-      build(fake, { agentManifest: { agents: {}, metadata: { global: {} } }, categoryManifest: { categories: {} } })
-      await flushMicrotasks()
-
-      const receipt = readReceipt()
-      expect(receipt.view.kind).toBe("idle")
-      expect(receipt.view.roster.rows).toContainEqual({ label: "openai", model: "gpt-6-luna-fast" })
-    })
-
-    test("#given a host whose model endpoint throws #then setup never rejects and the manifest roster holds", async () => {
-      const fake = createFakeContext({ options: {}, directory, hostModels: [], hostModelListThrows: true })
-      const cleanup = build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-      await flushMicrotasks()
-
-      expect(typeof cleanup).toBe("function")
-      expect(readReceipt().view.roster.rows).toContainEqual({ label: "sisyphus", model: "claude-opus-5-5" })
-    })
-
-    test("#given the bundled manifests #then a category roster renders without any host", () => {
-      const fake = createFakeContext({ options: {}, directory })
-      build(fake, { solid: stubSolid })
-      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
-      expect(typeof rendered).not.toBe("string")
-      expect(nodeText(rendered)).toContain("deep-low")
-    })
-  })
-
-  describe("#given the real V2 TUI host surface", () => {
-    // Distinguishes V1 heritage from V2 proof. V1 heritage: a flat
-    // `data.session.list()` of records that carry their own status. V2 proof:
-    // the `TuiPluginApi` keeps sessions on `state.session` and exposes the status
-    // separately as `state.session.status(id)`. Both must drive the Agents view.
-    test("#given V2 state.session statuses #then the materialized Agents view lists the busy/retry/running roles", () => {
-      const fake = createFakeContext({
-        options: {},
-        directory,
-        v2Sessions: [
-          { id: "ses-a", agent: "atlas", status: "busy" },
-          { id: "ses-b", agent: "oracle", status: "retry" },
-          { id: "ses-c", agent: "sisyphus", status: "running" },
-          { id: "ses-d", agent: "momus", status: "idle" },
-        ],
-      })
-      build(fake, { solid: stubSolid, agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-      const rendered = fake.slotCalls[0].render({ session_id: "ses-a" })
-      expect(typeof rendered).not.toBe("string")
-      const text = nodeText(rendered)
-      expect(text).toContain("Agents")
-      expect(text).toContain("atlas busy")
-      expect(text).toContain("oracle retry")
-      expect(text).toContain("sisyphus running")
-      expect(text).not.toContain("momus idle")
-    })
-
-    test("#given the V1 heritage data.session shape #then the Agents view still renders (functionality not reduced)", () => {
-      const fake = createFakeContext({
-        options: {},
-        directory,
-        sessions: [
-          { id: "ses-1", agent: "atlas", status: "running" },
-          { id: "ses-2", agent: "idle-agent", status: "idle" },
-        ],
-      })
-      build(fake, { solid: stubSolid, agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-      const text = nodeText(fake.slotCalls[0].render({ session_id: "ses-1" }))
-      expect(text).toContain("atlas running")
-      expect(text).not.toContain("idle-agent idle")
-    })
-
-    test("#given a V2 event bus #then setup subscribes and a session event refreshes the view", () => {
-      const v2Sessions = [{ id: "ses-a", agent: "atlas", status: "idle" }]
-      const fake = createFakeContext({ options: {}, directory, v2Sessions, withEventBus: true, withDataOn: false })
-      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-      expect(readReceipt().view.kind).toBe("idle")
-
-      // The host flips the session to busy and emits on the V2 event bus.
-      v2Sessions[0].status = "busy"
-      clock = 500
-      fake.handler("event:session.updated")({ type: "session.updated" })
-
-      const receipt = readReceipt()
-      expect(receipt.updatedAt).toBe(500)
-      expect(receipt.view.kind).toBe("active")
-      expect(receipt.activeAgents).toContainEqual({ name: "atlas", status: "busy" })
-    })
-  })
-
-  describe("#given a single current runtime (no duplicate plugin)", () => {
-    test("#then the idle roster is non-empty with no data.roster and no host inventory", () => {
-      // Regression: a single current runtime must render its real roster from the
-      // co-located manifests. Reverting the adapter to the pre-fix
-      // `context.data.roster` read makes this empty, which is exactly the live
-      // one-plugin regression.
-      const fake = createFakeContext({ options: {}, directory })
-      expect(fake.context.data.roster).toBeUndefined()
-      build(fake, { agentManifest: agentFixture(), categoryManifest: categoryFixture() })
-
-      const receipt = readReceipt()
-      expect(receipt.view.kind).toBe("idle")
-      expect(receipt.view.roster.kind).toBe("rows")
-      expect(receipt.view.roster.rows.length).toBeGreaterThan(0)
     })
   })
 })

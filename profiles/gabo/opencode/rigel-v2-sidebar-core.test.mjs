@@ -24,7 +24,6 @@ import {
   activeGoalTitle,
   buildRuntimeSnapshot,
   buildViewNodes,
-  buildRosterRows,
   computeLoopLive,
   computeView,
   deriveAgents,
@@ -435,7 +434,7 @@ describe("#given a sidebar view", () => {
     })
 
     test("#then the idle view shows the roster or the empty notice", () => {
-      expect(describeView(computeView(sections({})))).toBe("No configured models\nrun doctor to configure models")
+      expect(describeView(computeView(sections({})))).toBe("No configured models")
       const idle = computeView(sections({ roster: { kind: "rows", rows: [{ label: "atlas", model: "gpt-5" }] } }))
       expect(describeView(idle)).toContain("atlas gpt-5")
     })
@@ -454,52 +453,6 @@ describe("#given a sidebar view", () => {
       expect(truncate("x".repeat(LABEL_MAX))).toHaveLength(LABEL_MAX)
       expect(truncate("x".repeat(LABEL_MAX + 1))).toHaveLength(LABEL_MAX)
       expect(truncate("x".repeat(LABEL_MAX + 1)).endsWith("...")).toBe(true)
-    })
-  })
-})
-
-describe("#given manifest data", () => {
-  describe("#when building the roster rows", () => {
-    test("#then empty manifests collapse to no rows", () => {
-      expect(buildRosterRows(undefined, undefined)).toEqual([])
-      expect(buildRosterRows({ agents: {} }, { categories: {} })).toEqual([])
-    })
-
-    test("#then agents and categories become { label, model } rows with the provider stripped", () => {
-      const rows = buildRosterRows(
-        { agents: { atlas: { name: "atlas", model: "openai/gpt-6" } } },
-        { categories: { "deep-low": { model: "anthropic/claude-opus-5-5" } } },
-      )
-      expect(rows).toContainEqual({ label: "atlas", model: "gpt-6" })
-      expect(rows).toContainEqual({ label: "deep-low", model: "claude-opus-5-5" })
-    })
-
-    test("#then a user agent override wins and a model-less role is omitted", () => {
-      const rows = buildRosterRows(
-        {
-          agents: { atlas: { name: "atlas", model: "kimi/k3" }, nomodel: { name: "nomodel" } },
-          metadata: { global: { agentOverrides: { atlas: { model: "openai/gpt-6-astra" } } } },
-        },
-        { categories: {} },
-      )
-      expect(rows).toContainEqual({ label: "atlas", model: "gpt-6-astra" })
-      expect(rows.some((row) => row.label === "nomodel")).toBe(false)
-    })
-
-    test("#then a user category overlays the built-in and a disabled one is dropped", () => {
-      const rows = buildRosterRows(
-        { agents: {}, metadata: { global: { categories: { writing: { model: "openai/gpt-6" }, quick: { disable: true } } } } },
-        { categories: { "deep-low": { model: "openai/gpt-6.1-sol" }, writing: { model: "anthropic/claude-opus-5-5" } } },
-      )
-      expect(rows).toContainEqual({ label: "deep-low", model: "gpt-6.1-sol" })
-      expect(rows).toContainEqual({ label: "writing", model: "gpt-6" })
-      expect(rows.some((row) => row.label === "quick")).toBe(false)
-    })
-
-    test("#then a model-less role falls back to its canonical chain head when a resolver is supplied", () => {
-      const chains = { agentModel: (id) => (id === "prometheus" ? "anthropic/claude-fable-5-1" : undefined) }
-      const rows = buildRosterRows({ agents: { prometheus: { name: "prometheus" } } }, { categories: {} }, chains)
-      expect(rows).toContainEqual({ label: "prometheus", model: "claude-fable-5-1" })
     })
   })
 })
