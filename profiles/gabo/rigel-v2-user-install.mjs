@@ -112,15 +112,27 @@ function fail(message) {
   process.exit(1)
 }
 
-function guardIsolation(paths) {
+function guardIsolation(paths, { configExplicit = false } = {}) {
   // The install's own roots plus the isolated XDG roots it hands to the skills
   // materializer. Ambient XDG variables are NOT guarded: explicit --config /
   // --state / --home flags override them and the spawned helper never sees them.
   const targets = { ...paths, ...isolatedXdgEnv(paths.home) }
+  const v1Roots = V1_ROOTS.map(canonicalize)
   for (const [name, target] of Object.entries(targets)) {
     const canonical = canonicalize(target)
-    for (const v1 of V1_ROOTS.map(canonicalize)) {
-      if (under(canonical, v1)) fail(`${name} resolves under a V1 root (${v1}): ${canonical}`)
+    for (const v1Root of v1Roots) {
+      if (!under(canonical, v1Root)) continue
+      // The documented V1/V2 incompatibility is the boundary: Rigel must not run
+      // alongside an active V1. An EXPLICITLY provided config (`--config` /
+      // `RIGEL_V2_CONFIG`) is the operator's confirmation that this is the active
+      // V2 config, so it is accepted even under the generic OpenCode config root
+      // that V2 shares. A DEFAULTED path is never accepted, and home/state/XDG
+      // roots keep the unconditional refusal. No V1 heuristic is applied here.
+      if (name === "configFile" && configExplicit) {
+        process.stderr.write(`rigel-v2: accepting the explicitly-provided V2 config under the shared config root ${v1Root}\n`)
+        continue
+      }
+      fail(`${name} resolves under a V1 root (${v1Root}): ${canonical}`)
     }
   }
 }
@@ -351,7 +363,14 @@ function main() {
   const [command, ...rest] = process.argv.slice(2)
   const flags = parseArgs(rest)
   const paths = resolvePaths(flags)
-  guardIsolation({ home: paths.home, stateRoot: paths.stateRoot, configFile: paths.configFile })
+  guardIsolation(
+    { home: paths.home, stateRoot: paths.stateRoot, configFile: paths.configFile },
+    {
+      configExplicit:
+        typeof flags.config === "string" ||
+        (typeof process.env.RIGEL_V2_CONFIG === "string" && process.env.RIGEL_V2_CONFIG.trim() !== ""),
+    },
+  )
   const stateFile = path.join(paths.stateRoot, "install-state.json")
   const cliConfigFile = path.join(path.dirname(paths.configFile), "cli.json")
   const skillsStateFile = path.join(paths.home, ".local", "share", "oh-my-rigel", "skills-v2.json")
