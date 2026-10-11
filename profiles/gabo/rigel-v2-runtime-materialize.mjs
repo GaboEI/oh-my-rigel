@@ -16,7 +16,6 @@ import path from "node:path"
 import { discoverRuntimeModules } from "./native-runtime-modules.mjs"
 import { writeTextAtomic } from "./rigel-v2-lifecycle-transaction.mjs"
 import {
-  isRigelRuntimeDir,
   parseJsonc,
   registerCompanionCliPlugin,
   resolveNotificationOptions,
@@ -41,14 +40,10 @@ function underFamily(candidate, familyRoot) {
  * Return a new `opencode.json` plugin array with exactly one Rigel-family runtime
  * entry, pointing at the active `runtimeDir`. Family identity is the stable
  * `familyRoot`, so a version transition replaces the previous version's entry
- * instead of appending a second one; a prior Rigel runtime registered under a
- * DIFFERENT state root is also recognised by its content identity
- * ({@link isRigelRuntimeDir}) and replaced, and foreign plugin entries keep their
- * position.
+ * instead of appending a second one; foreign plugin entries keep their position.
  */
 export function registerRuntimePluginEntry(plugins, { runtimeDir, familyRoot = runtimeDir }) {
-  const isFamily = (entry) =>
-    typeof entry === "string" && (entry === runtimeDir || underFamily(entry, familyRoot) || isRigelRuntimeDir(entry))
+  const isFamily = (entry) => typeof entry === "string" && (entry === runtimeDir || underFamily(entry, familyRoot))
   const next = []
   let placed = false
   for (const entry of plugins) {
@@ -128,21 +123,7 @@ export function materializeNativeRuntime({
   fs.writeFileSync(path.join(runtimeDir, "prompts/ultrawork-combo-banner.md"), `${comboBanner}\n`, { mode: 0o600 })
   fs.copyFileSync(agentManifestPath, path.join(runtimeDir, "rigel-v2-native-agent-manifest.mjs"))
   const runtimeExports = { ".": "./index.js", "./tui": `./${cliEntryName}` }
-  // The CLI (`./tui`) renders JSX through the host OpenTUI runtime, so the
-  // materialized package declares the OpenTUI peers (optional: a headless host
-  // that never loads `./tui` must not fail the install).
-  const runtimePackage = {
-    name: "rigel-v2-native",
-    type: "module",
-    exports: runtimeExports,
-    peerDependencies: { "@opentui/core": ">=0.5.8", "@opentui/solid": ">=0.5.8", "solid-js": ">=1.9.0" },
-    peerDependenciesMeta: {
-      "@opentui/core": { optional: true },
-      "@opentui/solid": { optional: true },
-      "solid-js": { optional: true },
-    },
-  }
-  fs.writeFileSync(path.join(runtimeDir, "package.json"), `${JSON.stringify(runtimePackage, null, 2)}\n`, { mode: 0o600 })
+  fs.writeFileSync(path.join(runtimeDir, "package.json"), `${JSON.stringify({ name: "rigel-v2-native", type: "module", exports: runtimeExports }, null, 2)}\n`, { mode: 0o600 })
   for (const file of ["index.js", cliEntryName, ...runtimeModules, "rigel-v2-native-agent-manifest.mjs", ...promptFiles.map(([name]) => `prompts/${name}`), "prompts/ultrawork-combo-banner.md"]) {
     const target = path.join(runtimeDir, file)
     if (fs.existsSync(target)) fs.chmodSync(target, 0o600)

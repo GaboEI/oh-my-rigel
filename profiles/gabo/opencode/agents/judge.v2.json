@@ -1,5 +1,4 @@
 {
-  "id": "judge",
   "mode": "primary",
   "name": "Judge",
   "description": "Independent adversarial acceptance auditor. Verifies completed work with evidence and returns APPROVED, REJECTED, or BLOCKED; never implements repairs.",

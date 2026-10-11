@@ -298,10 +298,6 @@ function statusOf(state, paths) {
   const configFamily = configPlugins.filter((entry) => typeof entry === "string" && under(canonicalize(entry), canonicalState))
   checks.push({ name: "config.registersRuntime", pass: configPlugins.includes(state.pluginEntry) })
   checks.push({ name: "config.singleRigelEntry", pass: configFamily.length === 1 && configFamily[0] === state.pluginEntry })
-  // N5: registering the entry string is not enough — the registered runtime must
-  // resolve, so a moved/deleted runtime is never reported as a healthy install.
-  const entryResolves = typeof state.pluginEntry === "string" && fs.existsSync(path.join(state.pluginEntry, "index.js"))
-  checks.push({ name: "config.entryResolves", pass: configPlugins.includes(state.pluginEntry) && entryResolves })
 
   // cli.json: exactly one Rigel-family companion entry pointing at the SAME
   // runtime as the server config, and the builtin-disable marker present iff the
