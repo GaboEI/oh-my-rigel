@@ -16,6 +16,7 @@ import path from "node:path"
 import { discoverRuntimeModules } from "./native-runtime-modules.mjs"
 import { writeTextAtomic } from "./rigel-v2-lifecycle-transaction.mjs"
 import {
+  isRigelRuntimeDir,
   parseJsonc,
   registerCompanionCliPlugin,
   resolveNotificationOptions,
@@ -40,10 +41,14 @@ function underFamily(candidate, familyRoot) {
  * Return a new `opencode.json` plugin array with exactly one Rigel-family runtime
  * entry, pointing at the active `runtimeDir`. Family identity is the stable
  * `familyRoot`, so a version transition replaces the previous version's entry
- * instead of appending a second one; foreign plugin entries keep their position.
+ * instead of appending a second one; a prior Rigel runtime registered under a
+ * DIFFERENT state root is also recognised by its content identity
+ * ({@link isRigelRuntimeDir}) and replaced, and foreign plugin entries keep their
+ * position.
  */
 export function registerRuntimePluginEntry(plugins, { runtimeDir, familyRoot = runtimeDir }) {
-  const isFamily = (entry) => typeof entry === "string" && (entry === runtimeDir || underFamily(entry, familyRoot))
+  const isFamily = (entry) =>
+    typeof entry === "string" && (entry === runtimeDir || underFamily(entry, familyRoot) || isRigelRuntimeDir(entry))
   const next = []
   let placed = false
   for (const entry of plugins) {
