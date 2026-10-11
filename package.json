@@ -164,16 +164,16 @@
     "ai",
     "llm"
   ],
-  "author": "YeonGyu-Kim",
+  "author": "GaboEI",
   "license": "SUL-1.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/code-yeongyu/oh-my-openagent.git"
+    "url": "git+https://github.com/GaboEI/oh-my-rigel.git"
   },
   "bugs": {
-    "url": "https://github.com/code-yeongyu/oh-my-openagent/issues"
+    "url": "https://github.com/GaboEI/oh-my-rigel/issues"
   },
-  "homepage": "https://github.com/code-yeongyu/oh-my-openagent#readme",
+  "homepage": "https://omr.gabodev.dev",
   "dependencies": {
     "@opentui/solid": "^0.5.11",
     "detect-libc": "^2.1.2",
