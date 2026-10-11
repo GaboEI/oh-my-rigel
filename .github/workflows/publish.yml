@@ -1412,26 +1412,6 @@ jobs:
           JOB_SUMMARY_NEXT: Inspect the first failing release-state, marketplace sync, or GitHub release step.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
 
-  installer-mirror:
-    needs: [release-metadata, release, post-publish-verify]
-    # Last release step: mirror the published assets into R2 behind get.omo.dev, then move the installer
-    # channel. It waits for post-publish-verify so the channel only follows an npm dist-tag that is already
-    # live. A failure leaves the GitHub release and npm untouched and keeps get.omo.dev on the previous
-    # version; re-run installer-mirror.yml for this tag to finish it.
-    if: >-
-      always() &&
-      inputs.prepared_release_sha != '' &&
-      inputs.lazycodex_only != true &&
-      inputs.skip_platform != true &&
-      needs.release.result == 'success' &&
-      needs.post-publish-verify.result == 'success'
-    uses: ./.github/workflows/installer-mirror.yml
-    with:
-      tag: v${{ needs.release-metadata.outputs.version }}
-      channel: ${{ needs.release-metadata.outputs.omo_ai_dist_tag }}
-      dry_run: false
-    secrets: inherit
-
   post-publish-verify:
     runs-on: ubuntu-latest
     needs: [release-metadata, prepare-release-state, publish-main, release]
