@@ -142,7 +142,7 @@ describe("build-target-agent-manifest", () => {
       test.skipIf(!hasDist)("#then the manifest keeps the target generator module shape", () => {
         expect(Object.keys(manifest).sort()).toEqual(["agents", "defaultAgent", "metadata", "modes"])
         expect(manifest.defaultAgent).toBe("Sisyphus - ultraworker")
-        expect(manifest.modes).toEqual({ defaultUltrawork: true })
+        expect(manifest.modes).toEqual({ defaultUltrawork: false })
         expect(manifest.metadata.global.gates).toBeDefined()
         expect(manifest.metadata.global.categories).toBeDefined()
       })

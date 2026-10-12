@@ -56,8 +56,8 @@ const judgeSource = join(root, judge.source)
 if (!existsSync(judgeSource) || /WatchdogVPN|\bForja\b|\/home\/gabodev/i.test(readFileSync(judgeSource, "utf8"))) fail("Judge source must preserve the generic audit system without project-specific rules")
 if (!v2Selection.orchestratedAgentIds?.includes("Momus - Plan Critic") || v2Selection.orchestratedAgentIds.includes("judge") || v2Selection.orchestratedAgentIds.includes("juez")) fail("Momus must remain a plan critic and must not replace Judge")
 if (!manifest.requiredPlugins?.includes("oc-codex-multi-auth")) fail("oc-codex-multi-auth is required")
-if (manifest.mcpPolicy?.websearch !== "tavily" || !manifest.mcpPolicy?.omoBuiltinsDisabled?.includes("context7")) fail("MCP singleton policy must preserve Tavily and external Context7")
-if (!manifest.mcpPolicy?.omoBuiltinsRetained?.includes("grep_app") || !manifest.mcpPolicy?.omoBuiltinsRetained?.includes("lsp")) fail("OmO grep_app and LSP must remain available")
+if (manifest.mcpPolicy?.websearch !== "tavily") fail("MCP policy must preserve Tavily as the websearch provider")
+if (!manifest.mcpPolicy?.omoBuiltinsRetained?.includes("grep_app") || !manifest.mcpPolicy?.omoBuiltinsRetained?.includes("lsp") || !manifest.mcpPolicy?.omoBuiltinsRetained?.includes("context7")) fail("OmO grep_app, LSP and the dynamic Context7 builtin must remain retained")
 for (const mcp of ["ssh"]) {
   if (!manifest.mcpPolicy?.bundledLocal?.includes(mcp) || opencode.mcp?.[mcp]?.type !== "local" || opencode.mcp[mcp].enabled !== true) fail(`${mcp} must remain a bundled enabled local MCP`)
 }

@@ -528,6 +528,11 @@ export default {
       retained: readNativeMcpBuiltinsPolicy(manifest).retained,
       env: process.env,
     })
+    // Live builtin-MCP inventory (names only, never credentials): `planned` is the
+    // policy decision and the reliable signal; `registered` may be empty because the
+    // host applies the mcp transform asynchronously, so the authoritative live check
+    // is the host inventory (/api/mcp).
+    console.error(`[oh-my-rigel] Native V2 builtin MCP inventory: planned=${builtinMcpRegistration.planned.join(",") || "(none)"} registered=${builtinMcpRegistration.registered.join(",") || "(none)"}`)
     // V1 `features/opengateway-provider`: when an OpenGateway credential is
     // present (env `OPENGATEWAY_API_KEY` or the isolated auth store), register
     // the provider and the packaged catalog through the V2 provider transform.

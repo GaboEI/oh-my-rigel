@@ -24,6 +24,6 @@
   "disabledLegacyAgentIds": ["forja"],
   "excludedOmOAgentIds": ["judge", "build", "plan"],
   "nativeModes": {
-    "defaultUltrawork": true
+    "defaultUltrawork": false
   }
 }

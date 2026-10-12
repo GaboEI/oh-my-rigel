@@ -29,8 +29,8 @@ export default {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "El MCP remoto tier-1 `context7` de `packages/omo-opencode/src/mcp/context7.ts` se migra como conexión externa singleton, aunque el perfil lo desactive. La política `mcpPolicy.context7` y `mcpPolicy.omoBuiltinsDisabled` de `profiles/gabo/integration-manifest.json` exige un único Context7 de OmO y su desactivación en el builtin, sin perder la capacidad; el runtime nativo no emite el builtin y el validador falla si aparece un Context7 duplicado.",
-    futureEvidence: "`profiles/gabo/opencode/rigel-v2-native-builtin-mcps.mjs` (context7 no emitido, política); `profiles/gabo/integration-manifest.json` (mcpPolicy.context7 singleton); `profiles/gabo/validate-profile.mjs` (rechaza Context7 duplicado); `profiles/gabo/omo.jsonc` (disabled_mcps)",
+      "El MCP remoto tier-1 `context7` de `packages/omo-opencode/src/mcp/context7.ts` se migra como builtin oficial registrado nativamente con `context.mcp.transform` (`createContext7McpConfig` y `registerNativeBuiltinMcps` en `rigel-v2-native-builtin-mcps.mjs`), bajo una politica exclusiva viva: si el host ya sirve un `context7` externo la colision gana y el builtin no se emite; si no existe, el builtin se emite. La instalacion limpia NO siembra `context7` en `disabled_mcps`, para que el runtime reconcilie en cada setup y nunca queden cero ni dos Context7; solo se respeta un `disabled_mcps` que el usuario ya haya elegido en una configuracion existente. La clave opcional se lee de `CONTEXT7_API_KEY` como cabecera bearer y nunca se registra ni se expone.",
+    futureEvidence: "`profiles/gabo/opencode/rigel-v2-native-builtin-mcps.mjs` (builtin context7 + politica exclusiva); `profiles/gabo/opencode/rigel-v2-native-builtin-mcps.test.mjs` (positivo/negativo/transicion); `profiles/gabo/rigel-v2-user-install-config-bootstrap.test.mjs` (el seed no lo deshabilita); `profiles/gabo/qa-v2-builtin-mcps.mjs` (vivo `/api/mcp`); `profiles/gabo/integration-manifest.json` (mcpPolicy.omoBuiltinsRetained)",
   },
   "grep-app": {
     classification: "Migrar",

@@ -28,8 +28,8 @@
     "optIn": ["docker", "github", "postgres"],
     "optInSecurity": ["tide"],
     "excluded": ["openrouter"],
-    "omoBuiltinsRetained": ["grep_app", "lsp"],
-    "omoBuiltinsDisabled": ["context7"],
+    "omoBuiltinsRetained": ["grep_app", "lsp", "context7"],
+    "omoBuiltinsDisabled": [],
     "externalConfigurationRequired": ["context7", "playwright", "obsidian"]
   },
   "skillPolicy": {

@@ -29,6 +29,7 @@ import {
   resolveRuntimeNotificationOptions,
 } from "./rigel-v2-runtime-materialize.mjs"
 import { registerCompanionCliPlugin, removeRigelCliEntries } from "./notification-activation-config.mjs"
+import { renderCleanInstallProfile } from "./rigel-v2-clean-install-profile.mjs"
 import {
   beginLifecycleTransaction,
   failAt,
@@ -194,6 +195,20 @@ function persistEditableProfile(home, profileSource) {
 }
 
 /**
+ * Render the clean-install product defaults into the just-seeded editable
+ * profile: Ultrawork off, and NO baked Context7 decision. Whether the builtin
+ * Context7 is live is decided by the runtime on every setup (an external
+ * Context7 in the user's OpenCode config wins by name collision; the builtin is
+ * emitted when none exists). Runs BEFORE the manifest builder reads the profile.
+ * Clean install only: an existing profile is never rewritten, so a user's own
+ * `disabled_mcps` choice survives.
+ */
+function applyCleanInstallProfilePolicy(profileFile) {
+  const profile = JSON.parse(fs.readFileSync(profileFile, "utf8"))
+  writeTextAtomic(profileFile, `${JSON.stringify(renderCleanInstallProfile(profile), null, 2)}\n`)
+}
+
+/**
  * Read the `agents` block of a generated `agent-manifest.mjs` WITHOUT executing
  * it. The builder writes a single comment line followed by
  * `export default <json>`, so the JSON payload after the marker is parsed
@@ -232,6 +247,33 @@ function seedFallbackModels(chain) {
 }
 
 /**
+ * The head model to seed for an agent record: the manifest's own
+ * `model`/`variant` when present, otherwise the first rung of the record's
+ * canonical chain. The plugin emits records without a resolved model for
+ * explicitly-gated coordinators (Prometheus); their chain head is the product
+ * default. Returns undefined when neither source exists (plan/build/judge).
+ */
+function seedHeadModel(record) {
+  if (typeof record.model === "string" && record.model) {
+    return {
+      model: record.model,
+      variant: typeof record.variant === "string" && record.variant ? record.variant : undefined,
+    }
+  }
+  const chain = record.chain
+  if (!Array.isArray(chain) || chain.length === 0) return undefined
+  const head = chain[0]
+  if (!head || typeof head !== "object" || Array.isArray(head)) return undefined
+  if (typeof head.model !== "string" || !head.model) return undefined
+  const providers = Array.isArray(head.providers) ? head.providers : []
+  const provider = providers.find((entry) => typeof entry === "string" && entry)
+  return {
+    model: provider ? `${provider}/${head.model}` : head.model,
+    variant: typeof head.variant === "string" && head.variant ? head.variant : undefined,
+  }
+}
+
+/**
  * Seed each agent's product-default model from the GENERATED manifest into the
  * freshly created editable profile (`<home>/.omo/omo.jsonc`), under top-level
  * `agents.<id>`: the head `model` + `variant`, plus the rest of the manifest's
@@ -247,14 +289,14 @@ function seedAgentProductDefaults(profileFile, manifestAgents) {
   let seeded = 0
   for (const [id, record] of Object.entries(manifestAgents)) {
     if (!record || typeof record !== "object" || Array.isArray(record)) continue
-    const model = typeof record.model === "string" && record.model ? record.model : undefined
-    if (!model) continue
+    const head = seedHeadModel(record)
+    if (!head) continue
     const existing = agents[id] && typeof agents[id] === "object" && !Array.isArray(agents[id]) ? agents[id] : {}
     const fallbackModels = seedFallbackModels(record.chain)
     agents[id] = {
       ...existing,
-      model,
-      ...(typeof record.variant === "string" && record.variant ? { variant: record.variant } : {}),
+      model: head.model,
+      ...(head.variant ? { variant: head.variant } : {}),
       ...(fallbackModels ? { fallback_models: fallbackModels } : {}),
     }
     seeded += 1
@@ -287,11 +329,16 @@ function generateAgentManifest({ versionDir, home, configFile }) {
   // invalid JSON still fails where it is parsed. The surrounding transaction
   // restores the absent state on rollback.
   if (!fs.existsSync(configFile)) writeJsonAtomic(configFile, {})
+  // CLEAN install only: render the product defaults (Ultrawork off; no baked
+  // Context7 decision) into the just-seeded profile BEFORE the builder reads it.
+  // Context7 exclusivity is decided LIVE by the runtime on every setup. An
+  // existing profile is never rewritten (createdProfile is false on reinstall).
+  if (createdProfile) applyCleanInstallProfilePolicy(profileFile)
   const generated = spawnSync(bunBin, [
     path.join(sourceRoot, "profiles/gabo/build-target-agent-manifest.mjs"),
     "--input", configFile, "--output", output,
     "--selection", selectionFile, "--judge", judgeFile,
-    "--directory", home, "--profile-root", home,
+    "--profile-root", home,
   ], {
     cwd: sourceRoot,
     env: { ...process.env, XDG_CONFIG_HOME: path.dirname(path.dirname(configFile)), OMO_PROFILE: "gabo", OMO_DISABLE_PROCESS_CLEANUP: "1" },

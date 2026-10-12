@@ -14,10 +14,11 @@
 // produce LSP diagnostics". The V2 host therefore has NO LSP tools, and the V1
 // `lsp` builtin MCP must be registered natively through `context.mcp.transform`
 // exactly as V1 registered it through the plugin config. `grep_app` is likewise
-// absent from the host and is registered as the same remote server. The
-// `context7` builtin stays disabled (the profile owns an external singleton) and
-// `websearch` is host-provided in V2 (`context.websearch`), so neither is
-// registered here.
+// absent from the host and is registered as the same remote server. `context7`
+// is registered as the official remote server under an exclusive policy: the
+// profile's live `disabled_mcps` (seeded from the user's OpenCode config) and a
+// host name collision both suppress the builtin, so exactly one Context7 is ever
+// live. `websearch` is host-provided in V2 (`context.websearch`).
 //
 // The deployed runtime cannot import TypeScript from `packages/`, so every
 // helper above is ported rather than imported. The repo root (needed to locate
@@ -262,18 +263,54 @@ export function createLspMcpConfig(options = {}) {
 
 export const GREP_APP_MCP = { type: "remote", url: "https://mcp.grep.app", disabled: false, oauth: false }
 
-// Port of the `createBuiltinMcps` policy for the two OmO builtins the profile
-// retains (`mcpPolicy.omoBuiltinsRetained`). `websearch` is host-provided in V2
-// and `context7` is disabled by policy, so neither is emitted.
+export const CONTEXT7_MCP_NAME = "context7"
+
+// Port of `normalizeContext7ApiKey` from `packages/omo-opencode/src/mcp/context7.ts`.
+// The key is optional: an absent, empty, or placeholder value is treated as no
+// key at all, so the builtin works anonymously without emitting a fake header.
+export function normalizeContext7ApiKey(value) {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (trimmed === "") return null
+  const normalized = trimmed.toLowerCase().replace(/[<>"'`]/g, "").replace(/[\s_-]+/g, " ")
+  if (normalized.length === 0 || normalized === "your api key") return null
+  return trimmed
+}
+
+// Port of `createContext7Config`: the official tier-1 Context7 remote server.
+// The optional API key is read from the LIVE environment and passed as a bearer
+// header; it is never logged, returned, or persisted, so the inventory can name
+// the server without exposing the credential.
+export function createContext7McpConfig(env = process.env) {
+  const apiKey = normalizeContext7ApiKey(env?.CONTEXT7_API_KEY)
+  return {
+    type: "remote",
+    url: "https://mcp.context7.com/mcp",
+    disabled: false,
+    oauth: false,
+    ...(apiKey ? { headers: { Authorization: `Bearer ${apiKey}` } } : {}),
+  }
+}
+
+// Port of the `createBuiltinMcps` policy for the OmO builtins the profile
+// retains (`mcpPolicy.omoBuiltinsRetained`). `websearch` is host-provided in V2.
+// Context7 ownership is the RUNTIME's: the installer NEVER seeds `context7` into
+// `disabled_mcps`, so the builtin is emitted unless the profile explicitly
+// disables it (an existing user `disabled_mcps` choice) or the host already
+// exposes a `context7` server (name collision preserved), keeping exactly one
+// Context7 live across restarts.
 export function createBuiltinMcpConfigs(options = {}) {
   const disabled = new Set(Array.isArray(options.disabledMcps) ? options.disabledMcps : [])
-  const retained = Array.isArray(options.retained) ? options.retained : [GREP_APP_MCP_NAME, LSP_MCP_NAME]
+  const retained = Array.isArray(options.retained) ? options.retained : [GREP_APP_MCP_NAME, LSP_MCP_NAME, CONTEXT7_MCP_NAME]
   const configs = {}
   if (retained.includes(GREP_APP_MCP_NAME) && !disabled.has(GREP_APP_MCP_NAME)) {
     configs[GREP_APP_MCP_NAME] = { ...GREP_APP_MCP }
   }
   if (retained.includes(LSP_MCP_NAME) && !disabled.has(LSP_MCP_NAME)) {
     configs[LSP_MCP_NAME] = createLspMcpConfig(options)
+  }
+  if (retained.includes(CONTEXT7_MCP_NAME) && !disabled.has(CONTEXT7_MCP_NAME)) {
+    configs[CONTEXT7_MCP_NAME] = createContext7McpConfig(options.env ?? process.env)
   }
   return configs
 }
@@ -283,8 +320,14 @@ export function createBuiltinMcpConfigs(options = {}) {
 export async function registerNativeBuiltinMcps(context, options = {}) {
   const registered = []
   const mcpDomain = context?.mcp
-  if (!mcpDomain || typeof mcpDomain.transform !== "function") return { registered, dispose: undefined }
+  if (!mcpDomain || typeof mcpDomain.transform !== "function") return { registered, planned: [], dispose: undefined }
   const configs = createBuiltinMcpConfigs(options)
+  // `planned` is the policy decision (synchronously computed, and the reliable
+  // value in the runtime log). `registered` is the set this call establishes
+  // synchronously; it may be empty because the host applies the mcp transform
+  // asynchronously, so the authoritative LIVE check is the host inventory
+  // (/api/mcp). Both are names only, never credentials.
+  const planned = Object.keys(configs)
   const registration = await mcpDomain.transform((collection) => {
     for (const [name, config] of Object.entries(configs)) {
       if (typeof collection?.get === "function" && collection.get(name)) continue
@@ -293,5 +336,5 @@ export async function registerNativeBuiltinMcps(context, options = {}) {
       registered.push(name)
     }
   })
-  return { registered, dispose: registration?.dispose }
+  return { registered, planned, dispose: registration?.dispose }
 }
