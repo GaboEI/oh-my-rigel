@@ -51,8 +51,10 @@ describe("native V2 runtime boundary against the V1 OmO surfaces", () => {
 
   test("#given the profile manifest #then the CLI reduction and the MCP retention policy are declared", () => {
     expect(manifest.platform.installation).toBe("manual-after-isolated-acceptance")
-    expect(manifest.mcpPolicy.omoBuiltinsRetained).toEqual(expect.arrayContaining(["grep_app", "lsp"]))
-    expect(manifest.mcpPolicy.omoBuiltinsDisabled).toContain("context7")
+    expect(manifest.mcpPolicy.omoBuiltinsRetained).toEqual(expect.arrayContaining(["grep_app", "lsp", "context7"]))
+    // Context7 is decided dynamically (host collision / live disabled_mcps), so it
+    // is retained but never statically disabled.
+    expect(manifest.mcpPolicy.omoBuiltinsDisabled).not.toContain("context7")
     expect(manifest.nonGoals.length).toBeGreaterThan(0)
   })
 

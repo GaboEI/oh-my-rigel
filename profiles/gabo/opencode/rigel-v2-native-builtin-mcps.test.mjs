@@ -3,11 +3,14 @@ import { homedir } from "node:os"
 import path from "node:path"
 
 import {
+  CONTEXT7_MCP_NAME,
   GREP_APP_MCP,
   createAncestorCliCandidates,
   createBuiltinMcpConfigs,
+  createContext7McpConfig,
   createLspMcpConfig,
   hasCliSuffix,
+  normalizeContext7ApiKey,
   registerNativeBuiltinMcps,
   resolveOpenCodeConfigDir,
   resolveRuntimeExecutable,
@@ -152,9 +155,101 @@ describe("native builtin MCP port", () => {
       expect(Object.keys(configs)).toEqual(["grep_app"])
     })
 
-    test("#then an absent retained list defaults to both retained builtins", () => {
+    test("#then an absent retained list defaults to every retained builtin", () => {
       const configs = createBuiltinMcpConfigs({ disabledMcps: [], repoRoot: REPO, cwd: "/w", configDir: "/c", exists: layout({ dist: true }).exists, readFile: layout({ dist: true }).readFile, resolveExecutable: available })
-      expect(Object.keys(configs).sort()).toEqual(["grep_app", "lsp"])
+      expect(Object.keys(configs).sort()).toEqual(["context7", "grep_app", "lsp"])
+    })
+  })
+
+  describe("#given the exclusive Context7 policy #when the profile retains it and has not disabled it #then the official builtin is emitted", () => {
+    test("#then the config matches the V1 remote definition and carries no key header", () => {
+      const configs = createBuiltinMcpConfigs({ disabledMcps: [], retained: ["grep_app", "lsp", "context7"], env: {}, repoRoot: REPO, cwd: "/w", configDir: "/c", exists: layout({ dist: true }).exists, readFile: layout({ dist: true }).readFile, resolveExecutable: available })
+      expect(configs[CONTEXT7_MCP_NAME]).toEqual({ type: "remote", url: "https://mcp.context7.com/mcp", disabled: false, oauth: false })
+    })
+
+    test("#then an optional CONTEXT7_API_KEY becomes a bearer header and appears nowhere else in the config", () => {
+      const config = createContext7McpConfig({ CONTEXT7_API_KEY: "ctx7-secret-value" })
+      expect(config.headers).toEqual({ Authorization: "Bearer ctx7-secret-value" })
+      expect(config.url).toBe("https://mcp.context7.com/mcp")
+      // The credential lives ONLY in the Authorization header: every other field
+      // is serialized without it.
+      const { headers, ...rest } = config
+      expect(JSON.stringify(rest)).not.toContain("ctx7-secret-value")
+    })
+
+    test("#then absent, empty, and placeholder keys emit no header", () => {
+      expect(createContext7McpConfig({}).headers).toBeUndefined()
+      expect(createContext7McpConfig({ CONTEXT7_API_KEY: "   " }).headers).toBeUndefined()
+      expect(createContext7McpConfig({ CONTEXT7_API_KEY: "your api key" }).headers).toBeUndefined()
+      expect(normalizeContext7ApiKey(undefined)).toBeNull()
+      expect(normalizeContext7ApiKey("  real  ")).toBe("real")
+      // Punctuation-only values normalize to nothing and must not become a header.
+      expect(normalizeContext7ApiKey('""')).toBeNull()
+      expect(normalizeContext7ApiKey("<>")).toBeNull()
+      expect(createContext7McpConfig({ CONTEXT7_API_KEY: '""' }).headers).toBeUndefined()
+    })
+  })
+
+  describe("#given the exclusive Context7 policy #when the profile disables it or the host already serves it #then the builtin is omitted", () => {
+    test("#then a disabled context7 is not emitted", () => {
+      const configs = createBuiltinMcpConfigs({ disabledMcps: ["context7"], retained: ["grep_app", "lsp", "context7"], env: {}, repoRoot: REPO, cwd: "/w", configDir: "/c", exists: layout({ dist: true }).exists, readFile: layout({ dist: true }).readFile, resolveExecutable: available })
+      expect(configs[CONTEXT7_MCP_NAME]).toBeUndefined()
+    })
+
+    test("#then a non-retained context7 is not emitted", () => {
+      const configs = createBuiltinMcpConfigs({ disabledMcps: [], retained: ["grep_app", "lsp"], env: {}, repoRoot: REPO, cwd: "/w", configDir: "/c", exists: layout({ dist: true }).exists, readFile: layout({ dist: true }).readFile, resolveExecutable: available })
+      expect(configs[CONTEXT7_MCP_NAME]).toBeUndefined()
+    })
+
+    test("#then an external Context7 in the host collection is preserved and the builtin is skipped", async () => {
+      const collection = fakeCollection(["context7"])
+      collection.map.get("context7").url = "https://mcp.context7.com/mcp"
+      const result = await registerNativeBuiltinMcps({ mcp: fakeDomain(collection) }, { retained: ["grep_app", "lsp", "context7"], disabledMcps: [], env: { CONTEXT7_API_KEY: "ctx7-secret-value" }, repoRoot: REPO, cwd: "/w", configDir: "/c", exists: layout({ dist: true }).exists, readFile: layout({ dist: true }).readFile, resolveExecutable: available })
+      expect(result.registered).not.toContain(CONTEXT7_MCP_NAME)
+      expect(collection.map.get("context7").url).toBe("https://mcp.context7.com/mcp")
+      expect([...collection.map.values()].filter((entry) => typeof entry.url === "string" && entry.url.includes("mcp.context7.com"))).toHaveLength(1)
+    })
+  })
+
+  describe("#given the exclusive Context7 policy #when no external server exists #then exactly one builtin Context7 is registered", () => {
+    test("#then the inventory names context7 once and exposes no credential", async () => {
+      const collection = fakeCollection()
+      const result = await registerNativeBuiltinMcps({ mcp: fakeDomain(collection) }, { retained: ["grep_app", "lsp", "context7"], disabledMcps: [], env: { CONTEXT7_API_KEY: "ctx7-secret-value" }, repoRoot: REPO, cwd: "/w", configDir: "/c", exists: layout({ dist: true }).exists, readFile: layout({ dist: true }).readFile, resolveExecutable: available })
+      // The returned inventory is names only; the credential never enters it.
+      expect(result.registered.slice().sort()).toEqual(["context7", "grep_app", "lsp"])
+      expect(collection.map.get(CONTEXT7_MCP_NAME).headers).toEqual({ Authorization: "Bearer ctx7-secret-value" })
+    })
+  })
+
+  describe("#given the exclusive Context7 policy #when the user's Context7 config changes across restarts #then the builtin self-reconciles to exactly one", () => {
+    const options = () => ({ retained: ["grep_app", "lsp", "context7"], disabledMcps: [], env: {}, repoRoot: REPO, cwd: "/w", configDir: "/c", exists: layout({ dist: true }).exists, readFile: layout({ dist: true }).readFile, resolveExecutable: available })
+    // One registration pass against a host that reflects the user's CURRENT
+    // OpenCode config (the builtin never persists between setups).
+    async function registerAgainst(userServers) {
+      const host = new Map(userServers)
+      const collection = { get: (name) => host.get(name), set: (name, config) => host.set(name, config) }
+      const result = await registerNativeBuiltinMcps({ mcp: fakeDomain(collection) }, options())
+      const liveContext7 = [...host.values()].filter((entry) => typeof entry.url === "string" && entry.url.includes("mcp.context7.com"))
+      return { result, host, liveContext7 }
+    }
+
+    test("#then a declared external Context7 wins and the builtin is omitted (exactly one)", async () => {
+      const { result, liveContext7 } = await registerAgainst([["context7", { type: "remote", url: "https://mcp.context7.com/mcp" }]])
+      expect(result.registered).not.toContain("context7")
+      expect(liveContext7).toHaveLength(1)
+    })
+
+    test("#then after the external is removed, the next setup emits the builtin (exactly one, never zero)", async () => {
+      const { result, host, liveContext7 } = await registerAgainst([])
+      expect(result.registered).toContain("context7")
+      expect(host.get("context7").url).toBe("https://mcp.context7.com/mcp")
+      expect(liveContext7).toHaveLength(1)
+    })
+
+    test("#then after an external is added, the next setup omits the builtin (exactly one, never two)", async () => {
+      const { result, liveContext7 } = await registerAgainst([["context7", { type: "remote", url: "https://mcp.context7.com/mcp" }]])
+      expect(result.registered).not.toContain("context7")
+      expect(liveContext7).toHaveLength(1)
     })
   })
 
@@ -183,8 +278,8 @@ describe("native builtin MCP port", () => {
     })
 
     test("#then a host without mcp.transform degrades to an inert registration", async () => {
-      expect(await registerNativeBuiltinMcps({}, {})).toEqual({ registered: [], dispose: undefined })
-      expect(await registerNativeBuiltinMcps({ mcp: {} }, {})).toEqual({ registered: [], dispose: undefined })
+      expect(await registerNativeBuiltinMcps({}, {})).toEqual({ registered: [], planned: [], dispose: undefined })
+      expect(await registerNativeBuiltinMcps({ mcp: {} }, {})).toEqual({ registered: [], planned: [], dispose: undefined })
     })
   })
 

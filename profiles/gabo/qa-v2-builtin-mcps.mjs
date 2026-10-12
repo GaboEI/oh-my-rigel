@@ -1,14 +1,20 @@
 #!/usr/bin/env bun
 /**
  * Live contract: the native tier-1 builtin MCP servers retained by the profile
- * (`mcpPolicy.omoBuiltinsRetained` = grep_app, lsp).
+ * (`mcpPolicy.omoBuiltinsRetained` = grep_app, lsp, context7).
  *
  * The official V2 migration guide states V2 "does not run language servers,
  * expose LSP tools, or produce LSP diagnostics", and the V2 host does not list
  * `grep_app`. The native runtime therefore registers both through
  * `context.mcp.transform` (see `opencode/rigel-v2-native-builtin-mcps.mjs`).
- * This contract drives the live laboratory and asserts the servers are
- * registered, connected, exposed and EXECUTE with real results.
+ * `context7` is registered as the official remote server under an exclusive
+ * policy: the builtin is emitted only when the profile retains it and has not
+ * disabled it, and a host name collision is preserved, so exactly one Context7
+ * is ever live. The dedicated Context7 exclusivity gate (both scenarios plus the
+ * remove/add transitions after a restart) lives in
+ * `qa-v2-builtin-context7-live.mjs`. This contract drives the live laboratory and
+ * asserts the servers are registered, connected, exposed and EXECUTE with real
+ * results.
  *
  * Surface: the isolated V2 laboratory (`opencode-v2-lab.service`) over its HTTP
  * API. This file never spawns OpenCode, never uses Docker and never addresses
