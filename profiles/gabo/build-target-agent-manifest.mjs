@@ -42,6 +42,7 @@ import { AGENT_MODEL_REQUIREMENTS } from "../../packages/omo-opencode/src/shared
 import { getFirstFallbackModel } from "../../packages/omo-opencode/src/agents/builtin-agents/model-resolution.ts"
 import { getAgentConfigKey, getAgentDisplayName } from "../../packages/omo-opencode/src/shared/agent-display-names.ts"
 import { sortAgentsByCanonicalOrder, canonicalAgentKey } from "./opencode/rigel-v2-native-agent-order.mjs"
+import { agentChain } from "./opencode/rigel-v2-native-model-chains.mjs"
 import {
   deriveNativeGates,
   deriveNativeMinOpenCodeVersion,
@@ -239,9 +240,14 @@ export async function buildTargetAgentManifest(options = {}) {
       // Manifest order must be canonical at the source: core agents come first in
       // Sisyphus -> Hephaestus -> Prometheus -> Atlas order; every other key
       // keeps its insertion order, so the judge stays in the remainder tail.
+      // SEED-ONLY: each record also carries its ordered canonical `chain` so the
+      // installer can materialize the FULL fallback chain into the user's live
+      // `~/.omo/omo.jsonc`. The runtime NEVER consults this field (it resolves
+      // models from the live JSON); the manifest only seeds.
       const orderedSelected = {}
       for (const { id } of sortAgentsByCanonicalOrder(Object.keys(selected).map((key) => ({ id: key, name: key })))) {
-        orderedSelected[id] = selected[id]
+        const chain = agentChain(id)
+        orderedSelected[id] = chain ? { ...selected[id], chain } : selected[id]
       }
 
       const gates = deriveNativeGates(pluginView)

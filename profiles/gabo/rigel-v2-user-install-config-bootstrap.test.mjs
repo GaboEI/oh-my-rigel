@@ -232,6 +232,14 @@ describe("installer editable OmO profile: seeded on clean install, never overwri
         expect(typeof seededProfile.agents?.oracle?.model).toBe("string")
         expect(seededProfile.agents.oracle.model.length).toBeGreaterThan(0)
         expect(typeof seededProfile.agents?.explore?.model).toBe("string")
+        // The FULL ordered chain is seeded, not just the head: the remaining
+        // canonical rungs land in `fallback_models`, each keeping its providers,
+        // model and variant, so the runtime can walk them in order when the head
+        // model is unavailable. The manifest is never consulted for models.
+        expect(Array.isArray(seededProfile.agents.oracle.fallback_models)).toBe(true)
+        expect(seededProfile.agents.oracle.fallback_models.length).toBeGreaterThan(0)
+        expect(seededProfile.agents.oracle.fallback_models[0]).toMatchObject({ model: expect.any(String) })
+        expect(Array.isArray(seededProfile.agents.oracle.fallback_models[0].providers)).toBe(true)
         // The tracked profile's non-model content is preserved, not replaced.
         expect(seededProfile.profiles.gabo).toBeDefined()
         // The Judge ships with no manifest model, so it is never seeded.
@@ -245,6 +253,10 @@ describe("installer editable OmO profile: seeded on clean install, never overwri
         // migration engine may append its own `_migrations` ledger while the
         // profile is read, but it must never clobber the operator's edit.
         expect(JSON.parse(afterEdit).agents.oracle.model).toBe("opencode-go/deepseek-v4-pro")
+        // Product defaults (the head model AND its fallback chain) are seeded ONCE
+        // on the clean install; a reinstall must not inject the manifest's other
+        // agent models or fallback rungs into an existing file.
+        expect(JSON.parse(afterEdit).agents.oracle.fallback_models).toBeUndefined()
         // Product defaults are seeded ONCE on the clean install; a reinstall
         // must not inject the manifest's other agent models into the existing
         // file. `explore` is absent from the operator's edit and stays absent.

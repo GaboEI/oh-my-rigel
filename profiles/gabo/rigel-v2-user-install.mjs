@@ -210,12 +210,36 @@ function readManifestAgents(manifestFile) {
 }
 
 /**
+ * The ordered `fallback_models` for an agent: the manifest's canonical chain
+ * WITHOUT its head (the head is seeded separately as `model`), preserving each
+ * rung's providers, model and variant. Returns undefined when there is no tail.
+ */
+function seedFallbackModels(chain) {
+  if (!Array.isArray(chain) || chain.length <= 1) return undefined
+  const rungs = chain.slice(1)
+    .map((rung) => {
+      if (!rung || typeof rung !== "object" || Array.isArray(rung)) return undefined
+      const model = typeof rung.model === "string" && rung.model ? rung.model : undefined
+      if (!model) return undefined
+      return {
+        ...(Array.isArray(rung.providers) && rung.providers.length > 0 ? { providers: [...rung.providers] } : {}),
+        model,
+        ...(typeof rung.variant === "string" && rung.variant ? { variant: rung.variant } : {}),
+      }
+    })
+    .filter(Boolean)
+  return rungs.length > 0 ? rungs : undefined
+}
+
+/**
  * Seed each agent's product-default model from the GENERATED manifest into the
  * freshly created editable profile (`<home>/.omo/omo.jsonc`), under top-level
- * `agents.<id>` (model + variant). Only a CLEAN install created the file, so an
- * existing user file is never rewritten; every other field and entry is
- * preserved, and an agent with no manifest model is left untouched. Written back
- * atomically as pretty JSON.
+ * `agents.<id>`: the head `model` + `variant`, plus the rest of the manifest's
+ * ordered canonical chain as `fallback_models`. The runtime walks that JSON chain
+ * in order when a model fails or is unavailable; the manifest is NEVER consulted
+ * at runtime. Only a CLEAN install created the file, so an existing user file is
+ * never rewritten; every other field and entry is preserved, and an agent with no
+ * manifest model is left untouched. Written back atomically as pretty JSON.
  */
 function seedAgentProductDefaults(profileFile, manifestAgents) {
   const profile = JSON.parse(fs.readFileSync(profileFile, "utf8"))
@@ -226,10 +250,12 @@ function seedAgentProductDefaults(profileFile, manifestAgents) {
     const model = typeof record.model === "string" && record.model ? record.model : undefined
     if (!model) continue
     const existing = agents[id] && typeof agents[id] === "object" && !Array.isArray(agents[id]) ? agents[id] : {}
+    const fallbackModels = seedFallbackModels(record.chain)
     agents[id] = {
       ...existing,
       model,
       ...(typeof record.variant === "string" && record.variant ? { variant: record.variant } : {}),
+      ...(fallbackModels ? { fallback_models: fallbackModels } : {}),
     }
     seeded += 1
   }

@@ -124,9 +124,20 @@ test("proactive resolution still walks the chain for an agent with no explicit m
 // NO resolved ref, so the caller registers it with no model and V2 inherits the
 // OpenCode global.
 test("JSON-only resolution: chainFallback:false yields no entry for an agent with no explicit model", () => {
+  // Decoy manifest: the record carries BOTH a `model` and a seed `chain`, and
+  // `oracle` has a real built-in canonical chain. The inventory even serves a
+  // rung of that canonical chain. None of it may be consulted on the runtime
+  // path: the agent has no explicit JSON model, so there is NO resolved ref and
+  // the caller registers it with no model (V2 inherits the global).
   const manifest = {
     agents: {
-      oracle: { name: "Oracle", mode: "subagent", model: "openai/gpt-5.6-sol", variant: "xhigh" },
+      oracle: {
+        name: "Oracle",
+        mode: "subagent",
+        model: "openai/gpt-5.6-sol",
+        variant: "xhigh",
+        chain: [{ providers: ["openai"], model: "gpt-5.6-sol", variant: "xhigh" }],
+      },
     },
   }
   const inventory = [{ providerID: "anthropic", id: "claude-opus-5-5", enabled: true }]

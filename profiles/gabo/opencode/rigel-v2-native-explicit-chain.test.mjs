@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test"
-import { agentOverrideFor, categoryIsExplicit, resolveAuthoritativeAgentOverrides, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
-import { agentChain, categoryChain } from "./rigel-v2-native-model-chains.mjs"
+import { agentOverrideChain, agentOverrideFor, categoryIsExplicit, resolveAgentDelegationModel, resolveAuthoritativeAgentOverrides, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
+import { categoryChain } from "./rigel-v2-native-model-chains.mjs"
 
 // Upstream 5a9bb74a4: an explicit user model suppresses the built-in chain.
 
@@ -36,15 +36,34 @@ test("an explicit agent model suppresses the built-in chain", () => {
   expect(resolveEffectiveChain({ agent: "Sisyphus - ultraworker", agentOverrides })).toEqual([])
 })
 
-test("an agent fallback_models chain replaces the built-in chain even without a pinned model", () => {
-  const agentOverrides = { oracle: { fallback_models: ["openai/gpt-6-astra(xhigh)"] } }
+test("an agent fallback_models chain is the effective chain, in the user's order", () => {
+  const agentOverrides = {
+    oracle: {
+      model: "opencode/nemotron-3-ultra-free",
+      fallback_models: ["openai/gpt-6-astra(xhigh)", { providers: ["deepseek"], model: "deepseek-flash" }],
+    },
+  }
   expect(resolveEffectiveChain({ agent: "oracle", agentOverrides })).toEqual([
     { providers: ["openai"], model: "gpt-6-astra", variant: "xhigh" },
+    { providers: ["deepseek"], model: "deepseek-flash" },
   ])
 })
 
-test("an agent with no override keeps the built-in chain", () => {
-  expect(resolveEffectiveChain({ agent: "oracle", agentOverrides: {} })).toEqual(agentChain("oracle"))
+// JSON-ONLY mutant: the effective agent chain comes ONLY from `~/.omo/omo.jsonc`.
+// The built-in canonical chain (e.g. `agentChain("oracle")`, `agentChain("explore")`)
+// must be dead at runtime, so a decoy canonical agent yields an EMPTY chain when
+// the JSON has no entry for it - the session then inherits the OpenCode global
+// (never `exo-free` resurrected from a baked chain, never the canonical rung).
+test("an agent with no JSON override inherits the global (empty chain, canonical chain never consulted)", () => {
+  expect(resolveEffectiveChain({ agent: "oracle", agentOverrides: {} })).toEqual([])
+  expect(resolveEffectiveChain({ agent: "explore", agentOverrides: {} })).toEqual([])
+  expect(resolveEffectiveChain({ agent: "librarian", agentOverrides: {} })).toEqual([])
+})
+
+test("an agent with an empty JSON entry inherits the global (empty chain)", () => {
+  expect(resolveEffectiveChain({ agent: "oracle", agentOverrides: { oracle: {} } })).toEqual([])
+  // A display-cased JSON key with no model is still empty after canonicalization.
+  expect(resolveEffectiveChain({ agent: "oracle", agentOverrides: { "Oracle": { variant: "max" } } })).toEqual([])
 })
 
 test("isolation: an explicit session's chain does not affect a sibling session", () => {
@@ -113,4 +132,86 @@ test("resolveAuthoritativeAgentOverrides tolerates malformed sources without mut
   // never reach the frozen source.
   expect(chosen.explore).not.toBe(live.overrides.explore)
   expect(chosen.explore.models).not.toBe(live.overrides.explore.models)
+})
+
+// The agent JSON ordered chain (head + fallback_models) and its inventory walk.
+// This is the delegation-time model source: JSON-only, never the manifest.
+
+test("agentOverrideChain: an absent or model-less override yields no chain; a bare fallback_models is an explicit chain", () => {
+  expect(agentOverrideChain(undefined)).toEqual([])
+  expect(agentOverrideChain({})).toEqual([])
+  expect(agentOverrideChain({ variant: "max" })).toEqual([])
+  expect(agentOverrideChain({ fallback_models: ["openai/gpt-6-luna-fast(low)"] })).toEqual([
+    { providers: ["openai"], model: "gpt-6-luna-fast", variant: "low" },
+  ])
+})
+
+test("agentOverrideChain: the head keeps its variant and the fallback_models follow in order", () => {
+  const chain = agentOverrideChain({
+    model: "kimi-for-coding/kimi-for-coding-highspeed",
+    variant: "off",
+    fallback_models: [
+      { providers: ["openai"], model: "gpt-6-luna-fast", variant: "low" },
+      { providers: ["deepseek"], model: "deepseek-flash", variant: "max" },
+    ],
+  })
+  expect(chain).toEqual([
+    { providers: ["kimi-for-coding"], model: "kimi-for-coding-highspeed", variant: "off" },
+    { providers: ["openai"], model: "gpt-6-luna-fast", variant: "low" },
+    { providers: ["deepseek"], model: "deepseek-flash", variant: "max" },
+  ])
+})
+
+test("resolveAgentDelegationModel: an empty JSON override inherits the global", () => {
+  expect(resolveAgentDelegationModel(undefined, [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }])).toBeUndefined()
+  expect(resolveAgentDelegationModel({}, [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }])).toBeUndefined()
+})
+
+// RED->GREEN: the pinned head provider is absent from the live inventory, so the
+// child must start on the next reachable rung instead of the unavailable head.
+test("resolveAgentDelegationModel: an unavailable head falls through to the first available fallback rung", () => {
+  const override = {
+    model: "kimi-for-coding/kimi-for-coding-highspeed",
+    variant: "off",
+    fallback_models: [{ providers: ["openai"], model: "gpt-6-luna-fast", variant: "low" }],
+  }
+  const inventory = [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }]
+  expect(resolveAgentDelegationModel(override, inventory)).toEqual({ providerID: "openai", id: "gpt-6-luna-fast", variant: "low" })
+})
+
+test("resolveAgentDelegationModel: an available head is kept", () => {
+  const override = { model: "opencode/big-pickle" }
+  const inventory = [{ providerID: "opencode", id: "big-pickle", enabled: true }]
+  expect(resolveAgentDelegationModel(override, inventory)).toEqual({ providerID: "opencode", id: "big-pickle" })
+})
+
+// Contract: an exhausted explicit chain is NEVER downgraded to the global. With
+// no reachable rung the child must keep the CONFIGURED head so it fails AS
+// CONFIGURED, instead of silently inheriting the OpenCode global.
+test("resolveAgentDelegationModel: an exhausted explicit chain keeps the configured head (never the global)", () => {
+  const override = {
+    model: "kimi-for-coding/kimi-for-coding-highspeed",
+    variant: "off",
+    fallback_models: [{ providers: ["deepseek"], model: "deepseek-flash" }],
+  }
+  const inventory = [{ providerID: "opencode", id: "big-pickle", enabled: true }]
+  expect(resolveAgentDelegationModel(override, inventory)).toEqual({ providerID: "kimi-for-coding", id: "kimi-for-coding-highspeed", variant: "off" })
+})
+
+test("resolveAgentDelegationModel: a bare fallback_models chain is an explicit chain (first reachable rung; configured head when none)", () => {
+  const override = { fallback_models: [{ providers: ["openai"], model: "gpt-6-luna-fast", variant: "low" }] }
+  expect(resolveAgentDelegationModel(override, [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }]))
+    .toEqual({ providerID: "openai", id: "gpt-6-luna-fast", variant: "low" })
+  // No rung reachable -> keep the configured head, never undefined/global.
+  expect(resolveAgentDelegationModel(override, [{ providerID: "opencode", id: "big-pickle", enabled: true }]))
+    .toEqual({ providerID: "openai", id: "gpt-6-luna-fast", variant: "low" })
+})
+
+test("resolveAgentDelegationModel: an unreadable inventory keeps the configured head (never fails closed)", () => {
+  const override = { model: "kimi-for-coding/kimi-for-coding-highspeed", variant: "off" }
+  expect(resolveAgentDelegationModel(override, undefined)).toEqual({ providerID: "kimi-for-coding", id: "kimi-for-coding-highspeed", variant: "off" })
+})
+
+test("resolveAgentDelegationModel: a bare-id pin with an unreadable inventory keeps the configured head", () => {
+  expect(resolveAgentDelegationModel({ model: "not-a-provider-ref" }, undefined)).toEqual({ id: "not-a-provider-ref" })
 })

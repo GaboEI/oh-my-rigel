@@ -17,7 +17,7 @@ import {
   mergeCategories,
   resolveCategoryFromClients,
 } from "./rigel-v2-native-categories.mjs"
-import { agentOverrideFor, resolveAuthoritativeAgentOverrides, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
+import { agentOverrideFor, resolveAgentDelegationModel, resolveAuthoritativeAgentOverrides, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
 import { createNativeNoSisyphusGptEnforcement } from "./rigel-v2-native-no-sisyphus-gpt.mjs"
 import { isHephaestusAgentId } from "./rigel-v2-native-hephaestus.mjs"
 import fs from "node:fs"
@@ -38,7 +38,7 @@ import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-v
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
 import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeGates, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativeOpenclaw, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs } from "./rigel-v2-native-config.mjs"
-import { modelRef, registerNativeAgents } from "./rigel-v2-native-agents.mjs"
+import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
 import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
 import { createRuntimeHostSkillSource, registerNativeSkills, selectSkillsForChild, formatSkillInjection } from "./rigel-v2-native-skills.mjs"
 import { createSkillMcpManager, createSkillMcpToolDefinition, registerSkillMcpServers } from "./rigel-v2-native-skill-mcp.mjs"
@@ -129,20 +129,6 @@ export function buildExplicitAgentModels(agentOverrides) {
       .filter(([, override]) => typeof override?.model === "string" && override.model)
       .map(([id, override]) => [id, { model: override.model, variant: override.variant }]),
   )
-}
-
-/**
- * The `Model.Ref` for an agent the user pinned a model on (looked up in the
- * merged, live-wins override map), or `undefined` so the child inherits. V2 does
- * NOT apply an agent's registered `Agent.Info.model` to a created session's
- * request (probed live: the host dispatches the OpenCode config default
- * instead), so a pinned model MUST be passed explicitly on `session.create` or
- * the delegation would silently ignore the user's choice. A malformed ref yields
- * `undefined`, never a raw string.
- */
-export function pinnedAgentModelRef(agentOverrides, agent) {
-  const override = agentOverrideFor(agentOverrides, agent?.id ?? agent?.name)
-  return override?.model ? modelRef(override.model, override.variant) : undefined
 }
 
 /**
@@ -605,6 +591,18 @@ export default {
         }
         return undefined
       }
+    }
+    // The model a DELEGATED CHILD starts on. A category delegation uses the
+    // category's already inventory-resolved model. A named-agent delegation walks
+    // the agent's JSON ordered chain (`agents.<id>.model` + `.fallback_models`)
+    // against the live inventory and starts on the first reachable rung. Only an
+    // ABSENT or deliberately EMPTY agent entry inherits the OpenCode global; a
+    // configured but unreachable chain keeps its head and fails AS CONFIGURED,
+    // never silently on the global. The manifest is never consulted for models.
+    const resolveDelegationModel = async (category, agent) => {
+      if (category?.model) return category.model
+      const override = agentOverrideFor(agentOverrides, agent?.id ?? agent?.name)
+      return resolveAgentDelegationModel(override, await readAvailableModels())
     }
     // Upstream 5a9bb74a4: the EFFECTIVE chain for a session. An explicit user
     // model (category or agent) yields ONLY the user's `fallback_models` (empty
@@ -1433,7 +1431,7 @@ export default {
               agent,
               prompt: effectivePrompt,
               background: false,
-              model: category?.model ?? pinnedAgentModelRef(agentOverrides, agent),
+              model: await resolveDelegationModel(category, agent),
               parentSessionID,
               onChildSession: (sessionID, child) => {
                 childSessionIDs.add(sessionID)
@@ -1457,7 +1455,7 @@ export default {
             agent,
             category,
             subagentType: input.subagent_type,
-            model: category?.model ?? pinnedAgentModelRef(agentOverrides, agent),
+            model: await resolveDelegationModel(category, agent),
             modelKey: preSpawnModelKey(category, agent, agentOverrides),
             prompt: effectivePrompt,
             loadSkills: requestedSkills,

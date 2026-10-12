@@ -340,7 +340,24 @@ export async function drivePermissionGate(input) {
 // ---------------------------------------------------------------------------
 
 export async function driveReactiveFallback(input) {
-  return withIsolatedEnv(async () => {
+  return withIsolatedEnv(async (sandbox) => {
+    // The runtime resolves an agent's model chain ONLY from the live
+    // `~/.omo/omo.jsonc` (JSON-only contract); an agent with no entry inherits
+    // the OpenCode global and has no rung to advance to. A real install
+    // materializes each agent's ordered chain into that file, so seed the same
+    // shape under the isolated HOME: a head `model` plus the ordered
+    // `fallback_models` the reactive fallback walks.
+    writeFile(
+      path.join(sandbox, "home", ".omo", "omo.jsonc"),
+      `${JSON.stringify({
+        agents: {
+          [input.agent]: {
+            model: `${input.currentProvider}/${input.currentModel}`,
+            fallback_models: [{ providers: [input.rung.providerID], model: input.rung.model }],
+          },
+        },
+      }, null, 2)}\n`,
+    )
     const handle = await startEntrypoint({
       models: [{ providerID: input.rung.providerID, id: input.rung.model, enabled: true }],
     })
