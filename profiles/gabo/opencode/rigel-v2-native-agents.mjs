@@ -192,18 +192,22 @@ export function resolveProactiveAgentModels(agents, listModels, explicitAgentMod
   }
   for (const [id, definition] of Object.entries(agents)) {
     const source = definition && typeof definition === "object" ? definition : {}
-    const current = modelRef(source.model, source.variant)
-    const chain = agentChain(id)
     const explicitEntry = explicit?.get(id) ?? explicitByCanonical.get(canonicalAgentId(id))
     if (!chainFallback) {
-      // JSON-only: only an explicit user model produces a ref; the manifest
-      // `current` and the built-in chain are never consulted.
+      // JSON-only: only an explicit user model produces a ref. The manifest
+      // `model`, the record `chain`, and the built-in `agentChain` are never
+      // even evaluated on this path. The runtime always passes
+      // `chainFallback:false`, so no runtime registration can select a model
+      // from the manifest or the canonical chain.
       if (explicitEntry?.model) {
         const ref = modelRef(explicitEntry.model, explicitEntry.variant)
         if (ref) resolved.set(id, ref)
       }
       continue
     }
+    // Canonical-chain path (legacy default for direct callers only).
+    const current = modelRef(source.model, source.variant)
+    const chain = agentChain(id)
     if (explicitEntry?.model) {
       // The user's model is the pre-selection preference; the manifest model is
       // the last resort if the user ref is malformed.

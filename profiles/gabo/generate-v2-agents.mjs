@@ -158,6 +158,15 @@ try {
   // to HEAD, so the registered body and the reconciliation plan agree while no
   // other agent entry is touched.
   const fixedAgents = fixSisyphusAgentMap(orderedSelected)
+  // SEED-ONLY: attach each agent's ordered canonical chain so the installer can
+  // materialize the full fallback chain into the user's live `~/.omo/omo.jsonc`
+  // (parity with build-target-agent-manifest.mjs). The runtime NEVER consults
+  // this field; it resolves models from the live JSON.
+  const chainedAgents = {}
+  for (const [id, record] of Object.entries(fixedAgents)) {
+    const chain = agentChain(id)
+    chainedAgents[id] = chain ? { ...record, chain } : record
+  }
   const sisyphusPrompt = await bakeSisyphusPromptVariants(fixedAgents[SISYPHUS_AGENT_ID])
   const gates = deriveNativeGates(pluginView)
   // A V1 tool default can carry a hard global disable for a family the native
@@ -173,7 +182,7 @@ try {
   if (gates.hashline_edit) tools["hashline_edit"] = true
   const materialized = {
     defaultAgent: config.default_agent,
-    agents: fixedAgents,
+    agents: chainedAgents,
     metadata: {
       generatedBy: "Oh My Rigel V2 native runtime",
       profile: process.env.OMO_PROFILE || null,

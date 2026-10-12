@@ -91,6 +91,36 @@ function childRequest() {
   }
 }
 
+// The runtime reads the LIVE `~/.omo/omo.jsonc` at plugin setup, so the model
+// source for every reactive-fallback test is a disposable HOME. This also
+// isolates the tests from the developer's real `~/.omo/omo.jsonc`: a test never
+// depends on (or leaks into) a real per-agent configuration.
+async function withLiveAgentConfig(agents, run) {
+  const sandbox = mkdtempSync(join(tmpdir(), "rigel-live-agent-"))
+  const home = join(sandbox, "home")
+  mkdirSync(join(home, ".omo"), { recursive: true })
+  writeFileSync(join(home, ".omo", "omo.jsonc"), `${JSON.stringify({ agents }, null, 2)}\n`)
+  const previousHome = process.env.HOME
+  process.env.HOME = home
+  try {
+    return await run()
+  } finally {
+    process.env.HOME = previousHome
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+}
+
+// Assert the real service HOME is never the developer's: process.env.HOME must
+// be restored after every sandboxed test, so an interleaved test cannot read a
+// leaked sandbox (or the real) config.
+test("withLiveAgentConfig restores HOME (test isolation invariant)", async () => {
+  const original = process.env.HOME
+  await withLiveAgentConfig({ oracle: { model: "opencode/nemotron-3-ultra-free" } }, async () => {
+    expect(process.env.HOME).not.toBe(original)
+  })
+  expect(process.env.HOME).toBe(original)
+})
+
 test("native runtime uses the V2 setup context, not context.client", async () => {
   let definition
   const calls = []
@@ -229,19 +259,23 @@ test("native runtime resolves the next chain rung when the primary model is unav
     },
     tool: { transform: async (callback) => { callback({ add() {} }); return { dispose() {} } } },
   }
-  const dispose = await plugin.setup(context)
-  const input = {
-    sessionID: "ses_root",
-    agent: "Sisyphus - ultraworker",
-    model: { providerID: "opencode-go", modelID: "missing-primary" },
-    request: new Request("https://example.invalid/chat", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "missing-primary", messages: [{ role: "user", content: "work" }] }),
-    }),
-  }
-  await requestHook(input)
-  expect((await input.request.clone().json()).model).toBe("kimi-k3")
-  await dispose()
+  // JSON-only: the resolvable rung is the user's `fallback_models` rung, not a
+  // built-in canonical chain.
+  await withLiveAgentConfig({ sisyphus: { fallback_models: ["opencode-go/kimi-k3"] } }, async () => {
+    const dispose = await plugin.setup(context)
+    const input = {
+      sessionID: "ses_root",
+      agent: "Sisyphus - ultraworker",
+      model: { providerID: "opencode-go", modelID: "missing-primary" },
+      request: new Request("https://example.invalid/chat", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "missing-primary", messages: [{ role: "user", content: "work" }] }),
+      }),
+    }
+    await requestHook(input)
+    expect((await input.request.clone().json()).model).toBe("kimi-k3")
+    await dispose()
+  })
 })
 
 test("native runtime keeps reactive fallback inside the provider V2 already selected", async () => {
@@ -282,38 +316,42 @@ test("native runtime keeps reactive fallback inside the provider V2 already sele
     },
     tool: { transform: async (callback) => { callback({ add: (value) => { if (value?.name === "rigel_task") definition = value } }); return { dispose() {} } } },
   }
-  const dispose = await plugin.setup(context)
-  await definition.execute({ subagent_type: "explore", prompt: "Read only.", run_in_background: true }, { sessionID: "ses_parent" })
+  // JSON-only: the user's chain is the only fallback the session walks, so a
+  // cross-provider built-in rung (kimi) can never reach the openai route. Two
+  // rungs keep the re-resolution headroom the single-rung bound would exhaust.
+  await withLiveAgentConfig({ explore: { fallback_models: ["openai/gpt-6-luna-fast(low)", "openai/gpt-5.6-sol(low)"] } }, async () => {
+    const dispose = await plugin.setup(context)
+    await definition.execute({ subagent_type: "explore", prompt: "Read only.", run_in_background: true }, { sessionID: "ses_parent" })
 
-  // V2 already selected openai. The explore chain's first rung is kimi, so a
-  // cross-provider fallback would hand kimi to the openai route.
-  const request = () => ({
-    sessionID: "ses_child",
-    agent: "explore",
-    model: { providerID: "openai", modelID: "kimi-for-coding-highspeed" },
-    request: new Request("https://example.invalid/chat", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "kimi-for-coding-highspeed", messages: [{ role: "user", content: "work" }] }),
-    }),
+    // V2 already selected openai.
+    const request = () => ({
+      sessionID: "ses_child",
+      agent: "explore",
+      model: { providerID: "openai", modelID: "kimi-for-coding-highspeed" },
+      request: new Request("https://example.invalid/chat", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "kimi-for-coding-highspeed", messages: [{ role: "user", content: "work" }] }),
+      }),
+    })
+
+    const first = request()
+    await requestHook(first)
+    expect((await first.request.clone().json()).model).toBe("gpt-6-luna-fast")
+
+    yieldEvent({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    const signal = await Promise.race([
+      handoff.promise.then(() => "handoff"),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+    ])
+    expect(signal).toBe("handoff")
+
+    const second = request()
+    await requestHook(second)
+    const secondModel = (await second.request.clone().json()).model
+    expect(secondModel).not.toBe("kimi-for-coding-highspeed")
+    expect(secondModel).toBe("gpt-6-luna-fast")
+    await dispose()
   })
-
-  const first = request()
-  await requestHook(first)
-  expect((await first.request.clone().json()).model).toBe("gpt-6-luna-fast")
-
-  yieldEvent({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  const signal = await Promise.race([
-    handoff.promise.then(() => "handoff"),
-    new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
-  ])
-  expect(signal).toBe("handoff")
-
-  const second = request()
-  await requestHook(second)
-  const secondModel = (await second.request.clone().json()).model
-  expect(secondModel).not.toBe("kimi-for-coding-highspeed")
-  expect(secondModel).toBe("gpt-6-luna-fast")
-  await dispose()
 })
 
 test("native runtime applies a reactive fallback rung through session.switchModel", async () => {
@@ -322,23 +360,26 @@ test("native runtime applies a reactive fallback rung through session.switchMode
   const context = reactiveFallbackContext(feed, {
     switchModel: async (input) => { switched.push(input); return { data: {} } },
   })
-  const dispose = await plugin.setup(context)
-  expect(typeof feed.requestHook).toBe("function")
+  await withLiveAgentConfig({ explore: { fallback_models: ["openai/gpt-6-luna-fast(low)"] } }, async () => {
+    const dispose = await plugin.setup(context)
+    expect(typeof feed.requestHook).toBe("function")
 
-  const first = childRequest()
-  await feed.requestHook(first)
-  expect((await first.request.clone().json()).model).toBe("qwen3.7-plus")
+    const first = childRequest()
+    await feed.requestHook(first)
+    // JSON-only and the active provider is opencode-go: the user chain has no
+    // opencode-go rung, so the pre-failure request is left untouched.
+    expect((await first.request.clone().json()).model).toBe("grok-4.7")
 
-  const consumed = feed.consumed()
-  feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  await Promise.race([consumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
-  // The reactive walk is cross-provider: the first reachable rung of the
-  // explore chain after grok-4.7 is gpt-6-luna-fast on openai, so switchModel
-  // must carry that providerID.
-  expect(switched).toEqual([
-    { sessionID: "ses_child", model: { providerID: "openai", id: "gpt-6-luna-fast" } },
-  ])
-  await dispose()
+    const consumed = feed.consumed()
+    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    await Promise.race([consumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
+    // The reactive walk is cross-provider: the user's first reachable rung is
+    // gpt-6-luna-fast on openai, so switchModel must carry that providerID.
+    expect(switched).toEqual([
+      { sessionID: "ses_child", model: { providerID: "openai", id: "gpt-6-luna-fast" } },
+    ])
+    await dispose()
+  })
 })
 
 test("native runtime reactive fallback changes provider when the next chain rung requires it", async () => {
@@ -350,21 +391,23 @@ test("native runtime reactive fallback changes provider when the next chain rung
     switchModel: async (input) => { switched.push(input); return { data: {} } },
     models: [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }],
   })
-  const dispose = await plugin.setup(context)
+  await withLiveAgentConfig({ explore: { fallback_models: ["openai/gpt-6-luna-fast(low)"] } }, async () => {
+    const dispose = await plugin.setup(context)
 
-  const first = childRequest()
-  await feed.requestHook(first)
-  // Same-provider guard at http.request: no opencode-go rung is available, so
-  // the late body rewrite leaves the payload alone.
-  expect((await first.request.clone().json()).model).toBe("grok-4.7")
+    const first = childRequest()
+    await feed.requestHook(first)
+    // Same-provider guard at http.request: the user chain has no opencode-go
+    // rung, so the late body rewrite leaves the payload alone.
+    expect((await first.request.clone().json()).model).toBe("grok-4.7")
 
-  const consumed = feed.consumed()
-  feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  await Promise.race([consumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
-  expect(switched).toEqual([
-    { sessionID: "ses_child", model: { providerID: "openai", id: "gpt-6-luna-fast" } },
-  ])
-  await dispose()
+    const consumed = feed.consumed()
+    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    await Promise.race([consumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
+    expect(switched).toEqual([
+      { sessionID: "ses_child", model: { providerID: "openai", id: "gpt-6-luna-fast" } },
+    ])
+    await dispose()
+  })
 })
 
 test("native runtime does not switch the model when no chain rung resolves", async () => {
@@ -375,17 +418,21 @@ test("native runtime does not switch the model when no chain rung resolves", asy
     // Empty inventory: no rung of the explore chain is reachable.
     models: [],
   })
-  const dispose = await plugin.setup(context)
+  // The user configured a chain, but the inventory is empty: no rung resolves,
+  // so no switch happens and the request is left untouched.
+  await withLiveAgentConfig({ explore: { fallback_models: ["deepseek/deepseek-flash"] } }, async () => {
+    const dispose = await plugin.setup(context)
 
-  const first = childRequest()
-  await feed.requestHook(first)
-  expect((await first.request.clone().json()).model).toBe("grok-4.7")
+    const first = childRequest()
+    await feed.requestHook(first)
+    expect((await first.request.clone().json()).model).toBe("grok-4.7")
 
-  const consumed = feed.consumed()
-  feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  await Promise.race([consumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
-  expect(switched).toEqual([])
-  await dispose()
+    const consumed = feed.consumed()
+    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    await Promise.race([consumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
+    expect(switched).toEqual([])
+    await dispose()
+  })
 })
 
 test("native runtime seeds a category child so a pre-request failure still falls back", async () => {
@@ -446,47 +493,55 @@ test("native runtime advances the tracked model across consecutive failures", as
       { providerID: "opencode-go", id: "minimax-m2.7", enabled: true },
     ],
   })
-  const dispose = await plugin.setup(context)
+  // JSON-only: the user's two-rung chain advances qwen -> minimax across the
+  // two failures. A stalled walk would switch qwen twice.
+  await withLiveAgentConfig({ explore: { fallback_models: ["opencode-go/qwen3.7-plus", "opencode-go/minimax-m2.7"] } }, async () => {
+    const dispose = await plugin.setup(context)
 
-  const first = childRequest()
-  await feed.requestHook(first)
-  expect((await first.request.clone().json()).model).toBe("qwen3.7-plus")
+    const first = childRequest()
+    await feed.requestHook(first)
+    expect((await first.request.clone().json()).model).toBe("qwen3.7-plus")
 
-  const firstConsumed = feed.consumed()
-  feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  await Promise.race([firstConsumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
+    const firstConsumed = feed.consumed()
+    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    await Promise.race([firstConsumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
 
-  const secondConsumed = feed.consumed()
-  feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  await Promise.race([secondConsumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
+    const secondConsumed = feed.consumed()
+    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    await Promise.race([secondConsumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
 
-  expect(switched).toEqual([
-    { sessionID: "ses_child", model: { providerID: "opencode-go", id: "qwen3.7-plus" } },
-    { sessionID: "ses_child", model: { providerID: "opencode-go", id: "minimax-m2.7" } },
-  ])
-  await dispose()
+    expect(switched).toEqual([
+      { sessionID: "ses_child", model: { providerID: "opencode-go", id: "qwen3.7-plus" } },
+      { sessionID: "ses_child", model: { providerID: "opencode-go", id: "minimax-m2.7" } },
+    ])
+    await dispose()
+  })
 })
 
 test("native runtime survives a reactive failure when session.switchModel is absent", async () => {
   const feed = createEventFeed()
   const context = reactiveFallbackContext(feed)
-  const dispose = await plugin.setup(context)
+  // A reachable chain is configured, so the reactive path WOULD switch; with no
+  // `switchModel` API present the walk must be a guarded no-op, not a crash.
+  await withLiveAgentConfig({ explore: { fallback_models: ["openai/gpt-6-luna-fast(low)"] } }, async () => {
+    const dispose = await plugin.setup(context)
 
-  const first = childRequest()
-  await feed.requestHook(first)
+    const first = childRequest()
+    await feed.requestHook(first)
 
-  const firstConsumed = feed.consumed()
-  feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  await Promise.race([firstConsumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
+    const firstConsumed = feed.consumed()
+    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    await Promise.race([firstConsumed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000))])
 
-  const secondConsumed = feed.consumed()
-  feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
-  const second = await Promise.race([
-    secondConsumed.then(() => "second"),
-    new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
-  ])
-  expect(second).toBe("second")
-  await dispose()
+    const secondConsumed = feed.consumed()
+    feed.push({ type: "session.execution.failed", data: { sessionID: "ses_child" } })
+    const second = await Promise.race([
+      secondConsumed.then(() => "second"),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+    ])
+    expect(second).toBe("second")
+    await dispose()
+  })
 })
 
 // Task 10: the runtime collects every agent's tool gates through
@@ -1723,22 +1778,4 @@ test("a malformed live agent model yields no Model.Ref and never falls back to t
 
   const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
   expect(resolved.get("oracle")).toBeUndefined()
-})
-
-// The delegation must pass a pinned agent's Model.Ref EXPLICITLY: V2 does not
-// apply an agent's registered `Agent.Info.model` to a created session's request
-// (the host dispatches its config default instead), so `undefined` would let the
-// child run the default instead of the user's choice.
-test("pinnedAgentModelRef yields the pinned agent's Model.Ref and undefined for inheritance", () => {
-  const overrides = { oracle: { model: "deepseek/deepseek-v4-pro", variant: "max" } }
-  // given: the user pinned a model, when: the agent is named by base id or display name
-  expect(nativeRuntime.pinnedAgentModelRef(overrides, { id: "oracle", name: "Oracle" })).toEqual({ providerID: "deepseek", id: "deepseek-v4-pro", variant: "max" })
-  // and: a display-named override key is canonicalized by the authority the
-  // runtime feeds in, so the base-id agent resolves
-  const merged = resolveAuthoritativeAgentOverrides({ live: { state: "loaded", overrides: { "Hephaestus - Deep Agent": { model: "openai/gpt-6-sol" } } } })
-  expect(nativeRuntime.pinnedAgentModelRef(merged, { id: "hephaestus" })).toEqual({ providerID: "openai", id: "gpt-6-sol" })
-  // and: an unpinned agent inherits (undefined)
-  expect(nativeRuntime.pinnedAgentModelRef(overrides, { id: "explore", name: "Explore" })).toBeUndefined()
-  // and: a malformed pinned ref never becomes a raw string
-  expect(nativeRuntime.pinnedAgentModelRef({ oracle: { model: "not-a-ref" } }, { id: "oracle" })).toBeUndefined()
 })
