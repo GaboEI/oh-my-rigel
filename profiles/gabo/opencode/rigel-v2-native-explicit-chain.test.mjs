@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { agentOverrideFor, categoryIsExplicit, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
+import { agentOverrideFor, categoryIsExplicit, resolveAuthoritativeAgentOverrides, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
 import { agentChain, categoryChain } from "./rigel-v2-native-model-chains.mjs"
 
 // Upstream 5a9bb74a4: an explicit user model suppresses the built-in chain.
@@ -62,4 +62,55 @@ test("agentOverrideFor matches a display-cased agent name to its override id", (
 test("categoryIsExplicit only fires on a user model or models chain", () => {
   expect(categoryIsExplicit({ quick: { description: "no model" } }, "quick")).toBe(false)
   expect(categoryIsExplicit({ quick: { models: ["openai/gpt-6-luna-fast"] } }, "quick")).toBe(true)
+})
+
+// R1: the runtime model source is JSON-ONLY. `~/.omo/omo.jsonc` is
+// authoritative-COMPLETE when it exists, its `agents` block INCLUDING an absent
+// or empty one, and the manifest is NEVER consulted. An unreadable file fails
+// safe to no overrides.
+
+test("resolveAuthoritativeAgentOverrides: a loaded live source is authoritative and canonicalized", () => {
+  const chosen = resolveAuthoritativeAgentOverrides({
+    live: { state: "loaded", overrides: { explore: { model: "qwen/q3" }, "Hephaestus - Deep Agent": { model: "rigel-nsg/gpt-4o" } } },
+  })
+  expect(chosen).toEqual({ explore: { model: "qwen/q3" }, hephaestus: { model: "rigel-nsg/gpt-4o" } })
+})
+
+test("resolveAuthoritativeAgentOverrides: an empty loaded live block yields no overrides", () => {
+  expect(resolveAuthoritativeAgentOverrides({ live: { state: "loaded", overrides: {} } })).toEqual({})
+})
+
+test("resolveAuthoritativeAgentOverrides: an absent live file yields no overrides (manifest never consulted)", () => {
+  expect(resolveAuthoritativeAgentOverrides({ live: { state: "absent" } })).toEqual({})
+})
+
+test("resolveAuthoritativeAgentOverrides: an unreadable live file fails safe to no overrides", () => {
+  expect(resolveAuthoritativeAgentOverrides({
+    live: { state: "error", path: "/h/.omo/omo.jsonc", reason: "Unexpected token" },
+  })).toEqual({})
+})
+
+test("resolveAuthoritativeAgentOverrides: a loaded live change A->B is returned verbatim", () => {
+  const chosen = resolveAuthoritativeAgentOverrides({
+    live: { state: "loaded", overrides: { oracle: { model: "deepseek/deepseek-v4-pro", variant: "max" } } },
+  })
+  expect(chosen).toEqual({ oracle: { model: "deepseek/deepseek-v4-pro", variant: "max" } })
+})
+
+test("resolveAuthoritativeAgentOverrides tolerates malformed sources without mutating them", () => {
+  expect(resolveAuthoritativeAgentOverrides()).toEqual({})
+  expect(resolveAuthoritativeAgentOverrides({ live: "nope" })).toEqual({})
+  const live = Object.freeze({
+    state: "loaded",
+    overrides: Object.freeze({
+      explore: Object.freeze({ model: "c/d", models: Object.freeze(["c/d", "e/f"]) }),
+    }),
+  })
+  const chosen = resolveAuthoritativeAgentOverrides({ live })
+  expect(chosen.explore.model).toBe("c/d")
+  expect(chosen.explore.models).toEqual(["c/d", "e/f"])
+  // The authoritative entry and its arrays are copies: a later mutation can
+  // never reach the frozen source.
+  expect(chosen.explore).not.toBe(live.overrides.explore)
+  expect(chosen.explore.models).not.toBe(live.overrides.explore.models)
 })

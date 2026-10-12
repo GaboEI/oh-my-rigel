@@ -33,6 +33,7 @@ import {
   beginLifecycleTransaction,
   failAt,
   writeJsonAtomic,
+  writeTextAtomic,
 } from "./rigel-v2-lifecycle-transaction.mjs"
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
@@ -157,6 +158,86 @@ function resolveBunBin() {
   return "bun"
 }
 
+/** The durable, editable OmO profile paths the native runtime reads LIVE. */
+function editableProfilePaths(home) {
+  const profileHome = path.join(home, ".omo")
+  return {
+    profileHome,
+    profileFile: path.join(profileHome, "omo.jsonc"),
+    promptFile: path.join(profileHome, "opencode", "prompts", "sisyphus-orchestration.md"),
+  }
+}
+
+/**
+ * Persist the durable, EDITABLE OmO config the native runtime reads LIVE for
+ * per-agent model selection (`agents.<id>.model`). On a clean install it is
+ * seeded from the tracked profile with `__OMO_PROFILE_ROOT__` resolved to the
+ * profile home; an EXISTING file is NEVER overwritten, so a user edit survives
+ * reinstall/upgrade. The companion Sisyphus prompt is seeded the same way when
+ * absent. Both are staged into the manifest builder's sandbox and tracked by the
+ * lifecycle transaction for a byte-identical rollback.
+ *
+ * `createdProfile` reports whether THIS call created the editable profile file,
+ * which is the only case in which product-default models may be seeded into it.
+ */
+function persistEditableProfile(home, profileSource) {
+  const { profileHome, profileFile, promptFile } = editableProfilePaths(home)
+  const createdProfile = !fs.existsSync(profileFile)
+  if (createdProfile) {
+    writeTextAtomic(profileFile, fs.readFileSync(profileSource, "utf8").replaceAll("__OMO_PROFILE_ROOT__", profileHome))
+  }
+  if (!fs.existsSync(promptFile)) {
+    fs.mkdirSync(path.dirname(promptFile), { recursive: true, mode: 0o700 })
+    fs.copyFileSync(path.join(sourceRoot, "profiles/gabo/opencode/prompts/sisyphus-orchestration.md"), promptFile)
+  }
+  return { profileHome, profileFile, promptFile, createdProfile }
+}
+
+/**
+ * Read the `agents` block of a generated `agent-manifest.mjs` WITHOUT executing
+ * it. The builder writes a single comment line followed by
+ * `export default <json>`, so the JSON payload after the marker is parsed
+ * directly; the installer never imports executable content it did not produce.
+ */
+function readManifestAgents(manifestFile) {
+  const text = fs.readFileSync(manifestFile, "utf8")
+  const marker = "export default "
+  const start = text.indexOf(marker)
+  if (start === -1) return {}
+  const parsed = JSON.parse(text.slice(start + marker.length))
+  const agents = parsed?.agents
+  return agents && typeof agents === "object" && !Array.isArray(agents) ? agents : {}
+}
+
+/**
+ * Seed each agent's product-default model from the GENERATED manifest into the
+ * freshly created editable profile (`<home>/.omo/omo.jsonc`), under top-level
+ * `agents.<id>` (model + variant). Only a CLEAN install created the file, so an
+ * existing user file is never rewritten; every other field and entry is
+ * preserved, and an agent with no manifest model is left untouched. Written back
+ * atomically as pretty JSON.
+ */
+function seedAgentProductDefaults(profileFile, manifestAgents) {
+  const profile = JSON.parse(fs.readFileSync(profileFile, "utf8"))
+  const agents = profile.agents && typeof profile.agents === "object" && !Array.isArray(profile.agents) ? profile.agents : {}
+  let seeded = 0
+  for (const [id, record] of Object.entries(manifestAgents)) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue
+    const model = typeof record.model === "string" && record.model ? record.model : undefined
+    if (!model) continue
+    const existing = agents[id] && typeof agents[id] === "object" && !Array.isArray(agents[id]) ? agents[id] : {}
+    agents[id] = {
+      ...existing,
+      model,
+      ...(typeof record.variant === "string" && record.variant ? { variant: record.variant } : {}),
+    }
+    seeded += 1
+  }
+  if (seeded === 0) return
+  profile.agents = agents
+  writeTextAtomic(profileFile, `${JSON.stringify(profile, null, 2)}\n`)
+}
+
 function generateAgentManifest({ versionDir, home, configFile }) {
   const output = path.join(versionDir, "agent-manifest.mjs")
   const selectionFile = path.join(sourceRoot, "profiles/gabo/v2-agent-selection.json")
@@ -168,18 +249,10 @@ function generateAgentManifest({ versionDir, home, configFile }) {
     encoding: "utf8",
   })
   if (skills.status !== 0) throw new Error(`no se pudieron exponer las skills V2: ${skills.stderr || skills.stdout}`)
-  const generatorHome = fs.mkdtempSync(path.join(versionDir, "generator-home-"))
-  const generatorProfile = path.join(generatorHome, ".omo")
-  fs.mkdirSync(path.join(generatorProfile, "opencode/prompts"), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(
-    path.join(generatorProfile, "omo.jsonc"),
-    fs.readFileSync(profileSource, "utf8").replaceAll("__OMO_PROFILE_ROOT__", generatorProfile),
-    { mode: 0o600 },
-  )
-  fs.copyFileSync(
-    path.join(sourceRoot, "profiles/gabo/opencode/prompts/sisyphus-orchestration.md"),
-    path.join(generatorProfile, "opencode/prompts/sisyphus-orchestration.md"),
-  )
+  // The native runtime reads this LIVE at setup, so it must be durable and
+  // editable; it replaces the throwaway generator home the manifest used to bake
+  // from. An existing user file is left untouched.
+  const { profileFile, createdProfile } = persistEditableProfile(home, profileSource)
   const bunBin = resolveBunBin()
   // A clean host has no config yet; both the builder and the runtime
   // materialization must READ it, and the installer only ADDS the runtime entry
@@ -192,15 +265,20 @@ function generateAgentManifest({ versionDir, home, configFile }) {
     path.join(sourceRoot, "profiles/gabo/build-target-agent-manifest.mjs"),
     "--input", configFile, "--output", output,
     "--selection", selectionFile, "--judge", judgeFile,
-    "--directory", home, "--profile-root", generatorHome,
+    "--directory", home, "--profile-root", home,
   ], {
     cwd: sourceRoot,
     env: { ...process.env, XDG_CONFIG_HOME: path.dirname(path.dirname(configFile)), OMO_PROFILE: "gabo", OMO_DISABLE_PROCESS_CLEANUP: "1" },
     encoding: "utf8",
   })
-  fs.rmSync(generatorHome, { recursive: true, force: true })
   if (generated.error) throw new Error(`la generación del manifiesto requiere bun en PATH (no se pudo ejecutar "${bunBin}"): ${generated.error.message}`)
   if (generated.status !== 0) throw new Error(`la generación del manifiesto falló: ${generated.stderr || generated.stdout}`)
+  // CLEAN install only: seed each agent's product-default model from the
+  // GENERATED manifest into the just-created editable profile. On
+  // reinstall/upgrade the file already exists (`createdProfile` false) and is
+  // left untouched, so a user edit is never overwritten. The profile file is in
+  // the lifecycle transaction, so any later failure restores it byte-identically.
+  if (createdProfile) seedAgentProductDefaults(profileFile, readManifestAgents(output))
   return output
 }
 
@@ -381,7 +459,11 @@ function main() {
   const stateFile = path.join(paths.stateRoot, "install-state.json")
   const cliConfigFile = path.join(path.dirname(paths.configFile), "cli.json")
   const skillsStateFile = path.join(paths.home, ".local", "share", "oh-my-rigel", "skills-v2.json")
-  const transactionFiles = [paths.configFile, cliConfigFile, stateFile, skillsStateFile]
+  // The durable editable OmO profile the runtime reads LIVE is part of the
+  // transaction so a failed install/upgrade restores it byte-identically (and a
+  // clean install's freshly seeded copy is removed on rollback).
+  const { profileFile: omoProfileFile, promptFile: omoPromptFile } = editableProfilePaths(paths.home)
+  const transactionFiles = [paths.configFile, cliConfigFile, stateFile, skillsStateFile, omoProfileFile, omoPromptFile]
   const profileFile = process.env.RIGEL_V2_PROFILE_FILE || path.join(sourceRoot, "profiles/gabo/omo.jsonc")
   const previousState = fs.existsSync(stateFile) ? readJson(stateFile) : null
 

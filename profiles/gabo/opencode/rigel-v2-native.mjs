@@ -17,7 +17,7 @@ import {
   mergeCategories,
   resolveCategoryFromClients,
 } from "./rigel-v2-native-categories.mjs"
-import { agentOverrideFor, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
+import { agentOverrideFor, resolveAuthoritativeAgentOverrides, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
 import { createNativeNoSisyphusGptEnforcement } from "./rigel-v2-native-no-sisyphus-gpt.mjs"
 import { isHephaestusAgentId } from "./rigel-v2-native-hephaestus.mjs"
 import fs from "node:fs"
@@ -37,8 +37,8 @@ import { createNativeWebFetchRedirectGuard } from "./rigel-v2-native-webfetch-re
 import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-validator.mjs"
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
-import { checkNativeHostVersion, readNativeAgentOverrides, readNativeBundledVersion, readNativeDisabled, readNativeGates, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativeOpenclaw, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs } from "./rigel-v2-native-config.mjs"
-import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
+import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeGates, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativeOpenclaw, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs } from "./rigel-v2-native-config.mjs"
+import { modelRef, registerNativeAgents } from "./rigel-v2-native-agents.mjs"
 import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
 import { createRuntimeHostSkillSource, registerNativeSkills, selectSkillsForChild, formatSkillInjection } from "./rigel-v2-native-skills.mjs"
 import { createSkillMcpManager, createSkillMcpToolDefinition, registerSkillMcpServers } from "./rigel-v2-native-skill-mcp.mjs"
@@ -82,6 +82,7 @@ import { createNativeClaudeCodeHooks } from "./rigel-v2-claude-code-hooks.mjs"
 import { createUlwExecuteCommand } from "./rigel-v2-ulw-execute.mjs"
 import { registerBuiltinCommands } from "./rigel-v2-native-builtin-commands.mjs"
 import { registerMcpOAuthCommand } from "./rigel-v2-native-mcp-oauth-command.mjs"
+import { registerModelsCommand } from "./rigel-v2-native-models-command.mjs"
 import { createNativeContextLimitRecovery, createNativeIdleContinuations, createNativeIdleGate } from "./rigel-v2-native-phase4-events.mjs"
 import { createNativeTeamEventHandlers } from "./rigel-v2-team-events.mjs"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
@@ -113,6 +114,35 @@ export function readUserCategories(context) {
   const categories = config?.categories
   if (!categories || typeof categories !== "object" || Array.isArray(categories)) return undefined
   return categories
+}
+
+/**
+ * Build the `explicitAgentModels` map `resolveProactiveAgentModels` consumes from
+ * the merged per-agent override map. Only an explicit `model` marks an agent as
+ * pinned (`variant` rides along). A malformed model is still passed through: the
+ * resolver runs it through the `Model.Ref` builder and falls back when it cannot
+ * form one, so a raw model string never reaches a registered agent.
+ */
+export function buildExplicitAgentModels(agentOverrides) {
+  return new Map(
+    Object.entries(agentOverrides ?? {})
+      .filter(([, override]) => typeof override?.model === "string" && override.model)
+      .map(([id, override]) => [id, { model: override.model, variant: override.variant }]),
+  )
+}
+
+/**
+ * The `Model.Ref` for an agent the user pinned a model on (looked up in the
+ * merged, live-wins override map), or `undefined` so the child inherits. V2 does
+ * NOT apply an agent's registered `Agent.Info.model` to a created session's
+ * request (probed live: the host dispatches the OpenCode config default
+ * instead), so a pinned model MUST be passed explicitly on `session.create` or
+ * the delegation would silently ignore the user's choice. A malformed ref yields
+ * `undefined`, never a raw string.
+ */
+export function pinnedAgentModelRef(agentOverrides, agent) {
+  const override = agentOverrideFor(agentOverrides, agent?.id ?? agent?.name)
+  return override?.model ? modelRef(override.model, override.variant) : undefined
 }
 
 /**
@@ -272,22 +302,18 @@ function modelKeyString(value) {
 
 /**
  * The honest pre-spawn admission key: the category's resolved model when the
- * category route is taken, the user's explicit agent model when one is pinned,
- * otherwise the agent's declared model from the generated manifest. All are
- * known BEFORE any child session exists, so the child is admitted under its real
- * bucket and is never re-keyed after spawn. Exported so the runtime tests pin
- * the derivation without booting the setup closure.
+ * category route is taken, else the user's explicit JSON agent model when one is
+ * configured. Both are known BEFORE any child session exists, so the child is
+ * admitted under its real bucket and is never re-keyed after spawn. An agent
+ * with no JSON model yields no key: the manifest is never consulted for models.
+ * Exported so the runtime tests pin the derivation without booting the setup
+ * closure.
  */
-export function preSpawnModelKey(category, agent, manifestRef, agentOverrides) {
+export function preSpawnModelKey(category, agent, agentOverrides) {
   if (category?.model) return modelKeyString(category.model)
-  // Upstream 5a9bb74a4: when the user pinned an agent model, the child starts on
-  // that model, so the admission bucket must key on it instead of the
-  // generator's default manifest model.
   const override = agentOverrideFor(agentOverrides, agent?.id ?? agent?.name)
   if (typeof override?.model === "string" && override.model) return modelKeyString(override.model)
-  const agents = manifestRef?.agents ?? {}
-  const entry = agents[agent?.id] ?? agents[agent?.name]
-  return entry?.model ? modelKeyString(entry.model) : ""
+  return ""
 }
 
 /** The tool result for a background request that was queued instead of started. */
@@ -383,28 +409,40 @@ export default {
     // execution-time resolver and the orchestrator roster so a user category is
     // selectable and routable exactly like a built-in.
     const userCategories = readUserCategories(context)
-    // Upstream 5a9bb74a4: the user's per-agent overrides materialized by the
-    // generator (explicit model / fallback_models). An explicit model here
-    // suppresses the built-in canonical chain.
-    const agentOverrides = readNativeAgentOverrides(manifest)
+    // JSON-ONLY model source: the user's per-agent overrides (explicit model /
+    // ordered candidates / fallback_models) come ONLY from the LIVE
+    // `~/.omo/omo.jsonc` (resolved through the same authority the generator
+    // uses, anchored at HOME). The manifest is never consulted for models, so a
+    // removed pin cannot be revived and an agent with no JSON model inherits the
+    // OpenCode global. An unreadable live file fails safe to no overrides. V2's
+    // setup context exposes no plugin `config`, so the on-disk config is the only
+    // live source. An unexpected throw in the read itself is treated as the same
+    // fail-safe (`error`).
+    let liveOverridesSource
+    try {
+      liveOverridesSource = readLiveAgentOverridesSource({ home: process.env.HOME, env: process.env })
+    } catch (error) {
+      console.error(`[oh-my-rigel] Native V2 live agent override read failed; ignoring pins (fail-safe, no manifest revival): ${error instanceof Error ? error.message : String(error)}`)
+      liveOverridesSource = { state: "error" }
+    }
+    if (liveOverridesSource.state === "error") {
+      console.error(`[oh-my-rigel] Native V2 live config unreadable (${liveOverridesSource.reason ?? "unknown"}); per-agent model pins ignored until it parses (no stale-pin revival)`)
+    }
+    const agentOverrides = resolveAuthoritativeAgentOverrides({ live: liveOverridesSource })
     const sessionAgentResolver = createSessionAgentResolver(context)
     const permissionWiring = createNativePermissionWiring({
       manifest,
       resolveAgent: sessionAgentResolver,
     })
     const registeredAgents = await registerNativeAgents(context.agent, manifest, {
-      // Proactive fallback runs at this pre-selection boundary: the live
-      // inventory decides each agent's starting model before `agent.reload`,
-      // so an agent whose primary is absent starts on the next chain rung
-      // instead of being rejected by V2 before any request hook can run.
+      // JSON-only registration: an agent with a JSON model registers that ref;
+      // an agent with no JSON model registers with NO model (inherits the
+      // OpenCode global). No canonical-chain substitution.
+      chainFallback: false,
       listModels: () => listV2ModelsFromClients([context, context?.client], location),
-      // Upstream 5a9bb74a4: agents the user pinned a model for. The proactive
-      // resolver must keep that model instead of overwriting it with a chain rung.
-      explicitAgentModels: new Map(
-        Object.entries(agentOverrides)
-          .filter(([, override]) => typeof override?.model === "string" && override.model)
-          .map(([id, override]) => [id, { model: override.model, variant: override.variant }]),
-      ),
+      // The user's pinned agent models, read from the LIVE `~/.omo/omo.jsonc`
+      // only. The proactive resolver keeps that model instead of overwriting it.
+      explicitAgentModels: buildExplicitAgentModels(agentOverrides),
       // V1 `disabled_agents`: a disabled agent is never registered, so a switch
       // onto it is impossible.
       disabledAgents: readNativeDisabled(manifest).agents,
@@ -1395,7 +1433,7 @@ export default {
               agent,
               prompt: effectivePrompt,
               background: false,
-              model: category?.model,
+              model: category?.model ?? pinnedAgentModelRef(agentOverrides, agent),
               parentSessionID,
               onChildSession: (sessionID, child) => {
                 childSessionIDs.add(sessionID)
@@ -1419,8 +1457,8 @@ export default {
             agent,
             category,
             subagentType: input.subagent_type,
-            model: category?.model,
-            modelKey: preSpawnModelKey(category, agent, manifest, agentOverrides),
+            model: category?.model ?? pinnedAgentModelRef(agentOverrides, agent),
+            modelKey: preSpawnModelKey(category, agent, agentOverrides),
             prompt: effectivePrompt,
             loadSkills: requestedSkills,
           })
@@ -1861,6 +1899,17 @@ export default {
         disabledCommands: readNativeDisabled(manifest).commands,
       })
     }
+    // The `/rmo-models` guided command: inspect and change the per-agent model
+    // configuration in `~/.omo/omo.jsonc`. Additive and non-destructive: it only
+    // injects a guided turn and never restarts, stops, or kills the server or the
+    // active session. Gated by the same `disabled_commands` denylist.
+    let modelsCommandRegistration
+    if (typeof context?.command?.transform === "function") {
+      modelsCommandRegistration = await registerModelsCommand({
+        context,
+        disabledCommands: readNativeDisabled(manifest).commands,
+      })
+    }
     // Reconcile durable background state from a previous process: re-admit
     // queued descriptors (they never started), re-track running children WITHOUT
     // re-creating them, and re-queue undelivered wakes. A fresh manager (tests,
@@ -1924,6 +1973,7 @@ export default {
       await ulwExecuteCommandRegistration?.dispose?.()
       await builtinCommandsRegistration?.dispose?.()
       await mcpOAuthCommandRegistration?.dispose?.()
+      await modelsCommandRegistration?.dispose?.()
       autoSlashCommand.clear()
       disposeClaudeCodeHooks()
       await Promise.all([registration?.dispose?.(), directoryReadRegistration?.dispose?.(), remindersRegistration?.dispose?.(), writeGuardRegistration?.dispose?.(), nonInteractiveRegistration?.dispose?.(), permissionRegistration?.dispose?.(), autoSlashCommandRegistration?.dispose?.(), contextRegistration?.dispose?.(), modelRequestRegistration?.dispose?.(), compactionContextRegistration?.dispose?.(), imageRequestRegistration?.dispose?.(), skillRegistry?.dispose?.(), skillMcpRegistration?.dispose?.(), builtinMcpRegistration?.dispose?.(), claudeMcpRegistration?.dispose?.(), eventSubscription, tmuxVizManager?.cleanup?.()])

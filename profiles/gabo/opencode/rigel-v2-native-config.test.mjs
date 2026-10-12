@@ -7,11 +7,13 @@
  * plugin view. A separate parity test pins the port against the real OmO loader.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   deriveNativeGates,
+  readAgentOverridesFromConfig,
+  readLiveAgentOverridesSource,
   readNativeDisabled,
   readNativeGates,
   readNativeMcpPolicy,
@@ -438,5 +440,134 @@ describe("#given the tier-2 MCP policy", () => {
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }
+  })
+})
+
+// The runtime's LIVE per-agent model source: the `agents.<id>` block read from
+// the on-disk `~/.omo/omo.jsonc`. The reader preserves the FULL authored entry
+// (no field flattening) and decomposes the canonical ordered `models[]` into
+// `model` + `fallback_models`, with V1 `materializeAgentModelChains` parity.
+describe("#given a user agents block", () => {
+  test("#when it is read #then the full entry survives and models[] decomposes", () => {
+    const read = readAgentOverridesFromConfig({
+      oracle: { model: "deepseek/deepseek-v4-pro", variant: "max", fallback_models: ["openai/gpt-6-luna-fast"], description: "kept", temperature: 0.4 },
+      sisyphus: { prompt_append: "file:///x.md" },
+      atlas: { models: ["openai/gpt-6-luna-fast", "deepseek/deepseek-flash"] },
+      "prometheus": { models: [{ model: "openai/gpt-6", variant: "high" }, "deepseek/deepseek-flash"] },
+    })
+    // adjacent + unknown supported fields survive
+    expect(read.oracle).toEqual({
+      model: "deepseek/deepseek-v4-pro",
+      variant: "max",
+      fallback_models: ["openai/gpt-6-luna-fast"],
+      description: "kept",
+      temperature: 0.4,
+    })
+    expect(read.sisyphus).toEqual({ prompt_append: "file:///x.md" })
+    // models:[a,b] -> model:a + fallback_models:[b]
+    expect(read.atlas).toEqual({ model: "openai/gpt-6-luna-fast", fallback_models: ["deepseek/deepseek-flash"] })
+    // models[0] as an object contributes its model + variant; the rest fall back
+    expect(read.prometheus).toEqual({ model: "openai/gpt-6", variant: "high", fallback_models: ["deepseek/deepseek-flash"] })
+  })
+
+  test("#when an explicit model is authored alongside models[] #then the explicit fields are never overwritten", () => {
+    const read = readAgentOverridesFromConfig({
+      oracle: { model: "authored/model", variant: "authored-variant", models: ["other/primary", "other/fallback"] },
+    })
+    expect(read.oracle.model).toBe("authored/model")
+    expect(read.oracle.variant).toBe("authored-variant")
+    expect(read.oracle.fallback_models).toEqual(["other/fallback"])
+  })
+
+  test("#when the block is absent or malformed #then it degrades to {} and never mutates its input", () => {
+    expect(readAgentOverridesFromConfig(undefined)).toEqual({})
+    expect(readAgentOverridesFromConfig([1, 2])).toEqual({})
+    expect(readAgentOverridesFromConfig({ oracle: null, explore: "nope", "Atlas - Plan Executor": 7 })).toEqual({})
+    const frozen = Object.freeze({
+      oracle: Object.freeze({ model: "a/b", fallback_models: Object.freeze(["c/d"]) }),
+      atlas: Object.freeze({ models: Object.freeze(["e/f", "g/h"]) }),
+    })
+    const read = readAgentOverridesFromConfig(frozen)
+    expect(read.oracle).toEqual({ model: "a/b", fallback_models: ["c/d"] })
+    // The returned arrays are copies, so a later mutation can never reach the source.
+    expect(read.oracle.fallback_models).not.toBe(frozen.oracle.fallback_models)
+    expect(read.atlas).toEqual({ model: "e/f", fallback_models: ["g/h"] })
+    expect(read.atlas.fallback_models).not.toBe(frozen.atlas.models)
+    // The input is untouched: `models` is still on the source and `fallback_models` was not added.
+    expect(frozen.atlas.models).toEqual(["e/f", "g/h"])
+    expect(Object.hasOwn(frozen.atlas, "model")).toBe(false)
+  })
+})
+
+// R1 needs the live read to be a discriminated SOURCE, not a bare map: "absent"
+// must fall back to the manifest, but a present file (even without a pin) is
+// authoritative-complete, and an unreadable file is its own state so a corrupt
+// file can never be mistaken for "the user removed the pin".
+describe("#given the live on-disk OmO config", () => {
+  const liveRead = (fixture) => readLiveAgentOverridesSource({ home: fixture.home, env: { HOME: fixture.home, USERPROFILE: fixture.home } })
+
+  test("#when ~/.omo/omo.jsonc declares agents #then the source is loaded with those overrides", () => {
+    const fixture = makeFixture()
+    fixture.writeUser(JSON.stringify({ agents: { oracle: { model: "deepseek/deepseek-v4-pro" } } }))
+    const source = liveRead(fixture)
+    expect(source.state).toBe("loaded")
+    expect(source.overrides).toEqual({ oracle: { model: "deepseek/deepseek-v4-pro" } })
+  })
+
+  test("#when the file exists without an agents block #then the source is loaded and authoritative with no overrides", () => {
+    const fixture = makeFixture()
+    fixture.writeUser(JSON.stringify({ monitor: { enabled: true } }))
+    const source = liveRead(fixture)
+    expect(source.state).toBe("loaded")
+    expect(source.overrides).toEqual({})
+  })
+
+  test("#when a nested directory carries its own config #then the user layer still wins", () => {
+    const fixture = makeFixture()
+    fixture.writeUser(JSON.stringify({ agents: { oracle: { model: "user/model-a" } } }))
+    fixture.writeProject(JSON.stringify({ agents: { oracle: { model: "project/model-b" } } }))
+    // Anchoring at HOME keeps the read to the user layer; a sibling project
+    // config must never shadow it at runtime.
+    const source = liveRead(fixture)
+    expect(source.state).toBe("loaded")
+    expect(source.overrides).toEqual({ oracle: { model: "user/model-a" } })
+  })
+
+  test("#when no config exists #then the source is absent and names the path it looked for", () => {
+    const fixture = makeFixture()
+    const source = liveRead(fixture)
+    expect(source.state).toBe("absent")
+    expect(source.path.endsWith(".omo/omo.jsonc")).toBe(true)
+  })
+
+  test("#when the config is invalid JSON #then the source is an error, never a silent {}", () => {
+    const fixture = makeFixture()
+    fixture.writeUser("{ agents: { oracle: { model: \"deepseek/x\" } }, }")
+    const source = liveRead(fixture)
+    expect(source.state).toBe("error")
+    expect(typeof source.reason).toBe("string")
+    expect(source.overrides).toBeUndefined()
+  })
+
+  // Ctrl+X M is a host-owned keybind (`model.list`) whose selection is
+  // session-local: the host stores it per session and it must never be written
+  // back. The plugin's share of that contract is to stay READ-ONLY over
+  // ~/.omo/omo.jsonc, so an empty JSON config registers no model and the host
+  // selection wins for that session while a new session returns to the JSON
+  // config. Prove the runtime read path performs no write at all: the bytes,
+  // the mtime and the directory listing are unchanged after the read.
+  test("#when the live config is read #then the runtime path never writes it (Ctrl+X M stays host-owned)", () => {
+    const fixture = makeFixture()
+    fixture.writeUser(JSON.stringify({ agents: { oracle: { model: "deepseek/deepseek-v4-pro" } } }))
+    const file = join(fixture.home, ".omo", "omo.jsonc")
+    const dir = join(fixture.home, ".omo")
+    const beforeBytes = readFileSync(file)
+    const beforeMtime = statSync(file).mtimeMs
+    const beforeEntries = readdirSync(dir).sort()
+    const source = liveRead(fixture)
+    expect(source.state).toBe("loaded")
+    expect(readFileSync(file).equals(beforeBytes)).toBe(true)
+    expect(statSync(file).mtimeMs).toBe(beforeMtime)
+    expect(readdirSync(dir).sort()).toEqual(beforeEntries)
   })
 })

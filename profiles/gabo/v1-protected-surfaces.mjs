@@ -27,6 +27,17 @@ export const PROTECTED_FILES = [
   ".local/share/opencode/mcp-auth.json",
 ]
 
+// Volatile credential files: still classified protected (their presence or
+// absence is reported by the diff) but NOT content-hashed, because V1 rewrites
+// them on token refresh. Hashing their content made the digest drift across
+// runs for reasons unrelated to this installer; a stable marker keeps the
+// within-run before/after invariant and makes the digest reproducible across
+// runs without ever reading a credential value.
+export const VOLATILE_PROTECTED_FILES = [
+  ".local/share/opencode/auth.json",
+  ".local/share/opencode/mcp-auth.json",
+]
+
 // Demonstrated operational state (session/db/log/cache/runtime). This is the
 // ONLY exclusion rationale: the audit runs inside live V1, so these mutate
 // legitimately. Any top-level entry outside this list AND outside the protected
@@ -122,6 +133,10 @@ export function buildProtectedManifest(home = os.homedir()) {
   for (const rel of collectProtectedFiles(home)) {
     if (rel.endsWith("/")) {
       manifest[rel] = "dir"
+      continue
+    }
+    if (VOLATILE_PROTECTED_FILES.includes(rel)) {
+      manifest[rel] = "volatile"
       continue
     }
     try {

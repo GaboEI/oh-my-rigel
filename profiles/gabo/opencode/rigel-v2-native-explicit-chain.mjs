@@ -29,6 +29,53 @@ export function agentOverrideFor(agentOverrides, agent) {
   return direct ? overrides[direct] : undefined
 }
 
+/**
+ * Copy a per-agent override map into a fresh object keyed by CANONICAL agent id.
+ * A live key authored as a display name (`Hephaestus - Deep Agent`) and a
+ * lookup by the base id (`hephaestus`) collapse to one entry; an entry with no
+ * canonical key is dropped. The FULL entry is preserved (spread), and the
+ * `models`/`fallback_models` arrays are copied, so a later mutation of the
+ * result can never reach the source. Pure: the input is never mutated.
+ */
+export function canonicalizeAgentOverrides(source) {
+  const overrides = source && typeof source === "object" && !Array.isArray(source) ? source : {}
+  const result = {}
+  for (const [id, value] of Object.entries(overrides)) {
+    const key = normalizeAgentOverrideKey(id)
+    if (!key) continue
+    const entry = value && typeof value === "object" && !Array.isArray(value) ? value : {}
+    result[key] = {
+      ...entry,
+      ...(Array.isArray(entry.models) ? { models: [...entry.models] } : {}),
+      ...(Array.isArray(entry.fallback_models) ? { fallback_models: [...entry.fallback_models] } : {}),
+    }
+  }
+  return result
+}
+
+/**
+ * Choose the AUTHORITATIVE per-agent override map for the current process (R1).
+ *
+ * The runtime model source is JSON-ONLY: `~/.omo/omo.jsonc` is the sole
+ * persistent source of truth, so the manifest is NEVER consulted here. The live
+ * config is authoritative-COMPLETE the moment it EXISTS and parses: its `agents`
+ * block, INCLUDING an absent or empty block, REPLACES whatever was there before
+ * for deciding current pins. An unreadable/unparseable live file FAILS SAFE to
+ * NO overrides, so a corrupt file can never silently revive a removed pin.
+ *
+ * `live` is the discriminated source from `readLiveAgentOverridesSource`:
+ *   - `{ state: "loaded", overrides }` -> live authoritative, canonicalized
+ *   - `{ state: "absent" }`            -> no overrides
+ *   - `{ state: "error" }`             -> no overrides (never revive)
+ * An unknown/legacy caller (no discriminated source) yields no overrides. The
+ * result is canonicalized, and no input is mutated.
+ */
+export function resolveAuthoritativeAgentOverrides({ live } = {}) {
+  const state = live && typeof live === "object" ? live.state : undefined
+  if (state === "loaded") return canonicalizeAgentOverrides(live.overrides)
+  return {}
+}
+
 /** Whether a user category config pinned its own model (the explicit signal). */
 export function categoryIsExplicit(userCategories, name) {
   const config = userCategories && typeof userCategories === "object" ? userCategories[name] : undefined

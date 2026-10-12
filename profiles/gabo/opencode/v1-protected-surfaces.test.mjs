@@ -163,4 +163,23 @@ describe("v1 protected surface manifest", () => {
 
     expect(diffProtectedManifests(before, after).added).toContain(".local/share/opencode/auth.json.before-rigel")
   })
+
+  test("#given volatile credential churn #when the digest is compared #then it is stable while presence is still tracked", () => {
+    // V1 rewrites auth.json on token refresh, so hashing its CONTENT made the
+    // cross-run digest drift for reasons unrelated to this installer. The digest
+    // must be reproducible across runs (content-independent for volatile auth)
+    // while still detecting the file's presence or absence.
+    const home = tempHome()
+    const credential = write(home, ".local/share/opencode/auth.json", "token-A")
+    const before = buildProtectedManifest(home)
+    write(home, ".local/share/opencode/auth.json", "token-B-different-length")
+    const after = buildProtectedManifest(home)
+
+    expect(manifestDigest(before)).toBe(manifestDigest(after))
+    expect(diffProtectedManifests(before, after)).toEqual({ added: [], removed: [], changed: [] })
+
+    fs.rmSync(credential)
+    const removed = buildProtectedManifest(home)
+    expect(diffProtectedManifests(after, removed).removed).toContain(".local/share/opencode/auth.json")
+  })
 })

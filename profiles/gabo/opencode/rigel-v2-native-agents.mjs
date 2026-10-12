@@ -67,7 +67,7 @@ export function agentRequestBodyFromDefinition(definition) {
   return body
 }
 
-function modelRef(value, variant) {
+export function modelRef(value, variant) {
   if (typeof value !== "string") return undefined
   const match = /^([^/]+)\/(.+)$/.exec(value.trim())
   if (!match) return undefined
@@ -169,12 +169,20 @@ function chainHeadRef(chain) {
  * `explicitAgentModels` is an optional Map of agent id -> `{ model, variant }`
  * for agents the user pinned. An explicit model is used verbatim and the built-in
  * chain is never walked for that agent (upstream 5a9bb74a4).
+ *
+ * `options.chainFallback` (default TRUE, preserving the existing behavior)
+ * switches the canonical-chain walk off. When it is `false` the resolver is
+ * JSON-ONLY: an agent WITH an explicit entry resolves to that entry's `Model.Ref`
+ * (when it forms one); an agent with NO explicit entry resolves to NOTHING (no
+ * map entry) so the caller inherits the OpenCode global. The manifest `current`
+ * model and the built-in chain are never consulted on that path.
  */
-export function resolveProactiveAgentModels(agents, listModels, explicitAgentModels) {
+export function resolveProactiveAgentModels(agents, listModels, explicitAgentModels, options = {}) {
   const resolved = new Map()
   if (!agents || typeof agents !== "object") return resolved
   const inventory = Array.isArray(listModels) ? listModels : undefined
   const explicit = explicitAgentModels instanceof Map ? explicitAgentModels : undefined
+  const chainFallback = options.chainFallback !== false
   // Manifest ids are display names (`Hephaestus - Deep Agent`); user overrides are
   // keyed by the base id (`hephaestus`). Canonicalize both so the explicit model
   // is found regardless of which form the caller used.
@@ -187,6 +195,15 @@ export function resolveProactiveAgentModels(agents, listModels, explicitAgentMod
     const current = modelRef(source.model, source.variant)
     const chain = agentChain(id)
     const explicitEntry = explicit?.get(id) ?? explicitByCanonical.get(canonicalAgentId(id))
+    if (!chainFallback) {
+      // JSON-only: only an explicit user model produces a ref; the manifest
+      // `current` and the built-in chain are never consulted.
+      if (explicitEntry?.model) {
+        const ref = modelRef(explicitEntry.model, explicitEntry.variant)
+        if (ref) resolved.set(id, ref)
+      }
+      continue
+    }
     if (explicitEntry?.model) {
       // The user's model is the pre-selection preference; the manifest model is
       // the last resort if the user ref is malformed.
@@ -218,7 +235,7 @@ function canonicalAgentEntries(agents) {
     .map((entry) => [entry.id, byId.get(entry.id)])
 }
 
-export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions } = {}) {
+export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions, chainFallback } = {}) {
   if (typeof agentDomain?.transform !== "function" || typeof agentDomain?.reload !== "function") {
     throw new Error("OpenCode V2 agent.transform/agent.reload is unavailable")
   }
@@ -246,7 +263,7 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
       console.error(`[oh-my-rigel] Native V2 agent inventory unavailable; using manifest models: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  const proactiveModels = resolveProactiveAgentModels(agents, Array.isArray(inventory) ? inventory : undefined, explicitAgentModels)
+  const proactiveModels = resolveProactiveAgentModels(agents, Array.isArray(inventory) ? inventory : undefined, explicitAgentModels, { chainFallback })
   const registered = []
   await agentDomain.transform((editor) => {
     for (const [id, definition] of canonicalAgentEntries(agents)) {
@@ -258,8 +275,13 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
       // gate leaves the agent out of the roster with the V1-equivalent
       // message instead of registering something V2 would reject.
       if (isHephaestusAgentId(id)) {
-        const candidate = proactiveModels.get(id) ?? modelRef(source.model, source.variant)
-        const gate = evaluateHephaestusGate({ definition: source, model: candidate, inventory })
+        // JSON-only registration: the candidate is the JSON-resolved ref alone.
+        // On the chainFallback:false path the manifest definition model is not
+        // consulted either, so an agent whose effective JSON config has no
+        // acceptable OpenAI model (empty or non-GPT) is not registered.
+        const candidate = proactiveModels.get(id)
+        const gateDefinition = chainFallback === false ? { ...source, model: undefined } : source
+        const gate = evaluateHephaestusGate({ definition: gateDefinition, model: candidate, inventory })
         if (!gate.eligible) {
           console.error(gate.message)
           continue
@@ -267,8 +289,16 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
       }
       editor.update(id, (agent) => {
         const permissions = applyLegacyAgentDefinition(agent, id, definition, globalRules)
+        // Two steps on purpose. `applyLegacyAgentDefinition` keeps its public
+        // contract: it sets `agent.model` from the definition AND derives the
+        // frontier permission from that same model, so its exported behavior is
+        // unchanged for direct callers. This seam then applies the JSON-only
+        // decision on top: the JSON-resolved ref when configured, otherwise NO
+        // model so the host inherits the global. Collapsing the two would change
+        // the exported helper's observable behavior, so they stay separate.
         const proactive = proactiveModels.get(id)
         if (proactive) agent.model = proactive
+        else delete agent.model
         onAgentRequest?.(id, agent.request.body)
         onAgentPermissions?.(id, permissions)
       })

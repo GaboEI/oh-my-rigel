@@ -94,6 +94,38 @@ describe("Rigel native OpenCode V2 delegation", () => {
     expect(taskResult(delegated)).toMatchObject({ content: expect.stringContaining("SPECIALIST_EVIDENCE"), metadata: { sessionID: "ses_child", agent: "Explore", background: false } })
   })
 
+  // V2's session.create/model contract is a Model.Ref (`{ providerID, id }`), not
+  // a raw `"provider/id"` string. A pinned agent model must be forwarded verbatim
+  // as that object; an agent with no pinned model must omit the key so V2 inherits
+  // the registered agent's model.
+  test("forwards a pinned Model.Ref to session.create and omits it for an inherited agent model", async () => {
+    const calls = []
+    const client = { session: {
+      create: async (input) => { calls.push(input); return { data: { id: "ses_child" } } },
+      prompt: async () => ({ data: {} }),
+    } }
+    await delegateNamedAgent({
+      client,
+      location: { directory: "/isolated/project" },
+      agent: { id: "sisyphus-junior", name: "Sisyphus-Junior", mode: "subagent" },
+      prompt: "Work.",
+      model: { providerID: "xiaomi", id: "mimo-v2.6-pro" },
+      background: true,
+    })
+    expect(calls[0].model).toEqual({ providerID: "xiaomi", id: "mimo-v2.6-pro" })
+    expect(typeof calls[0].model).toBe("object")
+
+    const inheritedCalls = []
+    await delegateNamedAgent({
+      client: { session: { create: async (input) => { inheritedCalls.push(input); return { data: { id: "ses_two" } } }, prompt: async () => ({ data: {} }) } },
+      location: { directory: "/isolated/project" },
+      agent: { id: "explore", name: "Explore", mode: "subagent" },
+      prompt: "Work.",
+      background: true,
+    })
+    expect(Object.prototype.hasOwnProperty.call(inheritedCalls[0], "model")).toBe(false)
+  })
+
   test("extracts only the completed child's visible text", () => {
     expect(completedChildText({ data: [
       { type: "assistant", content: [{ type: "text", text: "old" }] },
