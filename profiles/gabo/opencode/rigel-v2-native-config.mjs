@@ -978,7 +978,8 @@ export function readAgentOverridesFromConfig(agents) {
  * revived a removed pin.
  *
  *   - `{ state: "absent", path }`             no live config file exists
- *   - `{ state: "loaded", path, overrides }`  the live file parsed; authoritative
+ *   - `{ state: "loaded", path, overrides, categories }`  the live file parsed;
+ *     authoritative, also carrying the resolved live `categories` block
  *   - `{ state: "error", path, reason }`      the live file exists but could not
  *     be read/parsed; the caller must NOT fall back to a stale baked pin
  *
@@ -1003,8 +1004,12 @@ export function readLiveAgentOverridesSource(options = {}) {
   } catch (error) {
     return { state: "error", path: userPath, reason: error instanceof Error ? error.message : String(error) }
   }
-  const agents = resolveNativePluginConfig({ ...options, env: effectiveEnv, directory: home })?.agents
-  return { state: "loaded", path: userPath, overrides: readAgentOverridesFromConfig(agents) }
+  const view = resolveNativePluginConfig({ ...options, env: effectiveEnv, directory: home })
+  // `categories` rides the same resolved view: category delegation reads the live
+  // `~/.omo/omo.jsonc` through this one live-read authority instead of a second
+  // parse. A file without a `categories` key yields `{}` (built-ins only), which
+  // is identical to the previous behavior.
+  return { state: "loaded", path: userPath, overrides: readAgentOverridesFromConfig(view?.agents), categories: view?.categories }
 }
 
 /**
