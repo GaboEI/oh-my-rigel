@@ -390,11 +390,6 @@ export default {
       throw new Error("OpenCode V2 tool.transform is unavailable")
     }
     const agentRequestBodies = new Map()
-    // User category overrides come from the merged plugin config V2 exposes on
-    // the setup context. They are read once and threaded through both the
-    // execution-time resolver and the orchestrator roster so a user category is
-    // selectable and routable exactly like a built-in.
-    const userCategories = readUserCategories(context)
     // JSON-ONLY model source: the user's per-agent overrides (explicit model /
     // ordered candidates / fallback_models) come ONLY from the LIVE
     // `~/.omo/omo.jsonc` (resolved through the same authority the generator
@@ -415,6 +410,15 @@ export default {
       console.error(`[oh-my-rigel] Native V2 live config unreadable (${liveOverridesSource.reason ?? "unknown"}); per-agent model pins ignored until it parses (no stale-pin revival)`)
     }
     const agentOverrides = resolveAuthoritativeAgentOverrides({ live: liveOverridesSource })
+    // Category JSON routing: like the agent overrides above, the live
+    // `~/.omo/omo.jsonc` is the only live source (V2's setup context exposes no
+    // plugin `config`). A context-provided block still wins when present, so no
+    // existing caller changes behavior; the live entry is the fallback. Read
+    // once and threaded through both the execution-time resolver and the
+    // orchestrator roster so a user category is selectable and routable exactly
+    // like a built-in.
+    const userCategories = readUserCategories(context)
+      ?? (liveOverridesSource.state === "loaded" ? liveOverridesSource.categories : undefined)
     const sessionAgentResolver = createSessionAgentResolver(context)
     const permissionWiring = createNativePermissionWiring({
       manifest,

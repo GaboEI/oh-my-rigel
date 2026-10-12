@@ -110,6 +110,24 @@ async function withLiveAgentConfig(agents, run) {
   }
 }
 
+// Same live-HOME sandbox as `withLiveAgentConfig`, but for a FULL `omo.jsonc`
+// payload so the live `categories` block can be driven through the real setup
+// boundary. `undefined` writes NO file, i.e. the `absent` state.
+async function withLiveOmoConfig(config, run) {
+  const sandbox = mkdtempSync(join(tmpdir(), "rigel-live-omo-"))
+  const home = join(sandbox, "home")
+  mkdirSync(join(home, ".omo"), { recursive: true })
+  if (config !== undefined) writeFileSync(join(home, ".omo", "omo.jsonc"), `${JSON.stringify(config, null, 2)}\n`)
+  const previousHome = process.env.HOME
+  process.env.HOME = home
+  try {
+    return await run()
+  } finally {
+    process.env.HOME = previousHome
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+}
+
 // Assert the real service HOME is never the developer's: process.env.HOME must
 // be restored after every sandboxed test, so an interleaved test cannot read a
 // leaked sandbox (or the real) config.
@@ -1734,6 +1752,49 @@ test("native runtime keys an admitted background child on the explicit category 
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+// Category JSON routing: the live `~/.omo/omo.jsonc` `categories` block is the
+// runtime source when the V2 setup context exposes no plugin `config`. The
+// POSITIVE below proves the live entry is consumed; the NEGATIVE CONTROLS prove
+// an absent/unconfigured live file keeps the exact built-in semantics (the nine
+// built-ins, unchanged) - the same set the context-only path already produced.
+test("native runtime consumes the live ~/.omo/omo.jsonc categories when the setup context has none", async () => {
+  await withLiveOmoConfig({ categories: { quick: { model: "xiaomi/mimo-v2.6-pro" } } }, async () => {
+    const { feed, switched, context } = explicitCategoryRuntime({})
+    const dispose = await plugin.setup(context)
+    await feed.definition.execute({ category: "quick", prompt: "Work." }, { sessionID: "ses_parent" })
+
+    const request = categoryRequest("ses_category_child", "xiaomi", "mimo-v2.6-pro")
+    await feed.requestHook(request)
+
+    // the live-pinned user model is untouched and no built-in rung is attached
+    expect((await request.request.clone().json()).model).toBe("mimo-v2.6-pro")
+    await failAndConsume(feed, "ses_category_child")
+    expect(switched).toEqual([])
+    await dispose()
+  })
+})
+
+test("native runtime keeps the exact built-in category set when the live config has no categories block", async () => {
+  await withLiveOmoConfig({ agents: { oracle: { model: "openai/gpt-6-luna-fast" } } }, async () => {
+    const { feed, context } = explicitCategoryRuntime({})
+    const dispose = await plugin.setup(context)
+    // a custom name is unknown because the live file declares no categories
+    await expect(feed.definition.execute({ category: "my-lane", prompt: "x" }, { sessionID: "ses_parent" }))
+      .rejects.toThrow('Unknown category: "my-lane". Available: artistry, deep-high, deep-low, quick, ultrabrain, unspecified-high, unspecified-low, visual-engineering, writing')
+    await dispose()
+  })
+})
+
+test("native runtime keeps the exact built-in category set when no live config exists", async () => {
+  await withLiveOmoConfig(undefined, async () => {
+    const { feed, context } = explicitCategoryRuntime({})
+    const dispose = await plugin.setup(context)
+    await expect(feed.definition.execute({ category: "my-lane", prompt: "x" }, { sessionID: "ses_parent" }))
+      .rejects.toThrow('Unknown category: "my-lane". Available: artistry, deep-high, deep-low, quick, ultrabrain, unspecified-high, unspecified-low, visual-engineering, writing')
+    await dispose()
+  })
 })
 
 // Upstream 5a9bb74a4: the pre-spawn admission key must reflect the model the

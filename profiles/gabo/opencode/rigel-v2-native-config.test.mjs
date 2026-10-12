@@ -547,6 +547,7 @@ describe("#given the live on-disk OmO config", () => {
     expect(source.state).toBe("error")
     expect(typeof source.reason).toBe("string")
     expect(source.overrides).toBeUndefined()
+    expect(source.categories).toBeUndefined()
   })
 
   // Ctrl+X M is a host-owned keybind (`model.list`) whose selection is
@@ -569,5 +570,37 @@ describe("#given the live on-disk OmO config", () => {
     expect(readFileSync(file).equals(beforeBytes)).toBe(true)
     expect(statSync(file).mtimeMs).toBe(beforeMtime)
     expect(readdirSync(dir).sort()).toEqual(beforeEntries)
+  })
+
+  // Category JSON routing: the live source must ALSO carry the `categories` block
+  // (read through the one live-read authority), while the agent-override contract
+  // stays byte-identical. A file with no `categories` key yields `{}` (built-ins
+  // only), so absent/unconfigured categories keep their exact semantics.
+  test("#when ~/.omo/omo.jsonc declares categories #then the source carries them and agent overrides stay exact", () => {
+    const fixture = makeFixture()
+    fixture.writeUser(JSON.stringify({
+      agents: { oracle: { model: "deepseek/deepseek-v4-pro" } },
+      categories: { quick: { model: "xiaomi/mimo-v2.6-pro" } },
+    }))
+    const source = liveRead(fixture)
+    expect(source.state).toBe("loaded")
+    expect(source.categories).toEqual({ quick: { model: "xiaomi/mimo-v2.6-pro" } })
+    expect(source.overrides).toEqual({ oracle: { model: "deepseek/deepseek-v4-pro" } })
+  })
+
+  test("#when the file exists without a categories block #then categories are empty and agent overrides are unchanged", () => {
+    const fixture = makeFixture()
+    fixture.writeUser(JSON.stringify({ agents: { oracle: { model: "deepseek/deepseek-v4-pro" } } }))
+    const source = liveRead(fixture)
+    expect(source.state).toBe("loaded")
+    expect(source.categories).toEqual({})
+    expect(source.overrides).toEqual({ oracle: { model: "deepseek/deepseek-v4-pro" } })
+  })
+
+  test("#when no config exists #then the source is absent and carries no categories", () => {
+    const fixture = makeFixture()
+    const source = liveRead(fixture)
+    expect(source.state).toBe("absent")
+    expect(source.categories).toBeUndefined()
   })
 })
