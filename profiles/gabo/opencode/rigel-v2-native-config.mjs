@@ -585,10 +585,10 @@ function parseConfigView(view, diagnostics) {
       const section = validateCategories(value, view.path, diagnostics)
       if (section !== undefined) parsed.categories = section
     } else if (key === "agents") {
-      // Upstream 5a9bb74a4 needs the user's per-agent overrides (`agents.<id>.model`
-      // / `agents.<id>.fallback_models`) to suppress the built-in chain. Carry the
-      // block sanely so the generator can materialize `agentOverrides`; the shape
-      // is validated downstream by `readNativeAgentOverrides`.
+      // The user's per-agent overrides (`agents.<id>.model` / `.models` /
+      // `.fallback_models` plus adjacent fields) are the runtime's sole model
+      // source; carry the block sanely so the live reader can normalize it. The
+      // shape is validated downstream by `readAgentOverridesFromConfig`.
       if (isPlainRecord(value)) parsed.agents = sanitizeValue(value)
       else warn(diagnostics, `config: ${view.path}: agents ignored (invalid value)`)
     } else if (key === "ralph_loop") {
@@ -912,25 +912,99 @@ export function readUserCategories(manifest) {
 }
 
 /**
- * Read the per-agent user overrides the generator materialized from the user
- * `agents` block. Only the fields upstream 5a9bb74a4 needs are kept: an explicit
- * `model` (plus its `variant`) and the user's `fallback_models` chain. An agent
- * with no override is absent, so the runtime keeps the built-in chain. Returns a
- * fresh plain object so a caller cannot mutate the manifest.
+ * Normalize one raw per-agent override entry (V1 `agents.<id>` block) for the
+ * runtime. The FULL authored entry is preserved (a shallow copy, with the
+ * `models`/`fallback_models` arrays copied) so no adjacent or unknown supported
+ * field is flattened away. The canonical ordered candidates (`models[]`) are
+ * then decomposed with V1 `materializeAgentModelChains` parity: `models[0]`
+ * becomes `model` (plus its `variant` when it is an object and neither is
+ * already authored), the remaining candidates append to `fallback_models`, and
+ * the `models` key is dropped. An explicitly authored `model`/`variant`/
+ * `fallback_models` is never overwritten. Returns `undefined` only when `value`
+ * is not a plain object, so a malformed entry is dropped rather than
+ * materialized. The input is never mutated.
  */
-export function readNativeAgentOverrides(manifest) {
-  const overrides = manifest?.metadata?.global?.agentOverrides
-  if (!isPlainObject(overrides)) return {}
+function normalizeAgentOverrideEntry(value) {
+  if (!isPlainObject(value)) return undefined
+  const entry = { ...value }
+  if (Array.isArray(value.models)) entry.models = [...value.models]
+  if (Array.isArray(value.fallback_models)) entry.fallback_models = [...value.fallback_models]
+  const models = entry.models
+  if (Array.isArray(models) && models.length > 0) {
+    const [primary, ...fallbacks] = models
+    if (!(typeof entry.model === "string" && entry.model.trim())) {
+      if (typeof primary === "string") entry.model = primary
+      else if (isPlainObject(primary) && typeof primary.model === "string") entry.model = primary.model
+    }
+    if (!(typeof entry.variant === "string" && entry.variant) && isPlainObject(primary) && typeof primary.variant === "string") {
+      entry.variant = primary.variant
+    }
+    if (fallbacks.length > 0) {
+      const existing = Array.isArray(entry.fallback_models) ? entry.fallback_models : []
+      entry.fallback_models = [...existing, ...fallbacks]
+    }
+    delete entry.models
+  }
+  return entry
+}
+
+/**
+ * Read the per-agent overrides from a raw `agents` block (the live
+ * `~/.omo/omo.jsonc` view). Keys are kept as authored; the key-canonicalizing
+ * authority selection lives in `resolveAuthoritativeAgentOverrides`. Absent or
+ * malformed input yields `{}` and the input is never mutated.
+ */
+export function readAgentOverridesFromConfig(agents) {
+  if (!isPlainObject(agents)) return {}
   const result = {}
-  for (const [id, value] of Object.entries(overrides)) {
-    if (!isPlainObject(value)) continue
-    const entry = {}
-    if (typeof value.model === "string" && value.model.trim()) entry.model = value.model.trim()
-    if (typeof value.variant === "string" && value.variant) entry.variant = value.variant
-    if (Array.isArray(value.fallback_models) && value.fallback_models.length > 0) entry.fallback_models = [...value.fallback_models]
-    if (Object.keys(entry).length > 0) result[id] = entry
+  for (const [id, value] of Object.entries(agents)) {
+    const entry = normalizeAgentOverrideEntry(value)
+    if (entry) result[id] = entry
   }
   return result
+}
+
+/**
+ * Read the per-agent overrides from the LIVE OmO config the host environment
+ * resolves: the user `~/.omo/omo.jsonc`, through the SAME authority the manifest
+ * generator uses, so the live view and the baked manifest agree on shape. V2's
+ * plugin setup context exposes no plugin `config` (probed: `context.config` is
+ * undefined), so the on-disk config is the only live source.
+ *
+ * Returns a discriminated SOURCE rather than a bare override map, because the
+ * R1 gate must tell three states apart. A single `{}` for every failure is
+ * exactly the bug it fixes: it cannot distinguish "the user removed the pin"
+ * from "the file is unreadable", so both fell back to the baked manifest and
+ * revived a removed pin.
+ *
+ *   - `{ state: "absent", path }`             no live config file exists
+ *   - `{ state: "loaded", path, overrides }`  the live file parsed; authoritative
+ *   - `{ state: "error", path, reason }`      the live file exists but could not
+ *     be read/parsed; the caller must NOT fall back to a stale baked pin
+ *
+ * Resolution is anchored at the resolved HOME (`options.home` / `$HOME`),
+ * mirroring the generator's `--directory <home>`. That keeps the read to the
+ * USER layer and stops the project-layer walk from escaping ABOVE the home: the
+ * host runs on Bun, where `os.userInfo().homedir` follows `$HOME`, so a session
+ * whose directory sits outside the home would otherwise load the real
+ * `~/.omo/omo.jsonc` as a project layer that wins over the intended user config.
+ * The live path detection and the view resolution share one effective env
+ * (`HOME` forced to the same `home`) so they can never disagree on the file.
+ */
+export function readLiveAgentOverridesSource(options = {}) {
+  const env = options.env ?? process.env
+  const home = resolve(options.home ?? env.HOME ?? env.USERPROFILE ?? process.cwd())
+  const fileSystem = options.fileSystem ?? DEFAULT_READ_FILE_SYSTEM
+  const effectiveEnv = { ...env, HOME: home }
+  const userPath = detectUserConfigPath(effectiveEnv, fileSystem)
+  if (!fileSystem.existsSync(userPath)) return { state: "absent", path: userPath }
+  try {
+    readJsonc(fileSystem.readFileSync(userPath, "utf-8"))
+  } catch (error) {
+    return { state: "error", path: userPath, reason: error instanceof Error ? error.message : String(error) }
+  }
+  const agents = resolveNativePluginConfig({ ...options, env: effectiveEnv, directory: home })?.agents
+  return { state: "loaded", path: userPath, overrides: readAgentOverridesFromConfig(agents) }
 }
 
 /**

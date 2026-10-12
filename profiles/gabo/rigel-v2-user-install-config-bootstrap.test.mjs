@@ -181,3 +181,75 @@ describe("installer config bootstrap: invalid existing config still fails", () =
     })
   })
 })
+
+describe("installer editable OmO profile: seeded on clean install, never overwritten", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-editable-profile-"))
+  const home = path.join(base, "home")
+  const configFile = path.join(home, ".config", "opencode", "opencode.json")
+  const stateRoot = path.join(home, ".local", "share", "oh-my-rigel")
+  // The durable config the native runtime reads LIVE for `agents.<id>.model`.
+  const profileFile = path.join(home, ".omo", "omo.jsonc")
+  const edited = `${JSON.stringify({ agents: { oracle: { model: "opencode-go/deepseek-v4-pro" } } }, null, 2)}\n`
+  let seeded
+  let afterEdit
+  let firstInstall
+  let secondInstall
+
+  beforeAll(() => {
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+    firstInstall = runRoute(home, configFile, stateRoot)
+    if (firstInstall.status === 0 && fs.existsSync(profileFile)) {
+      seeded = fs.readFileSync(profileFile, "utf8")
+      // Simulate the operator editing `agents.<id>.model` in the live config.
+      fs.writeFileSync(profileFile, edited, { mode: 0o600 })
+    }
+    secondInstall = runRoute(home, configFile, stateRoot)
+    if (secondInstall.status === 0 && fs.existsSync(profileFile)) {
+      afterEdit = fs.readFileSync(profileFile, "utf8")
+    }
+  }, 300_000)
+
+  afterAll(() => {
+    fs.rmSync(base, { recursive: true, force: true })
+  })
+
+  describe("#given a clean install with no OmO profile yet", () => {
+    describe("#when the installer materializes the config", () => {
+      test("#then it seeds a durable editable ~/.omo/omo.jsonc with every machine token resolved", () => {
+        expect(firstInstall.status, `install failed: ${firstInstall.stderr || firstInstall.stdout}`).toBe(0)
+        expect(fs.existsSync(profileFile)).toBe(true)
+        expect(typeof seeded).toBe("string")
+        // The profile-root placeholder must be resolved, or the runtime/loader
+        // would try to open the literal `__OMO_PROFILE_ROOT__/...` prompt path.
+        expect(seeded.includes("__OMO_PROFILE_ROOT__")).toBe(false)
+        expect(JSON.parse(seeded).profiles.gabo).toBeDefined()
+      })
+
+      test("#then it seeds each agent's product-default model from the generated manifest", () => {
+        const seededProfile = JSON.parse(seeded)
+        // A known orchestrated agent present in the manifest carries its
+        // product-default model under top-level `agents.<id>`.
+        expect(typeof seededProfile.agents?.oracle?.model).toBe("string")
+        expect(seededProfile.agents.oracle.model.length).toBeGreaterThan(0)
+        expect(typeof seededProfile.agents?.explore?.model).toBe("string")
+        // The tracked profile's non-model content is preserved, not replaced.
+        expect(seededProfile.profiles.gabo).toBeDefined()
+        // The Judge ships with no manifest model, so it is never seeded.
+        expect(seededProfile.agents?.judge).toBeUndefined()
+      })
+
+      test("#then a later install preserves the user's live model selection", () => {
+        expect(secondInstall.status, `install failed: ${secondInstall.stderr || secondInstall.stdout}`).toBe(0)
+        expect(typeof afterEdit).toBe("string")
+        // The installer seeds the file once and never resets it. The OmO config
+        // migration engine may append its own `_migrations` ledger while the
+        // profile is read, but it must never clobber the operator's edit.
+        expect(JSON.parse(afterEdit).agents.oracle.model).toBe("opencode-go/deepseek-v4-pro")
+        // Product defaults are seeded ONCE on the clean install; a reinstall
+        // must not inject the manifest's other agent models into the existing
+        // file. `explore` is absent from the operator's edit and stays absent.
+        expect(JSON.parse(afterEdit).agents.explore).toBeUndefined()
+      })
+    })
+  })
+})

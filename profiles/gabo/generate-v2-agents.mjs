@@ -100,24 +100,9 @@ async function bakeSisyphusPromptVariants(agent) {
 }
 
 // Upstream 5a9bb74a4: an explicit user model on an agent (or a user
-// `fallback_models` chain) must survive into the runtime so the built-in
-// canonical chain is not attached. The user `agents` block is resolved from the
-// omo.jsonc chain, which the V1 plugin config bake (`--input`) does NOT carry, so
-// this is materialized separately and read back by
-// `readNativeAgentOverrides(manifest)`.
-function extractAgentOverrides(agents) {
-  if (!agents || typeof agents !== "object" || Array.isArray(agents)) return {}
-  const overrides = {}
-  for (const [id, value] of Object.entries(agents)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue
-    const entry = {}
-    if (typeof value.model === "string" && value.model.trim()) entry.model = value.model.trim()
-    if (typeof value.variant === "string" && value.variant) entry.variant = value.variant
-    if (Array.isArray(value.fallback_models) && value.fallback_models.length > 0) entry.fallback_models = [...value.fallback_models]
-    if (Object.keys(entry).length > 0) overrides[id] = entry
-  }
-  return overrides
-}
+// `fallback_models` chain) is a RUNTIME concern: the runtime reads it from the
+// live `~/.omo/omo.jsonc` directly. The manifest no longer bakes a personal
+// `agentOverrides` map, so the manifest is never consulted for models.
 
 try {
   await hooks.config(config)
@@ -224,10 +209,6 @@ try {
         // the published package's npm dist-tags.
         bundledVersion: readBundledVersion(),
         categories: { ...(pluginView.categories ?? {}) },
-        // Upstream 5a9bb74a4: the user's per-agent explicit model / fallback_models,
-        // materialized so the runtime suppresses the built-in chain without
-        // parsing omo.jsonc itself. An empty block is the honest no-override case.
-        agentOverrides: extractAgentOverrides(pluginView.agents),
         disabled: { ...(pluginView.disabled ?? {}) },
         // The resolved OpenClaw block is absent when no layer sets it. The
         // runtime's bidirectional surface reads it from the manifest, so the

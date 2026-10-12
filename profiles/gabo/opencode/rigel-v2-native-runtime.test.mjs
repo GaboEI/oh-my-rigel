@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import plugin from "./rigel-v2-native.mjs"
 import * as nativeRuntime from "./rigel-v2-native.mjs"
 import nativeManifest from "./rigel-v2-native-agent-manifest.mjs"
-import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
+import { registerNativeAgents, resolveProactiveAgentModels } from "./rigel-v2-native-agents.mjs"
+import { resolveAuthoritativeAgentOverrides } from "./rigel-v2-native-explicit-chain.mjs"
+import { readAgentOverridesFromConfig } from "./rigel-v2-native-config.mjs"
 import { INTERRUPTED_TOOL_ERROR } from "./rigel-v2-flow-logic.mjs"
 import { CONTINUATION_PROMPT_MARKER } from "./rigel-v2-native-request-steps.mjs"
 
@@ -1680,17 +1682,63 @@ test("native runtime keys an admitted background child on the explicit category 
 })
 
 // Upstream 5a9bb74a4: the pre-spawn admission key must reflect the model the
-// child will actually start on, including a pinned agent model.
-test("native runtime keys the pre-spawn admission on the explicit agent model", () => {
+// child will actually start on. The model source is JSON-ONLY, so an agent with
+// no JSON model yields no key (the manifest is never consulted for models).
+test("native runtime keys the pre-spawn admission on the JSON agent model only", () => {
   const manifest = { agents: { oracle: { model: "openai/gpt-5.6-sol" } } }
   const overrides = { oracle: { model: "deepseek/deepseek-v4-pro", variant: "max" } }
 
-  // given: no category, when: the user pinned an agent model
-  expect(nativeRuntime.preSpawnModelKey(undefined, { id: "oracle", name: "Oracle" }, manifest, overrides)).toBe("deepseek/deepseek-v4-pro")
-  // and: an agent with no override keeps its manifest model
-  expect(nativeRuntime.preSpawnModelKey(undefined, { id: "oracle", name: "Oracle" }, manifest, {})).toBe("openai/gpt-5.6-sol")
+  // given: no category, when: the user configured an agent model
+  expect(nativeRuntime.preSpawnModelKey(undefined, { id: "oracle", name: "Oracle" }, overrides)).toBe("deepseek/deepseek-v4-pro")
+  // and: an agent with no JSON override has no key (manifest model never consulted)
+  expect(nativeRuntime.preSpawnModelKey(undefined, { id: "oracle", name: "Oracle" }, {})).toBe("")
   // and: a category route keys on the resolved category model
-  expect(nativeRuntime.preSpawnModelKey({ model: { providerID: "xiaomi", id: "mimo-v2.6-pro" } }, { id: "sisyphus-junior", name: "Sisyphus-Junior" }, manifest, overrides)).toBe("xiaomi/mimo-v2.6-pro")
+  expect(nativeRuntime.preSpawnModelKey({ model: { providerID: "xiaomi", id: "mimo-v2.6-pro" } }, { id: "sisyphus-junior", name: "Sisyphus-Junior" }, overrides)).toBe("xiaomi/mimo-v2.6-pro")
   // and: an unknown agent with no override yields no key
-  expect(nativeRuntime.preSpawnModelKey(undefined, { id: "missing", name: "Missing" }, manifest, overrides)).toBe("")
+  expect(nativeRuntime.preSpawnModelKey(undefined, { id: "missing", name: "Missing" }, overrides)).toBe("")
+})
+
+// The single registration point reads the LIVE `~/.omo/omo.jsonc` override and
+// hands the JSON-resolved refs to the proactive resolver with chainFallback
+// disabled. The user's chosen model must reach the registered agent as a
+// `Model.Ref`; the manifest is never consulted for models.
+test("a live per-agent model override reaches the registered agent as a Model.Ref", () => {
+  const manifest = { agents: { oracle: { name: "Oracle", mode: "subagent", model: "openai/gpt-5.6-sol", variant: "xhigh" } } }
+  const agentOverrides = resolveAuthoritativeAgentOverrides({
+    live: { state: "loaded", overrides: readAgentOverridesFromConfig({ oracle: { model: "deepseek/deepseek-v4-pro", variant: "max" } }) },
+  })
+  const explicit = nativeRuntime.buildExplicitAgentModels(agentOverrides)
+
+  const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
+  expect(resolved.get("oracle")).toEqual({ providerID: "deepseek", id: "deepseek-v4-pro", variant: "max" })
+  expect(typeof resolved.get("oracle")).toBe("object")
+})
+
+test("a malformed live agent model yields no Model.Ref and never falls back to the manifest", () => {
+  const manifest = { agents: { oracle: { name: "Oracle", mode: "subagent", model: "openai/gpt-5.6-sol", variant: "xhigh" } } }
+  const agentOverrides = resolveAuthoritativeAgentOverrides({
+    live: { state: "loaded", overrides: readAgentOverridesFromConfig({ oracle: { model: "not-a-provider-ref" } }) },
+  })
+  const explicit = nativeRuntime.buildExplicitAgentModels(agentOverrides)
+
+  const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
+  expect(resolved.get("oracle")).toBeUndefined()
+})
+
+// The delegation must pass a pinned agent's Model.Ref EXPLICITLY: V2 does not
+// apply an agent's registered `Agent.Info.model` to a created session's request
+// (the host dispatches its config default instead), so `undefined` would let the
+// child run the default instead of the user's choice.
+test("pinnedAgentModelRef yields the pinned agent's Model.Ref and undefined for inheritance", () => {
+  const overrides = { oracle: { model: "deepseek/deepseek-v4-pro", variant: "max" } }
+  // given: the user pinned a model, when: the agent is named by base id or display name
+  expect(nativeRuntime.pinnedAgentModelRef(overrides, { id: "oracle", name: "Oracle" })).toEqual({ providerID: "deepseek", id: "deepseek-v4-pro", variant: "max" })
+  // and: a display-named override key is canonicalized by the authority the
+  // runtime feeds in, so the base-id agent resolves
+  const merged = resolveAuthoritativeAgentOverrides({ live: { state: "loaded", overrides: { "Hephaestus - Deep Agent": { model: "openai/gpt-6-sol" } } } })
+  expect(nativeRuntime.pinnedAgentModelRef(merged, { id: "hephaestus" })).toEqual({ providerID: "openai", id: "gpt-6-sol" })
+  // and: an unpinned agent inherits (undefined)
+  expect(nativeRuntime.pinnedAgentModelRef(overrides, { id: "explore", name: "Explore" })).toBeUndefined()
+  // and: a malformed pinned ref never becomes a raw string
+  expect(nativeRuntime.pinnedAgentModelRef({ oracle: { model: "not-a-ref" } }, { id: "oracle" })).toBeUndefined()
 })

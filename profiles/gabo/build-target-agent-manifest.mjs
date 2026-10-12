@@ -69,23 +69,9 @@ function readBundledVersion() {
 }
 
 // Upstream 5a9bb74a4: an explicit user model on an agent (or a user
-// `fallback_models` chain) must survive into the runtime so the built-in
-// canonical chain is not attached. The user `agents` block is resolved from the
-// omo.jsonc chain, which the V1 plugin bake does NOT carry, so it is
-// materialized separately and read back by `readNativeAgentOverrides`.
-function extractAgentOverrides(agents) {
-  if (!agents || typeof agents !== "object" || Array.isArray(agents)) return {}
-  const overrides = {}
-  for (const [id, value] of Object.entries(agents)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue
-    const entry = {}
-    if (typeof value.model === "string" && value.model.trim()) entry.model = value.model.trim()
-    if (typeof value.variant === "string" && value.variant) entry.variant = value.variant
-    if (Array.isArray(value.fallback_models) && value.fallback_models.length > 0) entry.fallback_models = [...value.fallback_models]
-    if (Object.keys(entry).length > 0) overrides[id] = entry
-  }
-  return overrides
-}
+// `fallback_models` chain) is a RUNTIME concern: the runtime reads it from the
+// live `~/.omo/omo.jsonc` directly. The manifest no longer bakes a personal
+// `agentOverrides` map, so the manifest is never consulted for models.
 
 /**
  * Copies only the provisioned profile files the plugin pipeline must read
@@ -293,7 +279,6 @@ export async function buildTargetAgentManifest(options = {}) {
             minOpenCodeVersion: deriveNativeMinOpenCodeVersion(integrationManifest),
             bundledVersion: readBundledVersion(),
             categories: { ...(pluginView.categories ?? {}) },
-            agentOverrides: extractAgentOverrides(pluginView.agents),
             disabled: { ...(pluginView.disabled ?? {}) },
             ...(pluginView.openclaw ? { openclaw: pluginView.openclaw } : {}),
             monitor: pluginView.monitor,

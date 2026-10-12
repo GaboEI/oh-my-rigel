@@ -119,6 +119,39 @@ test("proactive resolution still walks the chain for an agent with no explicit m
   expect(resolved.get("oracle")).toEqual({ providerID: "anthropic", id: "claude-opus-5-5", variant: "max" })
 })
 
+// JSON-only resolution (chainFallback:false): the manifest model and the
+// built-in chain are never consulted. An agent with no explicit JSON model has
+// NO resolved ref, so the caller registers it with no model and V2 inherits the
+// OpenCode global.
+test("JSON-only resolution: chainFallback:false yields no entry for an agent with no explicit model", () => {
+  const manifest = {
+    agents: {
+      oracle: { name: "Oracle", mode: "subagent", model: "openai/gpt-5.6-sol", variant: "xhigh" },
+    },
+  }
+  const inventory = [{ providerID: "anthropic", id: "claude-opus-5-5", enabled: true }]
+  const resolved = resolveProactiveAgentModels(manifest.agents, inventory, undefined, { chainFallback: false })
+  expect(resolved.has("oracle")).toBe(false)
+})
+
+test("JSON-only resolution: chainFallback:false resolves an explicit model and ignores the manifest", () => {
+  const manifest = {
+    agents: {
+      oracle: { name: "Oracle", mode: "subagent", model: "openai/gpt-5.6-sol", variant: "xhigh" },
+    },
+  }
+  const explicit = new Map([["oracle", { model: "deepseek/deepseek-v4-pro", variant: "max" }]])
+  const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
+  expect(resolved.get("oracle")).toEqual({ providerID: "deepseek", id: "deepseek-v4-pro", variant: "max" })
+})
+
+test("JSON-only resolution: chainFallback:false drops an explicit model that does not form a ref", () => {
+  const manifest = { agents: { oracle: { name: "Oracle", mode: "subagent", model: "openai/gpt-5.6-sol" } } }
+  const explicit = new Map([["oracle", { model: "not-a-provider-ref" }]])
+  const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
+  expect(resolved.has("oracle")).toBe(false)
+})
+
 test("a disabled agent (V1 disabled_agents) is never registered", async () => {
   const updated = []
   const editor = {
@@ -206,6 +239,33 @@ test("registerNativeAgents keeps manifest models when the inventory read fails",
     listModels: async () => { throw new Error("inventory down") },
   })
   expect(applied.explore).toEqual({ providerID: "kimi-for-coding", id: "kimi-for-coding-highspeed", variant: "off" })
+})
+
+test("registerNativeAgents with chainFallback:false leaves agent.model absent when the JSON config has no model", async () => {
+  const applied = {}
+  const editor = {
+    update(id, callback) {
+      const agent = { request: { headers: {}, body: {} }, permissions: [] }
+      callback(agent)
+      applied[id] = agent.model
+    },
+    default() {},
+  }
+  const agentDomain = {
+    transform: async (callback) => { callback(editor); return { dispose() {} } },
+    reload: async () => {},
+  }
+  const manifest = {
+    agents: { explore: { name: "Explore", mode: "subagent", model: "kimi-for-coding/kimi-for-coding-highspeed", variant: "off" } },
+  }
+  await registerNativeAgents(agentDomain, manifest, {
+    chainFallback: false,
+    listModels: async () => [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }],
+  })
+  // The definition model is cleared when the JSON config carries no ref, so V2
+  // inherits the OpenCode global instead of the manifest default.
+  expect(applied.explore).toBeUndefined()
+  expect(Object.hasOwn(applied, "explore")).toBe(true)
 })
 
 function createHephaestusHarness() {
@@ -300,6 +360,58 @@ test("registerNativeAgents still applies the model gate without an inventory", a
   }
   const registered = await registerNativeAgents(agentDomain, manifest, {
     listModels: async () => { throw new Error("inventory down") },
+  })
+  expect(registered).toEqual([])
+  expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
+})
+
+// JSON-only registration (chainFallback:false): Hephaestus registers ONLY when
+// its effective JSON config resolves to a supported GPT ref. A non-GPT ref, a
+// ref that does not form, or no JSON model at all leaves it out of the roster.
+test("registerNativeAgents with chainFallback:false registers Hephaestus only when its JSON ref is a supported GPT", async () => {
+  const { applied, agentDomain } = createHephaestusHarness()
+  const manifest = {
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol", variant: "medium" },
+    },
+  }
+  const explicit = new Map([["hephaestus", { model: "openai/gpt-6-sol", variant: "medium" }]])
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    chainFallback: false,
+    explicitAgentModels: explicit,
+    listModels: async () => [{ providerID: "openai", id: "gpt-6-sol", enabled: true }],
+  })
+  expect(registered).toEqual(["Hephaestus - Deep Agent"])
+  expect(applied["Hephaestus - Deep Agent"]).toEqual({ providerID: "openai", id: "gpt-6-sol", variant: "medium" })
+})
+
+test("registerNativeAgents with chainFallback:false drops Hephaestus whose JSON ref is not GPT", async () => {
+  const { applied, agentDomain } = createHephaestusHarness()
+  const manifest = {
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol", variant: "medium" },
+    },
+  }
+  const explicit = new Map([["hephaestus", { model: "openai/kimi-k3" }]])
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    chainFallback: false,
+    explicitAgentModels: explicit,
+    listModels: async () => [{ providerID: "openai", id: "kimi-k3", enabled: true }],
+  })
+  expect(registered).toEqual([])
+  expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
+})
+
+test("registerNativeAgents with chainFallback:false drops Hephaestus whose JSON config has no model", async () => {
+  const { applied, agentDomain } = createHephaestusHarness()
+  const manifest = {
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol", variant: "medium" },
+    },
+  }
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    chainFallback: false,
+    listModels: async () => [{ providerID: "openai", id: "gpt-6-sol", enabled: true }],
   })
   expect(registered).toEqual([])
   expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
