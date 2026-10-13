@@ -21,14 +21,16 @@
 // live. `websearch` is host-provided in V2 (`context.websearch`).
 //
 // The deployed runtime cannot import TypeScript from `packages/`, so every
-// helper above is ported rather than imported. The repo root (needed to locate
-// `packages/lsp-daemon` and `packages/lsp-tools-mcp`) is materialized into the
-// agent manifest by the generator; the runtime never walks its own deployed
-// directory looking for the source tree.
+// helper above is ported rather than imported. The LSP CLI is resolved from the
+// deployment's OWN directory first (a valid install stages the built `packages/lsp-*`
+// under it), then from the repo root materialized into the agent manifest; a root
+// without a usable CLI degrades to a disabled server instead of an unresolvable
+// bootstrap.
 
 import { accessSync, constants, existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { delimiter, join, resolve } from "node:path"
+import { delimiter, dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
 export const GREP_APP_MCP_NAME = "grep_app"
 export const LSP_MCP_NAME = "lsp"
@@ -38,35 +40,15 @@ const LSP_TOOLS_PACKAGE_REL = "packages/lsp-tools-mcp"
 const DIST_CLI_REL = "dist/cli.js"
 const SOURCE_CLI_REL = "src/cli.ts"
 const PROJECT_LSP_CONFIGS = [".opencode/lsp.json", ".omo/lsp.json", ".omo/lsp-client.json"]
-const DAEMON_PACKAGE_NAME = "@code-yeongyu/lsp-daemon"
 const OMO_LSP_DAEMON_CLI = "OMO_LSP_DAEMON_CLI"
 const OMO_LSP_DAEMON_VERSION = "OMO_LSP_DAEMON_VERSION"
 
-// Verbatim from `packages/omo-opencode/src/mcp/lsp.ts` (LSP_BOOTSTRAP_SCRIPT).
-const LSP_BOOTSTRAP_SCRIPT = [
-  "const { existsSync } = require('node:fs')",
-  "const { createRequire } = require('node:module')",
-  "const { join } = require('node:path')",
-  "const { spawnSync } = require('node:child_process')",
-  "const root = process.argv[1]",
-  "const npm = process.argv[2] || 'npm'",
-  "const bun = process.argv[3] || 'bun'",
-  `const toolsPackage = join(root, '${LSP_TOOLS_PACKAGE_REL}')`,
-  `const daemonPackage = join(root, '${PACKAGE_REL}')`,
-  "const toolsDist = join(toolsPackage, 'dist/cli.js')",
-  "const daemonPackageJson = join(daemonPackage, 'package.json')",
-  "const daemonSource = join(daemonPackage, 'src/cli.ts')",
-  "const run = (command, args, stdio) => spawnSync(command, args, { cwd: root, env: process.env, stdio })",
-  "const finish = (result) => { if (result.error) { console.error(result.error.message); process.exit(1) } process.exit(result.status ?? 1) }",
-  "const runIfAvailable = (command, args) => { const result = run(command, args, 'inherit'); if (result.error) return false; finish(result); return true }",
-  `const resolveDaemonCli = () => { try { return createRequire(daemonPackageJson).resolve('${DAEMON_PACKAGE_NAME}/cli') } catch (error) { if (error instanceof Error) return null; throw error } }`,
-  "const daemonCli = existsSync(daemonPackageJson) ? resolveDaemonCli() : null",
-  "if (daemonCli) finish(run(process.execPath, [daemonCli, 'mcp'], 'inherit'))",
-  `if (existsSync(daemonSource) && existsSync(toolsDist)) { const pkg = require(daemonPackageJson); process.env.${OMO_LSP_DAEMON_CLI} = daemonSource; process.env.${OMO_LSP_DAEMON_VERSION} = pkg.version; runIfAvailable(bun, [daemonSource, 'mcp']) }`,
-  "const steps = [[npm, ['--prefix', toolsPackage, 'install', '--no-package-lock', '--no-audit', '--no-fund']], [npm, ['--prefix', toolsPackage, 'run', 'build']], [npm, ['--prefix', daemonPackage, 'install', '--no-package-lock', '--no-audit', '--no-fund']], [npm, ['--prefix', daemonPackage, 'run', 'build']]]",
-  "for (const [command, args] of steps) { const result = run(command, args, ['ignore', 'ignore', 'inherit']); if (result.error || result.status !== 0) finish(result) }",
-  "finish(run(process.execPath, [resolveDaemonCli(), 'mcp'], 'inherit'))",
-].join(";")
+// The deployment's own directory. A valid install stages the built LSP runtime
+// under `<runtimeDir>/packages/lsp-*`, so the CLI is resolved from here first and
+// the install never depends on the transient source root that produced it.
+function defaultSelfRoot() {
+  return dirname(fileURLToPath(import.meta.url))
+}
 
 export function normalizeCliPath(candidatePath) {
   return String(candidatePath).replaceAll("\\", "/")
@@ -189,44 +171,52 @@ function readDaemonPackageVersion(root, readFile = (file) => readFileSync(file, 
   }
 }
 
-function findBootstrapRoot(candidates, pathExists) {
-  return candidates.find((candidate) => pathExists(resolve(candidate.root, "package.json")))?.root ?? process.cwd()
+function createDisabledCandidate() {
+  return { command: [], root: "", path: "", exists: false, runtimeAvailable: false }
 }
 
-function createBootstrapCandidate(root, pathExists, resolveExecutable) {
-  const runtime = resolveJavaScriptRuntime(resolveExecutable)
-  const bun = resolveExecutable("bun")
-  const npm = resolveExecutable("npm")
-  return {
-    command: [runtime.command, "-e", LSP_BOOTSTRAP_SCRIPT, root, npm.command, bun.command],
-    root,
-    path: resolve(root, PACKAGE_REL, DIST_CLI_REL),
-    exists: runtime.available && npm.available && pathExists(resolve(root, PACKAGE_REL, "package.json")),
-    runtimeAvailable: runtime.available,
+function collectCandidates(roots, options, pathExists, resolveExecutable) {
+  const candidates = []
+  const seen = new Set()
+  for (const root of roots) {
+    for (const candidate of createAncestorCliCandidates({
+      startDirectory: root,
+      packageRel: PACKAGE_REL,
+      distCliRel: DIST_CLI_REL,
+      sourceCliRel: SOURCE_CLI_REL,
+      pathExists,
+      resolveExecutable,
+      isSourceCandidateAvailable: ({ root: candidateRoot }) =>
+        pathExists(resolve(candidateRoot, LSP_TOOLS_PACKAGE_REL, DIST_CLI_REL)) &&
+        readDaemonPackageVersion(candidateRoot, options.readFile) !== null,
+    })) {
+      if (seen.has(candidate.path)) continue
+      seen.add(candidate.path)
+      candidates.push(candidate)
+    }
   }
+  return candidates
 }
 
-// Port of `resolveLspCommand`, but anchored at the materialized repo root rather
-// than `import.meta.url` (the deployed runtime does not live beside the source).
+// Resolve the LSP CLI from a SELF-CONTAINED source first (the deployment's own
+// directory, which the install owns and which persists) and only then from the
+// materialized repo root (dev/lab checkouts). A root without a usable CLI yields
+// a DISABLED server: the runtime never emits the old npm bootstrap, which the
+// repo's `workspace:*` dependencies make unresolvable, and never depends on a
+// transient source root surviving.
 export function resolveLspCommand(options = {}) {
   const pathExists = options.exists ?? existsSync
   const resolveExecutable = options.resolveExecutable ?? ((name) => resolveRuntimeExecutable(name))
-  const startDirectory = options.repoRoot ?? process.cwd()
-  const candidates = createAncestorCliCandidates({
-    startDirectory,
-    packageRel: PACKAGE_REL,
-    distCliRel: DIST_CLI_REL,
-    sourceCliRel: SOURCE_CLI_REL,
-    pathExists,
-    resolveExecutable,
-    isSourceCandidateAvailable: ({ root }) =>
-      pathExists(resolve(root, LSP_TOOLS_PACKAGE_REL, DIST_CLI_REL)) && readDaemonPackageVersion(root, options.readFile) !== null,
-  })
+  const roots = [options.selfRoot ?? defaultSelfRoot(), options.repoRoot].filter(
+    (root) => typeof root === "string" && root.length > 0,
+  )
+  if (roots.length === 0) roots.push(process.cwd())
+  const candidates = collectCandidates(roots, options, pathExists, resolveExecutable)
   const distCandidate = candidates.find((candidate) => hasCliSuffix(candidate.path, DIST_CLI_REL) && candidate.exists)
   if (distCandidate) return distCandidate
   const sourceCandidate = candidates.find((candidate) => hasCliSuffix(candidate.path, SOURCE_CLI_REL) && candidate.exists)
   if (sourceCandidate) return sourceCandidate
-  return createBootstrapCandidate(findBootstrapRoot(candidates, pathExists), pathExists, resolveExecutable)
+  return createDisabledCandidate()
 }
 
 // Port of `getOpenCodeConfigDir({ binary: "opencode" })`: the CLI branch only.
