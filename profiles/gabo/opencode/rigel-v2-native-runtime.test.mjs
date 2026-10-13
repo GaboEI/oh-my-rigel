@@ -1606,6 +1606,7 @@ test("native runtime reads keyword_detector disabled and enabled lists from the 
 // these tests drive both real seams instead of the pure decision helper alone.
 function explicitCategoryRuntime({ config, createIds = ["ses_category_child"], directory = "/native-v2" }) {
   const switched = []
+  const creates = []
   const feed = createEventFeed()
   let createIndex = 0
   const context = {
@@ -1626,7 +1627,7 @@ function explicitCategoryRuntime({ config, createIds = ["ses_category_child"], d
     event: { subscribe: feed.subscribe },
     session: {
       hook: async (name, handler) => { if (name === "model.request") feed.requestHook = handler; return { dispose() {} } },
-      create: async () => ({ data: { id: createIds[createIndex++] ?? createIds.at(-1) } }),
+      create: async (input) => { creates.push(input); return { data: { id: createIds[createIndex++] ?? createIds.at(-1) } } },
       prompt: async () => ({ data: {} }),
       wait: async () => {},
       context: async () => [{ type: "assistant", content: [{ type: "text", text: "done" }] }],
@@ -1639,7 +1640,7 @@ function explicitCategoryRuntime({ config, createIds = ["ses_category_child"], d
       return { dispose() {} }
     } },
   }
-  return { feed, switched, context }
+  return { feed, switched, creates, context }
 }
 
 function categoryRequest(sessionID, providerID, modelID) {
@@ -1755,10 +1756,10 @@ test("native runtime keys an admitted background child on the explicit category 
 })
 
 // Category JSON routing: the live `~/.omo/omo.jsonc` `categories` block is the
-// runtime source when the V2 setup context exposes no plugin `config`. The
-// POSITIVE below proves the live entry is consumed; the NEGATIVE CONTROLS prove
-// an absent/unconfigured live file keeps the exact built-in semantics (the nine
-// built-ins, unchanged) - the same set the context-only path already produced.
+// runtime source whenever the live file is loaded (it is authoritative over any
+// context block). The POSITIVE below proves the live entry is consumed; the
+// NEGATIVE CONTROLS prove an absent live file keeps the exact built-in semantics
+// (the nine built-ins, unchanged) - the same set the context-only path produced.
 test("native runtime consumes the live ~/.omo/omo.jsonc categories when the setup context has none", async () => {
   await withLiveOmoConfig({ categories: { quick: { model: "xiaomi/mimo-v2.6-pro" } } }, async () => {
     const { feed, switched, context } = explicitCategoryRuntime({})
@@ -1797,6 +1798,23 @@ test("native runtime keeps the exact built-in category set when no live config e
   })
 })
 
+// The live `~/.omo/omo.jsonc` is the SINGLE runtime truth for categories. A
+// host-provided `context.config.categories` block (present, but empty or a
+// decoy) must NOT shadow it: otherwise quick falls to its built-in chain
+// (opencode-go/minimax-m3 variant "max"), which the provider rejects with a
+// no-route, and the Sisyphus-Junior child returns empty.
+test("native runtime keeps the live ~/.omo/omo.jsonc category pin authoritative over an empty context block", async () => {
+  await withLiveOmoConfig({ categories: { quick: { model: "xiaomi/mimo-v2.6-pro" } } }, async () => {
+    const { feed, creates, context } = explicitCategoryRuntime({ config: { categories: {} } })
+    const dispose = await plugin.setup(context)
+    await feed.definition.execute({ category: "quick", prompt: "Work." }, { sessionID: "ses_parent" })
+
+    // then: the live pin governs the child's start model, not the built-in chain
+    expect(creates[0]?.model).toMatchObject({ providerID: "xiaomi", id: "mimo-v2.6-pro" })
+    await dispose()
+  })
+})
+
 // Upstream 5a9bb74a4: the pre-spawn admission key must reflect the model the
 // child will actually start on. The model source is JSON-ONLY, so an agent with
 // no JSON model yields no key (the manifest is never consulted for models).
@@ -1828,6 +1846,25 @@ test("a live per-agent model override reaches the registered agent as a Model.Re
   const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
   expect(resolved.get("oracle")).toEqual({ providerID: "deepseek", id: "deepseek-v4-pro", variant: "max" })
   expect(typeof resolved.get("oracle")).toBe("object")
+})
+
+// C3: an unserved configured head WITH a served user `fallback_models` rung must
+// register the reachable rung - the SAME decision the delegated child makes at
+// create time. The registration map must carry the user's ordered chain,
+// otherwise the registered model stays the unserved head while the child runs
+// the rung, and the two surfaces disagree.
+test("a live agent override with a served fallback_models rung registers that rung", () => {
+  const manifest = { agents: { "Sisyphus-Junior": { name: "Sisyphus-Junior", mode: "subagent" } } }
+  const agentOverrides = resolveAuthoritativeAgentOverrides({
+    live: { state: "loaded", overrides: readAgentOverridesFromConfig({
+      "Sisyphus-Junior": { model: "kimi-for-coding/kimi-x", fallback_models: ["openai/gpt-6-luna-fast"] },
+    }) },
+  })
+  const explicit = nativeRuntime.buildExplicitAgentModels(agentOverrides)
+  const inventory = [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }]
+
+  const resolved = resolveProactiveAgentModels(manifest.agents, inventory, explicit, { chainFallback: false })
+  expect(resolved.get("Sisyphus-Junior")).toEqual({ providerID: "openai", id: "gpt-6-luna-fast" })
 })
 
 test("a malformed live agent model yields no Model.Ref and never falls back to the manifest", () => {

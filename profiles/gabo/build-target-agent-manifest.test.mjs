@@ -74,6 +74,7 @@ function digestAgentsDirectory(root) {
 describe("build-target-agent-manifest", () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-target-manifest-test-"))
   let manifest
+  let manifestWithoutOverride
   let report
   let expectedAtlasModel
   let beforeAgentsDigest
@@ -101,6 +102,23 @@ describe("build-target-agent-manifest", () => {
     })
     manifest = built.manifest
     report = built.report
+    // The Sisyphus-Junior `all` promotion is the `nativeAgentModeOverrides`
+    // entry in the real selection. Build a second manifest from a selection copy
+    // WITHOUT that override so the contract below can prove the override changes
+    // ONLY Sisyphus-Junior's mode (never the roster, the permissions, or another
+    // agent's record).
+    const withoutOverrideSelection = { ...selection }
+    delete withoutOverrideSelection.nativeAgentModeOverrides
+    const withoutOverrideSelectionPath = path.join(scratch, "v2-agent-selection-without-mode-override.json")
+    fs.writeFileSync(withoutOverrideSelectionPath, JSON.stringify(withoutOverrideSelection, null, 2))
+    const builtWithoutOverride = await buildTargetAgentManifest({
+      outputPath: path.join(scratch, "target-agent-manifest-without-mode-override.mjs"),
+      selectionPath: withoutOverrideSelectionPath,
+      judgePath,
+      sandbox: path.join(scratch, "isolation-without-mode-override"),
+      keepSandbox: true,
+    })
+    manifestWithoutOverride = builtWithoutOverride.manifest
     afterAgentsDigest = digestAgentsDirectory(agentsDirectory)
   }, 180_000)
 
@@ -121,6 +139,35 @@ describe("build-target-agent-manifest", () => {
         // The clean install really did drop Atlas from the raw plugin output, so
         // the presence above is the builder's repair and nothing else.
         expect(report.repairedIds).toContain(ATLAS_ID)
+      })
+
+      test.skipIf(!hasDist)("#then Sisyphus-Junior is promoted to mode all, and only its mode changes", () => {
+        expect(manifest.agents["Sisyphus-Junior"].mode).toBe("all")
+        // The override is what promotes it: without the override in the
+        // selection the same build leaves the agent on the subagent default.
+        expect(manifestWithoutOverride.agents["Sisyphus-Junior"].mode).toBe("subagent")
+        // The roster is identical, and the only differing record field across the
+        // two manifests is Sisyphus-Junior's mode: the override never adds or
+        // drops an agent, never edits a permission rule, and never touches another
+        // agent's record.
+        expect(Object.keys(manifest.agents)).toEqual(EXPECTED_AGENT_KEYS)
+        expect(Object.keys(manifestWithoutOverride.agents)).toEqual(EXPECTED_AGENT_KEYS)
+        const changedRecords = []
+        for (const id of EXPECTED_AGENT_KEYS) {
+          const withOverride = manifest.agents[id]
+          const without = manifestWithoutOverride.agents[id]
+          const fields = new Set([...Object.keys(withOverride), ...Object.keys(without)])
+          const differing = [...fields].filter((field) => JSON.stringify(withOverride[field]) !== JSON.stringify(without[field]))
+          if (differing.length > 0) changedRecords.push({ id, differing })
+        }
+        expect(changedRecords).toEqual([{ id: "Sisyphus-Junior", differing: ["mode"] }])
+      })
+
+      test.skipIf(!hasDist)("#then the coordinators keep their upstream primary mode", () => {
+        expect(manifest.agents["Prometheus - Plan Builder"].mode).toBe("primary")
+        expect(manifest.agents[ATLAS_ID].mode).toBe("primary")
+        expect(manifestWithoutOverride.agents["Prometheus - Plan Builder"].mode).toBe("primary")
+        expect(manifestWithoutOverride.agents[ATLAS_ID].mode).toBe("primary")
       })
 
       test.skipIf(!hasDist)("#then the Judge is emitted from the target judge.v2.json definition", () => {
