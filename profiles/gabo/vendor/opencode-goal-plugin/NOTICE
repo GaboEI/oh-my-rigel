@@ -1,0 +1,65 @@
+# Third-party notices: vendored community goal engine
+
+This file travels with the in-tree vendor of the community goal engine and is
+regenerated deterministically from `pin.json` plus the pinned tarballs. The
+vendorizer refuses to materialize a tree whose NOTICE does not match this output,
+and refuses a pin whose recorded integrity does not match the vendored bytes.
+
+## @prevalentware/opencode-goal-plugin 0.1.60
+- role: artifact (the vendored engine)
+- license: MIT
+- source: npm tag v0.1.60 -> commit cf22feaaa7ab3367053a9a99913cbc40e5c3224e
+- integrity: sha512-mDEwq3DdZtUPtty26FFf7SptSnTATeJYZGXOYEMVt/utjB7YwTzxiZwur6D65hxYEzhC6Qw7uSMi2wrP3OK0og==
+- vendored tarball: tarballs/prevalentware-opencode-goal-plugin-0.1.60.tgz
+- sha256: 292680c8a777113f92c82811a8683c4f9da368023d966fb0ead059c5243c9689
+
+## @opentui/solid 0.6.4
+- role: peer dependency (satisfied by the host TUI)
+- license: MIT
+- integrity: sha512-GGF72qTtMWxFQOCI/JoDBr4fzcquPf/QZhMybOiOGmWsXTdF1MNxfYeVEYQSAxHgvixW7a1qdB39cb2TMqnR7A==
+- vendored tarball: tarballs/opentui-solid-0.6.4.tgz
+- sha256: 207597d8b10e1a2b92033e3cdd4e76dcdfaeea15a67b2a3f111536a632446269
+- install path: node_modules/@opentui/solid
+
+## effect-goal-state 3.22.2
+- role: runtime dependency (self-contained)
+- license: MIT
+- integrity: sha512-fm1CQXCs7GTMwpadZxwU5rnAb2bN6mbQpknq/pXBGCzSKkosNYb9k0wsoL0TfB10rSa5xOEZJjo77u/KLXSANg==
+- vendored tarball: tarballs/effect-3.22.2.tgz
+- sha256: 5bf8b2fa447612639214968a58d529329b90e8faacdc99ff8429d40dd5a46b45
+- install path: node_modules/effect-goal-state
+- npm alias of: effect
+
+## fast-check 3.23.2
+- role: runtime dependency (self-contained)
+- license: MIT
+- integrity: sha512-h5+1OzzfCC3Ef7VbtKdcv7zsstUQwUDlYpUTvjeUsJAssPgLn7QzbboPtL5ro04Mq0rPOsMzl7q5hIbRs2wD1A==
+- vendored tarball: tarballs/fast-check-3.23.2.tgz
+- sha256: e0dc9a854e04856bd9962fc64001a21d609d44a3ef0f3b1b224de5f488334646
+- install path: node_modules/effect-goal-state/node_modules/fast-check
+
+## pure-rand 6.1.0
+- role: runtime dependency (self-contained)
+- license: MIT
+- integrity: sha512-bVWawvoZoBYpp6yIoQtQXHZjmz35RSVHnUOTefl8Vcjr8snTPY1wnpSPMWekcFwbxI6gtmT7rSYPFvz71ldiOA==
+- vendored tarball: tarballs/pure-rand-6.1.0.tgz
+- sha256: cb9e5ff9b8f365590b793b63a29941913414285a143ba2ac8313f963f7f06fd7
+- install path: node_modules/effect-goal-state/node_modules/pure-rand
+
+## solid-js 1.9.12
+- role: peer dependency (satisfied by the host TUI)
+- license: MIT
+- integrity: sha512-QzKaSJq2/iDrWR1As6MHZQ8fQkdOBf8GReYb7L5iKwMGceg7HxDcaOHk0at66tNgn9U2U7dXo8ZZpLIAmGMzgw==
+- vendored tarball: tarballs/solid-js-1.9.12.tgz
+- sha256: 532707464090c105cbd332cc41ad3919bb7030dfcf57b5763e2358d1c2ddf170
+- install path: node_modules/solid-js
+
+## zod 4.6.7
+- role: runtime dependency (self-contained)
+- license: MIT
+- integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==
+- vendored tarball: tarballs/zod-4.6.7.tgz
+- sha256: 84efd155bed93270286e793fc951be270b536cbd5b0eeb111f0fa3967201d698
+- install path: node_modules/zod
+
+The upstream MIT license text travels byte-identical in `LICENSE`.
