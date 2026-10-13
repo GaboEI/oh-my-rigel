@@ -377,10 +377,44 @@ function sessionDomain(client) {
 }
 
 /**
+ * Surface the child session's provider failure instead of the generic
+ * "No response" string. V2 records a failed generation on the assistant message
+ * (`error` object / `finish: "error"`) and an idle part with `outcome: "failed"`;
+ * either is a real, provider-supplied reason the caller must see (Fase 6 contract:
+ * an EXPLICIT error when the provider rejects).
+ */
+export function extractChildFailure(messages) {
+  if (!Array.isArray(messages)) return ""
+  let generic = ""
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const error = message?.error
+    const detail = typeof error === "string" ? error : error?.message ?? error?.data?.message
+    if (typeof detail === "string" && detail.trim()) return detail.trim()
+    if (!generic && (message?.finish === "error" || (message?.type === "idle" && message?.outcome === "failed"))) {
+      generic = "the child session ended without an assistant response"
+    }
+  }
+  return generic
+}
+
+/**
  * Run the multimodal-looker child session. Returns the child's final text, or
  * an `Error:` string matching V1. `clients` is the ordered candidate list.
+ * `resolveModel` (optional) resolves the child's start model the same way the
+ * delegation path does; V1 resolved a vision-capable model for this child, so
+ * omitting it left the child inheriting an unrelated global (the `model=NULL`
+ * symptom). Resolution failure degrades to the inherited global, never blocks.
  */
-export async function runLookAtSession({ clients, location, goal, files, textParts, parentSessionID }) {
+export async function runLookAtSession({ clients, location, goal, files, textParts, parentSessionID, resolveModel }) {
+  let resolvedModel
+  if (typeof resolveModel === "function") {
+    try {
+      resolvedModel = await resolveModel()
+    } catch (error) {
+      console.error(`[oh-my-rigel] Native V2 look_at child model resolution failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   let lastError
   for (const client of clients.filter(Boolean)) {
     try {
@@ -389,6 +423,7 @@ export async function runLookAtSession({ clients, location, goal, files, textPar
         agent: MULTIMODAL_LOOKER_AGENT,
         location,
         ...(parentSessionID ? { parentID: parentSessionID } : {}),
+        ...(resolvedModel ? { model: resolvedModel } : {}),
       })
       const sessionID = sessionIdOf(created)
       if (!sessionID) throw new Error("OpenCode V2 did not return a look_at child session ID")
@@ -402,7 +437,10 @@ export async function runLookAtSession({ clients, location, goal, files, textPar
       if (typeof sessions.wait === "function") await sessions.wait({ sessionID })
       const messages = typeof sessions.context === "function" ? contextMessages(await sessions.context({ sessionID })) : []
       const text = extractLatestAssistantText(messages)
-      if (!text) return "Error: No response from multimodal-looker agent"
+      if (!text) {
+        const failure = extractChildFailure(messages)
+        return failure ? `Error: multimodal-looker child failed: ${failure}` : "Error: No response from multimodal-looker agent"
+      }
       return text
     } catch (error) {
       lastError = error
@@ -411,7 +449,7 @@ export async function runLookAtSession({ clients, location, goal, files, textPar
   throw lastError ?? new Error("OpenCode V2 look_at child session could not be created")
 }
 
-export function createLookAtTool({ clients, location }) {
+export function createLookAtTool({ clients, location, resolveModel }) {
   return {
     description: LOOK_AT_DESCRIPTION,
     input: {
@@ -441,6 +479,7 @@ export function createLookAtTool({ clients, location }) {
           files,
           textParts,
           parentSessionID: toolContext?.sessionID,
+          resolveModel,
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

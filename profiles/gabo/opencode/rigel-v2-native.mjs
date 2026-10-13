@@ -44,6 +44,7 @@ import { createRuntimeHostSkillSource, registerNativeSkills, selectSkillsForChil
 import { createSkillMcpManager, createSkillMcpToolDefinition, registerSkillMcpServers } from "./rigel-v2-native-skill-mcp.mjs"
 import { createSlashcommandTool } from "./tools/slashcommand.tools.mjs"
 import { createGlobGrepTools } from "./tools/glob-grep.tools.mjs"
+import { MULTIMODAL_LOOKER_AGENT } from "./tools/look-at.tools.mjs"
 import { createNativeToolFamilies } from "./rigel-v2-native-tools.mjs"
 import { registerConditionalNativeTools } from "./rigel-v2-native-conditional-tools.mjs"
 import { formatGoalResponse, parseGoalCommand } from "./tools/goal.tools.mjs"
@@ -1511,6 +1512,11 @@ export default {
         // to the monitor terminal port and nothing else. Undefined when the host
         // exposes no verified loopback server, so the monitor family stays inert.
         serverApi: toolServerApi,
+        // The look_at child must resolve its start model the way the delegation
+        // path does. JSON-only: a user pin is honored, and with no pin the child
+        // inherits the OpenCode global (the resolver returns undefined). Without
+        // this the child ran model-less (`session_v2.model=NULL`) even with a pin.
+        resolveLookAtModel: () => resolveDelegationModel(undefined, { name: MULTIMODAL_LOOKER_AGENT }),
       })
       nativeToolRegistry = families.registry
       coreFamilyToolNames = Object.keys(families.tools)

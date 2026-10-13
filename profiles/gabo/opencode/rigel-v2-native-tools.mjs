@@ -40,9 +40,11 @@ function isPlainObject(value) {
  * @param {object}   input.context   V2 setup context (storage/event/session domains)
  * @param {object}   input.pluginConfig  profile config block (monitor settings)
  * @param {object}   [input.serverApi]   injected HTTP server API (createServerApi)
+ * @param {Function} [input.resolveLookAtModel]  resolves the look_at child's start
+ *   model through the same JSON-only resolver the delegation path uses
  * @returns {{ tools: Record<string, object>, registry: object|undefined, unavailable: object[] }}
  */
-export function createNativeToolFamilies({ clients, location, manifest, context, pluginConfig, readTodos, serverApi }) {
+export function createNativeToolFamilies({ clients, location, manifest, context, pluginConfig, readTodos, serverApi, resolveLookAtModel }) {
   const gates = readNativeGates(manifest)
   const tools = {}
 
@@ -50,7 +52,7 @@ export function createNativeToolFamilies({ clients, location, manifest, context,
   // family keeps its client-based path, so this migration changes no session
   // surface; wiring the session server transport is a separate, atomic task.
   Object.assign(tools, createSessionTools({ clients, directory: location?.directory, readTodos }))
-  tools.look_at = createLookAtTool({ clients, location })
+  tools.look_at = createLookAtTool({ clients, location, resolveModel: resolveLookAtModel })
 
   let registry
   const unavailable = []

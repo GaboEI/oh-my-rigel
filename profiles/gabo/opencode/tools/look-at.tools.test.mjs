@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   createLookAtTool,
+  extractChildFailure,
   normalizeArgs,
   validateArgs,
   prepareLookAtInput,
@@ -15,7 +16,7 @@ import {
 
 // A fake V2 session domain that records the child session and returns a canned
 // assistant message. This is the real boundary look_at drives.
-function fakeClient({ assistantText = "EXTRACTED", failCreate = false } = {}) {
+function fakeClient({ assistantText = "EXTRACTED", failCreate = false, childMessages } = {}) {
   const calls = { create: [], prompt: [], wait: [], context: [] }
   return {
     calls,
@@ -29,14 +30,15 @@ function fakeClient({ assistantText = "EXTRACTED", failCreate = false } = {}) {
       wait: async (input) => { calls.wait.push(input) },
       context: async (input) => {
         calls.context.push(input)
+        if (Array.isArray(childMessages)) return { data: childMessages }
         return { data: [{ type: "assistant", content: [{ type: "text", text: assistantText }] }] }
       },
     },
   }
 }
 
-function toolFor(client) {
-  return createLookAtTool({ clients: [client], location: { directory: "/work" } })
+function toolFor(client, options = {}) {
+  return createLookAtTool({ clients: [client], location: { directory: "/work" }, ...options })
 }
 
 test("look_at validates the one-of rules and rejects remote URLs", () => {
@@ -101,6 +103,64 @@ test("look_at reports no response when the child returns no assistant text", asy
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// Fase 6: V1 resolved a vision-capable model for the look_at child; a dropped
+// resolver left the child model-less (`session_v2.model=NULL`). The tool must
+// pass the resolved ref to the child create call, like the delegation path.
+test("look_at passes the resolved child model into the session create call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "look-at-"))
+  try {
+    const imagePath = join(dir, "shot.png")
+    writeFileSync(imagePath, "x")
+    const client = fakeClient({ assistantText: "A red square." })
+    const tool = toolFor(client, { resolveModel: async () => ({ providerID: "zai-coding-plan", id: "glm-4.6v" }) })
+    await tool.execute({ file_path: imagePath, goal: "g" }, { sessionID: "ses_parent" })
+    expect(client.calls.create[0]).toMatchObject({ agent: "multimodal-looker", model: { providerID: "zai-coding-plan", id: "glm-4.6v" } })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("look_at omits the model field when no model resolves (inherit the global, unchanged)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "look-at-"))
+  try {
+    const imagePath = join(dir, "shot.png")
+    writeFileSync(imagePath, "x")
+    const client = fakeClient({ assistantText: "A red square." })
+    const tool = toolFor(client, { resolveModel: async () => undefined })
+    await tool.execute({ file_path: imagePath, goal: "g" }, { sessionID: "ses_parent" })
+    expect(Object.prototype.hasOwnProperty.call(client.calls.create[0], "model")).toBe(false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Fase 6 contract: when the provider rejects the child, look_at must return the
+// child's real reason, not the generic no-response string that hid the 400.
+test("look_at surfaces the child's provider failure instead of the generic no-response string", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "look-at-"))
+  try {
+    const imagePath = join(dir, "shot.png")
+    writeFileSync(imagePath, "x")
+    const client = fakeClient({ childMessages: [
+      { type: "assistant", agent: "multimodal-looker", finish: "error", error: { type: "provider.invalid-request", message: "`temperature` may only be set to 1 when thinking is enabled or in adaptive mode." } },
+      { type: "idle", outcome: "failed" },
+    ] })
+    const output = await toolFor(client).execute({ file_path: imagePath, goal: "g" })
+    expect(output).toContain("multimodal-looker child failed")
+    expect(output).toContain("temperature")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("extractChildFailure reads the child's error object, an error finish, or a failed idle, and is empty otherwise", () => {
+  expect(extractChildFailure([{ type: "assistant", error: { message: "provider boom" } }])).toBe("provider boom")
+  expect(extractChildFailure([{ type: "assistant", finish: "error" }])).toContain("ended without an assistant response")
+  expect(extractChildFailure([{ type: "idle", outcome: "failed" }])).toContain("ended without an assistant response")
+  expect(extractChildFailure([{ type: "assistant", content: [{ type: "text", text: "ok" }] }])).toBe("")
+  expect(extractChildFailure([])).toBe("")
 })
 
 test("look_at surfaces a child creation failure as the V1 Error string", async () => {

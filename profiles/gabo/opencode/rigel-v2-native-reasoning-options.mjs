@@ -72,6 +72,82 @@ function baseModelID(modelID) {
 }
 
 /**
+ * Whether a Claude model forces Anthropic into adaptive thinking, where any
+ * `temperature` other than 1 is rejected ("temperature may only be set to 1 when
+ * thinking is enabled or in adaptive mode"). The V2 runtime owns the
+ * (model, thinking, temperature) combination, so it must not forward a
+ * temperature on exactly these models.
+ *
+ * The profile is copied standalone into the host, so this `.mjs` cannot import
+ * the TypeScript in `packages/` (see `rigel-v2-background-key.mjs`). The
+ * predicate therefore re-expresses TWO repo authorities, and the co-located test
+ * pins the alignment against the model-core source it cannot import. It is the
+ * UNION of the two, NOT a pure mirror of the host:
+ *
+ *   1. The host's Anthropic `supportsThinkingBlockBinding`
+ *      (`packages/ai/src/protocols/utils/claude-model.ts`, OpenCode host ref
+ *      5a4dd5b4): a `claude-<family>-<major>[.<minor>]` id with
+ *      `major > 5 || (major === 5 && minor >= 1)` is pushed into implicit
+ *      adaptive thinking. `isHostThinkingBindingModel` reproduces that numeric
+ *      rule literally, including the host regex. The host also short-circuits on
+ *      an explicit `model.compatibility.supportsThinkingBlockBinding` override;
+ *      this seam only sees a model id, so that override path is intentionally
+ *      not reproduced.
+ *
+ *   2. The model-core adaptive-only families the host numeric rule does NOT
+ *      reach (`packages/model-core/src/model-family-detectors.ts`):
+ *      `isClaudeOpus47OrLaterModel` (Opus 4.7, Opus 4.8, bare Opus 5, and Fable)
+ *      and `isClaudeFableOrMythosModel` (Fable / Mythos). Their provider surface
+ *      is adaptive-only and `resolveCompatibleModelSettings` drops `temperature`
+ *      for them, so a pure host mirror would under-cover Opus 4.7/4.8, bare
+ *      Opus 5 (version 5.0) and Fable/Mythos. `isOpus47OrLaterName` /
+ *      `isFableOrMythosName` reproduce those two detectors on their own
+ *      `extractModelName` + dot-normalization input.
+ */
+const CLAUDE_VERSION_PATTERN = /(?:^|[./])claude-([a-z]+)-(\d+)(?:[.-](\d{1,2}))?(?:$|[-:@])/
+const CLAUDE_OPUS_VERSION_PATTERN = /claude-opus-(\d+)(?:-(\d+))?/
+const CLAUDE_FABLE_OR_MYTHOS_PATTERN = /claude-(?:fable|mythos)-(?:\d+|preview)/
+
+/** model-core's `extractModelName` + `.`-to-`-` normalization (last `/` segment). */
+function modelCoreName(modelID) {
+  const raw = String(modelID ?? "")
+  const slash = raw.lastIndexOf("/")
+  const base = slash === -1 ? raw : raw.slice(slash + 1)
+  return base.toLowerCase().replaceAll(".", "-")
+}
+
+/** Mirror of `isClaudeOpus47OrLaterModel` for an already-normalized name. */
+function isOpus47OrLaterName(name) {
+  if (name.includes("claude-fable")) return true
+  const match = CLAUDE_OPUS_VERSION_PATTERN.exec(name)
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = match[2] === undefined ? 0 : Number(match[2])
+  if (Number.isNaN(major) || Number.isNaN(minor)) return false
+  return major > 4 || (major === 4 && minor >= 7)
+}
+
+/** Mirror of `isClaudeFableOrMythosModel` for an already-normalized name. */
+function isFableOrMythosName(name) {
+  return CLAUDE_FABLE_OR_MYTHOS_PATTERN.test(name)
+}
+
+/** Literal mirror of the host's `supportsThinkingBlockBinding` numeric rule. */
+function isHostThinkingBindingModel(modelID) {
+  const match = CLAUDE_VERSION_PATTERN.exec(String(modelID ?? "").toLowerCase())
+  if (!match) return false
+  const major = Number(match[2])
+  const minor = match[3] === undefined ? 0 : Number(match[3])
+  return major > 5 || (major === 5 && minor >= 1)
+}
+
+export function impliesAdaptiveThinking(modelID) {
+  if (isHostThinkingBindingModel(modelID)) return true
+  const name = modelCoreName(modelID)
+  return isOpus47OrLaterName(name) || isFableOrMythosName(name)
+}
+
+/**
  * The V1 owner treats a model whose id already carries the `-high` suffix as
  * already a high variant and declines to raise it. The V1 `getHighVariant`
  * rename map is intentionally not carried: V2 selects reasoning through model
@@ -130,7 +206,10 @@ export function buildReasoningOptions({ tuning, currentTurnText, modelID, thinkM
   let explicitLevel
   let explicitBudget
   if (tuning && typeof tuning === "object" && !Array.isArray(tuning)) {
-    if (tuning.temperature !== undefined) options.temperature = tuning.temperature
+    // A temperature the host's adaptive-thinking models cannot honor (Anthropic:
+    // temperature must be 1 while thinking is enabled/adaptive) is dropped rather
+    // than coerced, matching the V1 compatibility guard's semantics.
+    if (tuning.temperature !== undefined && !impliesAdaptiveThinking(modelID)) options.temperature = tuning.temperature
     if (tuning.top_p !== undefined) options.topP = tuning.top_p
     if (tuning.maxTokens !== undefined) options.maxTokens = tuning.maxTokens
     if (tuning.textVerbosity !== undefined) options.textVerbosity = tuning.textVerbosity
