@@ -22,6 +22,27 @@ test("context hook adds root roster to system and agent tuning to options", asyn
   expect(event.options).toMatchObject({ temperature: 0.1, maxTokens: 4096 })
 })
 
+// Fase 6: the look_at child runs the same context hook; on a model the host pushes
+// into adaptive thinking the forwarded agent temperature is invalid (provider 400),
+// so the child session must not receive it.
+test("context hook drops an adaptive-model temperature on a delegated child session", async () => {
+  const hook = createNativeContextHook({
+    getDelegationRoster: async () => [],
+    getAgentRequestBody: () => ({ temperature: 0.1 }),
+    isRootSession: async () => false,
+  })
+  const event = {
+    sessionID: "ses_look_child",
+    agent: "multimodal-looker",
+    model: { providerID: "opencode-go", modelID: "claude-haiku-5-5" },
+    system: [],
+    messages: [{ role: "user", content: "Analyze this file/image and extract the requested information." }],
+    options: {},
+  }
+  await hook(event)
+  expect(event.options.temperature).toBeUndefined()
+})
+
 test("context collector orders, replaces, consumes, and injects only into the last real user message", async () => {
   const collector = createNativeContextCollector()
   collector.register("ses_root", { source: "custom", id: "shared", content: "old", priority: "low" })
