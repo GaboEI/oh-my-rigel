@@ -15,6 +15,7 @@ import path from "node:path"
 
 import { discoverRuntimeModules } from "./native-runtime-modules.mjs"
 import { writeTextAtomic } from "./rigel-v2-lifecycle-transaction.mjs"
+import { goalVendorDigestKey, materializeGoalVendor } from "./rigel-v2-goal-vendor.mjs"
 import {
   parseJsonc,
   registerCompanionCliPlugin,
@@ -97,6 +98,17 @@ export function stageLspRuntime({ sourceRoot, runtimeDir }) {
   return staged
 }
 
+/**
+ * Stage the pinned, verified goal vendor into the deployment. Additive and fully
+ * offline: it registers nothing, writes no `opencode.json` / `cli.json` key and
+ * touches no live state. Nothing in the runtime references the materialized tree
+ * yet, so the engine stays dark; the returned digest only records that the exact
+ * vendored tree landed in the versioned deployment.
+ */
+export function stageGoalVendor({ sourceRoot, runtimeDir }) {
+  return materializeGoalVendor({ sourceRoot, runtimeDir })
+}
+
 export function buildProtectedFingerprint(config) {
   return { obsidian: sha(config.mcp?.obsidian), codexPlugin: sha(codexPlugin(config)) }
 }
@@ -166,6 +178,10 @@ export function materializeNativeRuntime({
   // from its own directory instead of the transient source checkout.
   const stagedLsp = stageLspRuntime({ sourceRoot, runtimeDir })
 
+  // Stage the pinned goal vendor (dark: nothing references it yet). The digest is
+  // returned so the installer can record it inside `versionDigests`.
+  const goalVendor = stageGoalVendor({ sourceRoot, runtimeDir })
+
   const before = readJson(configFile)
   const candidate = structuredClone(before)
   const plugins = Array.isArray(candidate.plugin) ? candidate.plugin : []
@@ -183,5 +199,5 @@ export function materializeNativeRuntime({
   })
   writeTextAtomic(cliConfigFile, `${JSON.stringify(cliAfter, null, 2)}\n`, { mode: 0o600 })
 
-  return { pluginEntry: runtimeDir, cliConfigFile, notificationEnabled: notificationOptions.enabled, stagedLsp }
+  return { pluginEntry: runtimeDir, cliConfigFile, notificationEnabled: notificationOptions.enabled, stagedLsp, goalVendor }
 }

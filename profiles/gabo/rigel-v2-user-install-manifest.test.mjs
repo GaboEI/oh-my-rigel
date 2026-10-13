@@ -58,6 +58,14 @@ function runInstall(args, env) {
   })
 }
 
+// Forward the parent's temp root: the spawned installer and the sandboxed
+// manifest builder it launches must not depend on an OS temp directory that can
+// be quota-limited, and forwarding it keeps every produced path inside the same
+// isolated temp tree the assertions check.
+function withTemporaryRoot(env) {
+  return process.env.TMPDIR === undefined ? env : { ...env, TMPDIR: process.env.TMPDIR }
+}
+
 async function loadManifest(runtimeManifest) {
   return (await import(`${pathToFileURL(runtimeManifest).href}?t=${Date.now()}`)).default
 }
@@ -105,7 +113,7 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
       XDG_CACHE_HOME: path.join(base, "installer-xdg", "cache"),
       OMO_DISABLE_PROCESS_CLEANUP: "1",
     }
-    install = runInstall(["--home", home, "--config", configFile, "--state", stateRoot], env)
+    install = runInstall(["--home", home, "--config", configFile, "--state", stateRoot], withTemporaryRoot(env))
     if (install.status === 0) manifest = await loadManifest(runtimeManifest)
   }, 300_000)
 
@@ -154,6 +162,34 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
         expect(resolved.disabled).toBe(false)
         expect(resolved.command).toContain(deploymentDist)
       })
+
+      test("#then every existing install check stays green with the dark goal vendor present", () => {
+        const emitted = JSON.parse(install.stdout)
+        const checks = Object.fromEntries(emitted.status.checks.map((check) => [check.name, check.pass]))
+        // The vendor is additive and does not enter the Rigel family, so the
+        // pre-existing check set is unchanged and still green.
+        for (const name of [
+          "runtime.materialized",
+          "agentManifest.present",
+          "config.singleRigelEntry",
+          "cli.singleRigelEntry",
+          "runtime.digestMatches",
+        ]) {
+          expect(checks[name], `${name} regressed with the dark vendor present`).toBe(true)
+        }
+        expect(emitted.status.pass).toBe(true)
+      })
+
+      test("#then the dark vendor is materialized in the versioned tree and its digest is recorded beside the runtime digest", () => {
+        const state = JSON.parse(fs.readFileSync(path.join(stateRoot, "install-state.json"), "utf8"))
+        const runtimeDir = path.join(stateRoot, "versions", "1", "runtime")
+        const vendored = path.join(runtimeDir, "vendor", "opencode-goal-plugin")
+        expect(fs.existsSync(path.join(vendored, "pin.json"))).toBe(true)
+        expect(fs.existsSync(path.join(vendored, "node_modules", "@prevalentware", "opencode-goal-plugin", "dist", "server.js"))).toBe(true)
+        expect(state.versionDigests["1"]).toMatch(/^[0-9a-f]{64}$/)
+        expect(state.versionDigests["opencode-goal-plugin:1"]).toMatch(/^[0-9a-f]{64}$/)
+        expect(state.versionDigests["opencode-goal-plugin:1"]).not.toBe(state.versionDigests["1"])
+      })
     })
   })
 })
@@ -187,7 +223,7 @@ describe("rigel-v2-user-install runtime manifest with default state root under H
     // provisioned profile into its own sandbox, this shape hit
     // isolated-v2-env.mjs:72 ("refusing isolation inside the real home") and the
     // bare generator aborted on the missing Atlas agent.
-    install = runInstall([], env)
+    install = runInstall([], withTemporaryRoot(env))
     if (install.status === 0) manifest = await loadManifest(runtimeManifest)
   }, 300_000)
 

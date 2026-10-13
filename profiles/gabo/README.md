@@ -10,7 +10,7 @@ It contains no credentials, accounts, model catalog, SSH targets, database setti
 
 ## Layout
 
-- `omo.jsonc` defines the OmO `gabo` profile: Tavily, one external Context7, internal Goal ownership, Sisyphus as the merged orchestrator, and canonical Playwright. The internal Goal is enabled by default (`goal.enabled: true`); the retired `@prevalentware/opencode-goal-plugin` and its state/cache must stay absent.
+- `omo.jsonc` defines the OmO `gabo` profile: Tavily, one external Context7, internal Goal ownership, Sisyphus as the merged orchestrator, and canonical Playwright. The internal Goal is enabled by default (`goal.enabled: true`); the retired `@prevalentware/opencode-goal-plugin` must stay unregistered and its state/cache must stay absent. The pinned community engine is vendored **dark** in-tree (see `vendor/opencode-goal-plugin/README.md`): the bytes travel with the repository so a future activation is offline and reproducible, but nothing registers it, no goal config key exists, and no state is created.
 - `opencode/prompts/sisyphus-orchestration.md` adds the delegation and acceptance contract to upstream Sisyphus. `opencode/agents/judge.md` packages Gabo's independent Juez methodology, adapted to generic Rigel terminology and registered as the V2 `judge` agent from the native manifest. Momus is a distinct plan critic, never a Juez alias.
 - `opencode/rigel-v2-native*.mjs` is the native OpenCode V2 runtime. It resolves agents and creates delegated sessions through V2 APIs directly; it does not execute OmO's V1 plugin hooks through a compatibility bridge. The retired bridge and legacy activation paths are quarantined under `attic/`, and profile validation fails if any active file references them.
 - `attic/` holds the quarantined V1 bridge, dist/adapter activation switches, live-trial service wrappers, and the five bridge-based QA contracts. It is historical reference only: it is never built, activated, or counted by the acceptance suite.
@@ -19,6 +19,18 @@ It contains no credentials, accounts, model catalog, SSH targets, database setti
 - `integration-manifest.json` records the core per-machine connections (Context7, Playwright, and Obsidian), opt-in integrations (GitHub and Postgres), and the excluded/quarantined services.
 
 ## Validation
+
+**Live validation boundary (aligned with `.omo/rules/protect-opencode-v1.md`):** live validation runs
+only on **NLS1**, with a snapshot taken before the change and a verified rollback after it. The
+isolated laboratory (`opencode-v2-lab.service`) and Docker are prohibited and must not be used as a
+live gate or as a substitute for NLS1. Every laboratory runner described below is therefore historical
+and inapplicable to a live gate; `profiles/gabo/check-rule-nls1-only.mjs` fails if that alignment is
+reverted.
+
+**Dark goal vendor:** `node profiles/gabo/rigel-v2-goal-vendor.mjs verify` checks the pinned artifact,
+its closure, the upstream `LICENSE` and the deterministic `NOTICE`; `materialize --out <dir>` lays the
+verified tree offline. A maintainer re-pins the artifact with `acquire` plus `seal` in a PR, never by
+editing the vendored bytes.
 
 Run `node profiles/gabo/validate-profile.mjs`. It validates the static integration contract and rejects personal paths, secret markers, WatchdogVPN content, a duplicate OmO Context7, a competing OmO root goal, and a non-placeholder plugin path.
 

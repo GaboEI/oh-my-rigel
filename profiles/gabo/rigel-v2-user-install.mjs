@@ -29,6 +29,7 @@ import {
   resolveRuntimeNotificationOptions,
 } from "./rigel-v2-runtime-materialize.mjs"
 import { registerCompanionCliPlugin, removeRigelCliEntries } from "./notification-activation-config.mjs"
+import { goalVendorDigestKey } from "./rigel-v2-goal-vendor.mjs"
 import { renderCleanInstallProfile } from "./rigel-v2-clean-install-profile.mjs"
 import {
   beginLifecycleTransaction,
@@ -441,7 +442,14 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
     env: process.env,
   })
   const runtimeDigest = treeDigest(path.join(versionDir, "runtime"))
-  const versionDigests = { ...(previousState?.versionDigests ?? {}), [version]: runtimeDigest }
+  // Additive: the version key keeps its exact meaning for `runtime.digestMatches`
+  // and rollback, and the pinned goal vendor's materialized-tree digest is recorded
+  // beside it under a namespaced key.
+  const versionDigests = {
+    ...(previousState?.versionDigests ?? {}),
+    [version]: runtimeDigest,
+    [goalVendorDigestKey(version)]: result.goalVendor.treeDigest,
+  }
   const base = {
     schema: STATE_SCHEMA,
     version,
