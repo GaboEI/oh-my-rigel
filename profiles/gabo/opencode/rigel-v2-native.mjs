@@ -1862,24 +1862,32 @@ export default {
         name: "goal",
         description: "Set, pause, resume, clear, or show the current session goal.",
         execute: async ({ sessionID, prompt, delivery }) => {
-          void delivery
-          if (typeof sessionID !== "string" || !sessionID) return formatGoalResponse(null)
+          if (typeof sessionID !== "string" || !sessionID) return
           // The V2 command executor receives a PromptInput object, not a raw
-          // string; the slash-command arguments live on `text`.
+          // string; the slash-command arguments live on `text`. The host discards
+          // the executor's return value, so the rendered goal snapshot is delivered
+          // through `ctx.session.prompt` — the official command-executor contract,
+          // identical to the peer builtin commands.
+          const base = prompt !== null && typeof prompt === "object" ? prompt : {}
           const goalText = typeof prompt === "string" ? prompt : prompt?.text ?? ""
+          const deliver = (goal) => context.session.prompt({ ...base, sessionID, text: formatGoalResponse(goal), delivery })
           const parsed = parseGoalCommand(goalText)
           switch (parsed.kind) {
             case "setObjective":
-              return formatGoalResponse(await goalController.setGoal(sessionID, parsed.objective))
+              await deliver(await goalController.setGoal(sessionID, parsed.objective))
+              return
             case "setStatus":
-              return formatGoalResponse(parsed.status === "paused"
+              await deliver(parsed.status === "paused"
                 ? await goalController.pauseGoal(sessionID)
                 : await goalController.resumeGoal(sessionID))
+              return
             case "clear":
               await goalController.clearGoal(sessionID)
-              return formatGoalResponse(null)
+              await deliver(null)
+              return
             case "show":
-              return formatGoalResponse(await goalController.getGoal(sessionID))
+              await deliver(await goalController.getGoal(sessionID))
+              return
           }
         },
       }))
