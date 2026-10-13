@@ -17,19 +17,22 @@ import {
 } from "./rigel-v2-native-builtin-mcps.mjs"
 
 const REPO = "/repo"
+// A root that owns nothing: used as the explicit self/repo anchor when a test
+// wants to prove a candidate is NOT resolved from that root.
+const EMPTY = "/empty-root"
 const DAEMON_DIST = path.join(REPO, "packages/lsp-daemon/dist/cli.js")
 const DAEMON_SOURCE = path.join(REPO, "packages/lsp-daemon/src/cli.ts")
 const TOOLS_DIST = path.join(REPO, "packages/lsp-tools-mcp/dist/cli.js")
 const DAEMON_PKG = path.join(REPO, "packages/lsp-daemon/package.json")
 const ROOT_PKG = path.join(REPO, "package.json")
 
-function layout({ dist = false, source = false, toolsDist = false, daemonVersion = "9.9.9" } = {}) {
+function layoutAt(root, { dist = false, source = false, toolsDist = false, daemonVersion = "9.9.9" } = {}) {
   const files = new Map()
-  if (dist) files.set(DAEMON_DIST, "")
-  if (source) files.set(DAEMON_SOURCE, "")
-  if (toolsDist) files.set(TOOLS_DIST, "")
-  files.set(DAEMON_PKG, JSON.stringify({ version: daemonVersion }))
-  files.set(ROOT_PKG, "{}")
+  if (dist) files.set(path.join(root, "packages/lsp-daemon/dist/cli.js"), "")
+  if (source) files.set(path.join(root, "packages/lsp-daemon/src/cli.ts"), "")
+  if (toolsDist) files.set(path.join(root, "packages/lsp-tools-mcp/dist/cli.js"), "")
+  files.set(path.join(root, "packages/lsp-daemon/package.json"), JSON.stringify({ version: daemonVersion }))
+  files.set(path.join(root, "package.json"), "{}")
   return {
     exists: (candidate) => files.has(candidate),
     readFile: (candidate) => {
@@ -37,6 +40,10 @@ function layout({ dist = false, source = false, toolsDist = false, daemonVersion
       return files.get(candidate)
     },
   }
+}
+
+function layout(options = {}) {
+  return layoutAt(REPO, options)
 }
 
 const available = (name) => ({ command: `/usr/bin/${name}`, available: true })
@@ -119,20 +126,36 @@ describe("native builtin MCP port", () => {
     })
   })
 
-  describe("#given createLspMcpConfig #when no CLI exists #then it degrades to the bootstrap script", () => {
-    test("#then the bootstrap candidate is used when the runtime and npm are present", () => {
+  describe("#given createLspMcpConfig #when no self-contained CLI exists anywhere #then it disables instead of running an unresolvable install", () => {
+    test("#then the server is disabled and no package-manager install command is ever emitted", () => {
       const fsx = layout({ dist: false, source: false, toolsDist: false })
-      const config = createLspMcpConfig({ repoRoot: REPO, cwd: "/work", configDir: "/labcfg", exists: fsx.exists, readFile: fsx.readFile, resolveExecutable: available })
-      expect(config.command[0]).toBe("/usr/bin/node")
-      expect(config.command[1]).toBe("-e")
-      expect(config.command[3]).toBe(REPO)
-      expect(config.disabled).toBe(false)
+      const config = createLspMcpConfig({ selfRoot: EMPTY, repoRoot: REPO, cwd: "/work", configDir: "/labcfg", exists: fsx.exists, readFile: fsx.readFile, resolveExecutable: available })
+      expect(config.disabled).toBe(true)
+      expect(config.command).toEqual([])
+      // The repo declares `workspace:*` dependencies that npm cannot resolve, so
+      // the runtime must never emit a bootstrap/install that depends on them.
+      const serialized = JSON.stringify(config.command)
+      expect(serialized).not.toContain("install")
+      expect(serialized).not.toContain("--prefix")
+      expect(serialized).not.toContain("npm")
     })
 
-    test("#then the server is disabled when the runtime is unavailable", () => {
+    test("#then the server is disabled when no javascript runtime is available either", () => {
       const fsx = layout({ dist: false, source: false, toolsDist: false })
-      const config = createLspMcpConfig({ repoRoot: REPO, cwd: "/work", configDir: "/labcfg", exists: fsx.exists, readFile: fsx.readFile, resolveExecutable: unavailable })
+      const config = createLspMcpConfig({ selfRoot: EMPTY, repoRoot: REPO, cwd: "/work", configDir: "/labcfg", exists: fsx.exists, readFile: fsx.readFile, resolveExecutable: unavailable })
       expect(config.disabled).toBe(true)
+      expect(config.command).toEqual([])
+    })
+  })
+
+  describe("#given createLspMcpConfig #when the deployment owns a self-contained dist #then it resolves without the source root", () => {
+    test("#then the deployment dist is selected even though repoRoot has no LSP tree", () => {
+      const deployRoot = "/deploy/runtime"
+      const deployDist = path.join(deployRoot, "packages/lsp-daemon/dist/cli.js")
+      const fsx = layoutAt(deployRoot, { dist: true })
+      const config = createLspMcpConfig({ selfRoot: deployRoot, repoRoot: EMPTY, cwd: "/work", configDir: "/labcfg", exists: fsx.exists, readFile: fsx.readFile, resolveExecutable: available })
+      expect(config.disabled).toBe(false)
+      expect(config.command).toEqual(["/usr/bin/node", deployDist, "mcp"])
     })
   })
 

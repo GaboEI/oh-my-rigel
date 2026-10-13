@@ -64,6 +64,39 @@ function sha(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex")
 }
 
+// Packages the deployed runtime resolves the LSP server from its OWN directory.
+const LSP_STAGED_PACKAGES = [
+  { name: "lsp-daemon", entries: ["package.json", "dist"] },
+  { name: "lsp-tools-mcp", entries: ["package.json", "dist"] },
+]
+
+/**
+ * Stage the BUILT LSP runtime into the deployment so it OWNS the LSP server and
+ * never depends on the transient source checkout that generated the manifest.
+ * Additive: an unbuilt source tree stages nothing, and the runtime then degrades
+ * the LSP server instead of running an unresolvable `workspace:*` bootstrap.
+ * Returns the staged relative paths (repository-style separators).
+ */
+export function stageLspRuntime({ sourceRoot, runtimeDir }) {
+  const staged = []
+  for (const { name, entries } of LSP_STAGED_PACKAGES) {
+    const sourcePackage = path.join(sourceRoot, "packages", name)
+    // A package with no built CLI is not a self-contained LSP runtime: stage
+    // nothing for it so the runtime degrades instead of resolving a half tree.
+    if (!fs.existsSync(path.join(sourcePackage, "dist", "cli.js"))) continue
+    const destinationPackage = path.join(runtimeDir, "packages", name)
+    for (const entry of entries) {
+      const from = path.join(sourcePackage, entry)
+      if (!fs.existsSync(from)) continue
+      const to = path.join(destinationPackage, entry)
+      fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 })
+      fs.cpSync(from, to, { recursive: true })
+      staged.push(path.relative(runtimeDir, to).split(path.sep).join("/"))
+    }
+  }
+  return staged
+}
+
 export function buildProtectedFingerprint(config) {
   return { obsidian: sha(config.mcp?.obsidian), codexPlugin: sha(codexPlugin(config)) }
 }
@@ -129,6 +162,10 @@ export function materializeNativeRuntime({
     if (fs.existsSync(target)) fs.chmodSync(target, 0o600)
   }
 
+  // Stage the built LSP runtime under the deployment so the runtime resolves it
+  // from its own directory instead of the transient source checkout.
+  const stagedLsp = stageLspRuntime({ sourceRoot, runtimeDir })
+
   const before = readJson(configFile)
   const candidate = structuredClone(before)
   const plugins = Array.isArray(candidate.plugin) ? candidate.plugin : []
@@ -146,5 +183,5 @@ export function materializeNativeRuntime({
   })
   writeTextAtomic(cliConfigFile, `${JSON.stringify(cliAfter, null, 2)}\n`, { mode: 0o600 })
 
-  return { pluginEntry: runtimeDir, cliConfigFile, notificationEnabled: notificationOptions.enabled }
+  return { pluginEntry: runtimeDir, cliConfigFile, notificationEnabled: notificationOptions.enabled, stagedLsp }
 }

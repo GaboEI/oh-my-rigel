@@ -133,6 +133,27 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
         expect(runtimeManifest.startsWith(base)).toBe(true)
         expect(manifest.metadata.global.repoRoot).toBe(repoRoot)
       })
+
+      test("#then the installed runtime is self-sufficient: it owns the LSP dist and resolves it with a nonexistent repoRoot", async () => {
+        // Residency audit: the deployment must carry the built LSP runtime (so a
+        // valid install no longer depends on the transient source surviving) and
+        // the deployed resolver must pick it up even when the manifest's repoRoot
+        // points at a directory that no longer exists.
+        const runtimeDir = path.join(stateRoot, "versions", "1", "runtime")
+        const deploymentDist = path.join(runtimeDir, "packages", "lsp-daemon", "dist", "cli.js")
+        expect(fs.existsSync(deploymentDist), "install did not stage the LSP daemon dist").toBe(true)
+
+        const deployed = await import(
+          `${pathToFileURL(path.join(runtimeDir, "rigel-v2-native-builtin-mcps.mjs")).href}?t=${Date.now()}`
+        )
+        const resolved = deployed.createLspMcpConfig({
+          repoRoot: path.join(base, "deleted-source-root"),
+          cwd: "/work",
+          configDir: "/cfg",
+        })
+        expect(resolved.disabled).toBe(false)
+        expect(resolved.command).toContain(deploymentDist)
+      })
     })
   })
 })
