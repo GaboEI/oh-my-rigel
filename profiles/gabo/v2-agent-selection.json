@@ -23,6 +23,9 @@
   "demotedAgentIds": ["plan", "build"],
   "disabledLegacyAgentIds": ["forja"],
   "excludedOmOAgentIds": ["judge", "build", "plan"],
+  "nativeAgentModeOverrides": {
+    "Sisyphus-Junior": "all"
+  },
   "nativeModes": {
     "defaultUltrawork": false
   }

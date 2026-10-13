@@ -119,15 +119,23 @@ export function readUserCategories(context) {
 /**
  * Build the `explicitAgentModels` map `resolveProactiveAgentModels` consumes from
  * the merged per-agent override map. Only an explicit `model` marks an agent as
- * pinned (`variant` rides along). A malformed model is still passed through: the
- * resolver runs it through the `Model.Ref` builder and falls back when it cannot
- * form one, so a raw model string never reaches a registered agent.
+ * pinned (`variant` rides along). The user's ordered `fallback_models` chain is
+ * carried through when present, so registration resolves the SAME chain the
+ * delegated child walks: a configured-but-unreachable head falls to a reachable
+ * rung exactly like the delegation path. A malformed model is still passed
+ * through: the resolver runs it through the `Model.Ref` builder and falls back
+ * when it cannot form one, so a raw model string never reaches a registered
+ * agent.
  */
 export function buildExplicitAgentModels(agentOverrides) {
   return new Map(
     Object.entries(agentOverrides ?? {})
       .filter(([, override]) => typeof override?.model === "string" && override.model)
-      .map(([id, override]) => [id, { model: override.model, variant: override.variant }]),
+      .map(([id, override]) => [id, {
+        model: override.model,
+        variant: override.variant,
+        ...(Array.isArray(override.fallback_models) ? { fallback_models: [...override.fallback_models] } : {}),
+      }]),
   )
 }
 
@@ -410,15 +418,16 @@ export default {
       console.error(`[oh-my-rigel] Native V2 live config unreadable (${liveOverridesSource.reason ?? "unknown"}); per-agent model pins ignored until it parses (no stale-pin revival)`)
     }
     const agentOverrides = resolveAuthoritativeAgentOverrides({ live: liveOverridesSource })
-    // Category JSON routing: like the agent overrides above, the live
-    // `~/.omo/omo.jsonc` is the only live source (V2's setup context exposes no
-    // plugin `config`). A context-provided block still wins when present, so no
-    // existing caller changes behavior; the live entry is the fallback. Read
-    // once and threaded through both the execution-time resolver and the
-    // orchestrator roster so a user category is selectable and routable exactly
-    // like a built-in.
-    const userCategories = readUserCategories(context)
-      ?? (liveOverridesSource.state === "loaded" ? liveOverridesSource.categories : undefined)
+    // Category JSON routing: the live `~/.omo/omo.jsonc` is the SINGLE runtime
+    // truth for categories. When it is loaded its `categories` block is
+    // authoritative; a host-provided `context.config.categories` block is only a
+    // legacy fallback for the absent/error state, because a present-but-empty
+    // context block must never shadow the live pin (it would fall through to the
+    // built-in seed chain). Read once and threaded through both the
+    // execution-time resolver and the orchestrator roster so a user category is
+    // selectable and routable exactly like a built-in.
+    const userCategories = (liveOverridesSource.state === "loaded" ? liveOverridesSource.categories : undefined)
+      ?? readUserCategories(context)
     const sessionAgentResolver = createSessionAgentResolver(context)
     const permissionWiring = createNativePermissionWiring({
       manifest,

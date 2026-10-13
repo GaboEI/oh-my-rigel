@@ -19,6 +19,20 @@ test("converts V1 agent fields to native V2 Agent.Info fields", () => {
   ])
 })
 
+test("maps the manifest mode allowlist onto the V2 agent, defaulting anything else to subagent", () => {
+  const promote = { request: { headers: {}, body: {} }, permissions: [] }
+  applyLegacyAgentDefinition(promote, "Sisyphus-Junior", { name: "Sisyphus-Junior", mode: "all", prompt: "Execute." })
+  expect(promote.mode).toBe("all")
+
+  const absent = { request: { headers: {}, body: {} }, permissions: [] }
+  applyLegacyAgentDefinition(absent, "explore", { name: "explore" })
+  expect(absent.mode).toBe("subagent")
+
+  const unknown = { request: { headers: {}, body: {} }, permissions: [] }
+  applyLegacyAgentDefinition(unknown, "oracle", { name: "oracle", mode: "mode-y" })
+  expect(unknown.mode).toBe("subagent")
+})
+
 test("does not invent permission rules from malformed legacy input", () => {
   expect(nativePermissionRules({ edit: { "*": "deny", nope: 42 }, bad: null })).toEqual([
     { action: "edit", resource: "*", effect: "deny" },
@@ -161,6 +175,27 @@ test("JSON-only resolution: chainFallback:false drops an explicit model that doe
   const explicit = new Map([["oracle", { model: "not-a-provider-ref" }]])
   const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
   expect(resolved.has("oracle")).toBe(false)
+})
+
+// The registered `agent.model` must be resolved against the live inventory
+// through the SAME resolver the delegated child uses, so a reachable configured
+// model registers its SERVED canonical ref (the model a direct session on this
+// agent will actually run), and an UNREACHABLE configured model is kept VERBATIM
+// so the agent fails AS CONFIGURED instead of being silently substituted.
+test("JSON-only resolution: a reachable configured model registers its served canonical ref", () => {
+  const manifest = { agents: { oracle: { name: "Oracle", mode: "subagent" } } }
+  const inventory = [{ providerID: "opencode-go", id: "deepseek-v4.1-flash", enabled: true }]
+  const explicit = new Map([["oracle", { model: "opencode-go/deepseek-v4.1-FLASH" }]])
+  const resolved = resolveProactiveAgentModels(manifest.agents, inventory, explicit, { chainFallback: false })
+  expect(resolved.get("oracle")).toEqual({ providerID: "opencode-go", id: "deepseek-v4.1-flash" })
+})
+
+test("JSON-only resolution: an unreachable configured model is kept verbatim (no silent substitution)", () => {
+  const manifest = { agents: { oracle: { name: "Oracle", mode: "subagent" } } }
+  const inventory = [{ providerID: "opencode", id: "big-pickle", enabled: true }]
+  const explicit = new Map([["oracle", { model: "opencode/ling-3.0-flash-fin-free" }]])
+  const resolved = resolveProactiveAgentModels(manifest.agents, inventory, explicit, { chainFallback: false })
+  expect(resolved.get("oracle")).toEqual({ providerID: "opencode", id: "ling-3.0-flash-fin-free" })
 })
 
 test("a disabled agent (V1 disabled_agents) is never registered", async () => {

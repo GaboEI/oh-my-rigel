@@ -13,6 +13,7 @@
  */
 
 import { agentChain, resolveFallbackModel } from "./rigel-v2-native-model-chains.mjs"
+import { resolveAgentDelegationModel } from "./rigel-v2-native-explicit-chain.mjs"
 import { frontierToolSchemaPermission, mergePermissionRules, translateV1Permissions } from "./rigel-v2-native-permissions.mjs"
 import { evaluateHephaestusGate, isHephaestusAgentId } from "./rigel-v2-native-hephaestus.mjs"
 import { sortAgentsByCanonicalOrder } from "./rigel-v2-native-agent-order.mjs"
@@ -167,8 +168,13 @@ function chainHeadRef(chain) {
  * `listModels` is optional: when absent the manifest models are used unchanged.
  *
  * `explicitAgentModels` is an optional Map of agent id -> `{ model, variant }`
- * for agents the user pinned. An explicit model is used verbatim and the built-in
- * chain is never walked for that agent (upstream 5a9bb74a4).
+ * for agents the user pinned. On the JSON-only path a pinned model is resolved
+ * against the live inventory through the SAME resolver the delegated child uses,
+ * so a reachable configured model registers its SERVED canonical ref (or the
+ * first reachable rung of the user's own JSON `fallback_models` chain), while an
+ * unreachable configured model is kept verbatim so the agent fails AS CONFIGURED.
+ * On the canonical-chain path an explicit entry is used as-is. The built-in chain
+ * is never walked for a pinned agent (upstream 5a9bb74a4).
  *
  * `options.chainFallback` (default TRUE, preserving the existing behavior)
  * switches the canonical-chain walk off. When it is `false` the resolver is
@@ -199,9 +205,18 @@ export function resolveProactiveAgentModels(agents, listModels, explicitAgentMod
       // even evaluated on this path. The runtime always passes
       // `chainFallback:false`, so no runtime registration can select a model
       // from the manifest or the canonical chain.
+      //
+      // The configured ref is resolved against the live inventory through the
+      // SAME resolver the delegated child uses (`resolveAgentDelegationModel`),
+      // so the registered `agent.model` and the create-time model agree: a
+      // reachable configured model registers its SERVED canonical ref (or the
+      // first reachable rung of the user's own JSON chain), while an UNREACHABLE
+      // configured model is kept verbatim so the agent fails AS CONFIGURED. The
+      // resolver never walks the built-in chain, so a user choice is never
+      // silently substituted.
       if (explicitEntry?.model) {
         const ref = modelRef(explicitEntry.model, explicitEntry.variant)
-        if (ref) resolved.set(id, ref)
+        if (ref) resolved.set(id, resolveAgentDelegationModel(explicitEntry, inventory) ?? ref)
       }
       continue
     }

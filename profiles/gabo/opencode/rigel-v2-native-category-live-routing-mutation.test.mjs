@@ -146,8 +146,8 @@ test("mutation: dropping the live categories fallback turns the runtime contract
     file: RUNTIME_FILE,
     mutate: (source) =>
       source.replace(
-        `    const userCategories = readUserCategories(context)
-      ?? (liveOverridesSource.state === "loaded" ? liveOverridesSource.categories : undefined)
+        `    const userCategories = (liveOverridesSource.state === "loaded" ? liveOverridesSource.categories : undefined)
+      ?? readUserCategories(context)
 `,
         `    const userCategories = readUserCategories(context)
 `,
