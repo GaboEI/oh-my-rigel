@@ -571,6 +571,17 @@ export default {
     for (const entry of builtinMcpRegistration.guided) {
       console.error(`[oh-my-rigel] MCP guidance (${entry.name}): ${entry.fix}`)
     }
+    // The host does not persist plugin stderr on the service surface, so the
+    // guidance logged above is not consultable after startup. Record the SAME
+    // secret-free guidance (name, reason, and the actionable fix) as a durable
+    // receipt the operator can read. No guidance, no receipt. Each entry is
+    // projected onto an explicit field allowlist so a future upstream field can
+    // never smuggle a credential into the receipt.
+    if (builtinMcpRegistration.guided.length > 0) {
+      writeStateReceipt("mcp-guidance.json", {
+        guidance: builtinMcpRegistration.guided.map(({ name, reason, fix }) => ({ name, reason, fix })),
+      })
+    }
     // V1 `features/opengateway-provider`: when an OpenGateway credential is
     // present (env `OPENGATEWAY_API_KEY` or the isolated auth store), register
     // the provider and the packaged catalog through the V2 provider transform.
