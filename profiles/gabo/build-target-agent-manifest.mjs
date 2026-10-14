@@ -44,6 +44,7 @@ import { getAgentConfigKey, getAgentDisplayName } from "../../packages/omo-openc
 import { sortAgentsByCanonicalOrder, canonicalAgentKey } from "./opencode/rigel-v2-native-agent-order.mjs"
 import { agentChain } from "./opencode/rigel-v2-native-model-chains.mjs"
 import {
+  buildMcpPolicyEntry,
   deriveNativeGates,
   deriveNativeMinOpenCodeVersion,
   resolveNativePluginConfig,
@@ -278,10 +279,7 @@ export async function buildTargetAgentManifest(options = {}) {
             truncateAllToolOutputs: pluginView.experimental?.truncate_all_tool_outputs === true,
             mcp: { disabled: [...(pluginView.disabled_mcps ?? [])], envAllowlist: [...(pluginView.mcp_env_allowlist ?? [])] },
             repoRoot: sourceRoot,
-            mcpPolicy: {
-              retained: [...(manifestMcpPolicy.omoBuiltinsRetained ?? [])],
-              builtinsDisabled: [...(manifestMcpPolicy.omoBuiltinsDisabled ?? [])],
-            },
+            mcpPolicy: buildMcpPolicyEntry(manifestMcpPolicy),
             tmuxVisualization: pluginView.team_mode?.tmux_visualization === true,
             minOpenCodeVersion: deriveNativeMinOpenCodeVersion(integrationManifest),
             bundledVersion: readBundledVersion(),

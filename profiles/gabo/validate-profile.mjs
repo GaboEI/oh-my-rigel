@@ -76,9 +76,21 @@ if (!manifest.mcpPolicy?.omoBuiltinsRetained?.includes("grep_app") || !manifest.
 for (const mcp of ["ssh"]) {
   if (!manifest.mcpPolicy?.bundledLocal?.includes(mcp) || opencode.mcp?.[mcp]?.type !== "local" || opencode.mcp[mcp].enabled !== true) fail(`${mcp} must remain a bundled enabled local MCP`)
 }
+// Supply-chain: the bundled SSH MCP must be version-pinned in BOTH the shipped
+// command and the recorded authority, so `npx -y` can never resolve a mutable
+// `latest`.
+const sshSupply = manifest.mcpPolicy?.bundledSupplyChain?.ssh
+if (!sshSupply || typeof sshSupply.version !== "string" || typeof sshSupply.license !== "string" || typeof sshSupply.integrity !== "string") fail("ssh must record its pinned supply chain (version, license, integrity)")
+const sshCommand = Array.isArray(opencode.mcp?.ssh?.command) ? opencode.mcp.ssh.command.join(" ") : ""
+if (!sshCommand.includes(`@hypnosis/ssh-mcp-server@${sshSupply.version}`)) fail(`ssh command must pin @hypnosis/ssh-mcp-server@${sshSupply.version} (no mutable latest)`)
 for (const mcp of ["context7", "playwright", "obsidian"]) {
   if (!manifest.mcpPolicy?.coreExternalConnections?.includes(mcp)) fail(`${mcp} must remain a core per-machine connection`)
 }
+// The runtime materializes these into the agent manifest and registers the
+// external server at runtime, so the policy must keep naming the key env var and
+// the endpoint; a silent drop would strand obsidian with no guidance.
+if (!manifest.mcpPolicy?.externalEnvKeys?.obsidian) fail("obsidian must declare its external API key env name (mcpPolicy.externalEnvKeys.obsidian)")
+if (!manifest.mcpPolicy?.externalEndpoints?.obsidian) fail("obsidian must declare its external endpoint (mcpPolicy.externalEndpoints.obsidian)")
 if (!manifest.mcpPolicy?.optIn?.includes("docker") || !manifest.mcpPolicy?.optIn?.includes("github") || !manifest.mcpPolicy?.optIn?.includes("postgres")) fail("Docker, GitHub, and Postgres must remain opt-in MCPs")
 if (!manifest.mcpPolicy?.optInSecurity?.includes("tide") || !manifest.mcpPolicy?.excluded?.includes("openrouter")) fail("Tide must remain optional security tooling and OpenRouter excluded")
 for (const mcp of ["context7", "playwright", "obsidian", "docker", "github", "postgres", "tide", "openrouter"]) {

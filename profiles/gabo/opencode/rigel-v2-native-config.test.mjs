@@ -11,11 +11,13 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, sy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  buildMcpPolicyEntry,
   deriveNativeGates,
   readAgentOverridesFromConfig,
   readLiveAgentOverridesSource,
   readNativeDisabled,
   readNativeGates,
+  readNativeMcpBuiltinsPolicy,
   readNativeMcpPolicy,
   readNativePreemptiveThreshold,
   resolveNativePluginConfig,
@@ -429,6 +431,67 @@ describe("#given the tier-2 MCP policy", () => {
     // then
     expect(policy).toEqual({ disabled: ["context7"], envAllowlist: ["QA_MCP_TOKEN"] })
     expect(readNativeMcpPolicy(undefined)).toEqual({ disabled: [], envAllowlist: [] })
+  })
+
+  test("#when the manifest carries the builtins policy #then the bundled and external arrays and env keys normalize", () => {
+    // given
+    const manifest = {
+      metadata: {
+        global: {
+          mcpPolicy: {
+            retained: ["grep_app", "lsp", 7],
+            builtinsDisabled: ["context7"],
+            bundledLocal: ["ssh"],
+            externalConnections: ["obsidian", 3],
+            externalEnvKeys: { obsidian: "OBSIDIAN_API_KEY", bad: 9, empty: "" },
+            externalEndpoints: { obsidian: "https://127.0.0.1:27124/mcp/", bad: 9 },
+            bundledSupplyChain: { ssh: { package: "@hypnosis/ssh-mcp-server", version: "2.3.3" } },
+          },
+        },
+      },
+    }
+    // when
+    const policy = readNativeMcpBuiltinsPolicy(manifest)
+    // then
+    expect(policy).toEqual({
+      retained: ["grep_app", "lsp"],
+      builtinsDisabled: ["context7"],
+      bundledLocal: ["ssh"],
+      externalConnections: ["obsidian"],
+      externalEnvKeys: { obsidian: "OBSIDIAN_API_KEY" },
+      externalEndpoints: { obsidian: "https://127.0.0.1:27124/mcp/" },
+      bundledSupplyChain: { ssh: { package: "@hypnosis/ssh-mcp-server", version: "2.3.3" } },
+    })
+    expect(readNativeMcpBuiltinsPolicy(undefined)).toEqual({
+      retained: [],
+      builtinsDisabled: [],
+      bundledLocal: [],
+      externalConnections: [],
+      externalEnvKeys: {},
+      externalEndpoints: {},
+      bundledSupplyChain: {},
+    })
+  })
+
+  test("#when the integration policy is materialized #then buildMcpPolicyEntry is the single writer", () => {
+    expect(buildMcpPolicyEntry({
+      omoBuiltinsRetained: ["grep_app"],
+      omoBuiltinsDisabled: ["context7"],
+      bundledLocal: ["ssh"],
+      coreExternalConnections: ["obsidian"],
+      externalEnvKeys: { obsidian: "OBSIDIAN_API_KEY" },
+      externalEndpoints: { obsidian: "https://127.0.0.1:27124/mcp/" },
+      bundledSupplyChain: { ssh: { version: "2.3.3" } },
+    })).toEqual({
+      retained: ["grep_app"],
+      builtinsDisabled: ["context7"],
+      bundledLocal: ["ssh"],
+      externalConnections: ["obsidian"],
+      externalEnvKeys: { obsidian: "OBSIDIAN_API_KEY" },
+      externalEndpoints: { obsidian: "https://127.0.0.1:27124/mcp/" },
+      bundledSupplyChain: { ssh: { version: "2.3.3" } },
+    })
+    expect(buildMcpPolicyEntry()).toEqual({ retained: [], builtinsDisabled: [], bundledLocal: [], externalConnections: [], externalEnvKeys: {}, externalEndpoints: {}, bundledSupplyChain: {} })
   })
 
   test("#when a project layer extends mcp_env_allowlist #then only the user layer allowlist survives", () => {

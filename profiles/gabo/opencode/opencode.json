@@ -5,7 +5,7 @@
   "mcp": {
     "ssh": {
       "type": "local",
-      "command": ["npx", "-y", "@hypnosis/ssh-mcp-server"],
+      "command": ["npx", "-y", "@hypnosis/ssh-mcp-server@2.3.3"],
       "enabled": true
     }
   }

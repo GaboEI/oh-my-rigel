@@ -126,6 +126,10 @@ describe("installer config bootstrap: absent explicit config", () => {
         expect(fs.existsSync(configFile)).toBe(true)
         expect(Array.isArray(config.plugin)).toBe(true)
         expect(config.plugin).toContain(runtimeDirAt(stateRoot))
+        // The installer never writes an `mcp` block: the bundled MCP servers are
+        // registered at runtime, so the user's own `config.mcp.obsidian` (the
+        // protected fingerprint component) is never touched.
+        expect(config.mcp).toBeUndefined()
       })
 
       test("#then the runtime manifest and runtime tree are produced", () => {
@@ -146,7 +150,7 @@ describe("installer config bootstrap: existing config is preserved", () => {
   const home = path.join(base, "home")
   const configFile = path.join(home, ".config", "opencode", "opencode.json")
   const stateRoot = path.join(home, ".local", "share", "oh-my-rigel")
-  const original = { $schema: "https://opencode.ai/config.json", plugin: ["rigel-foreign-plugin"], theme: "custom" }
+  const original = { $schema: "https://opencode.ai/config.json", plugin: ["rigel-foreign-plugin"], theme: "custom", mcp: { obsidian: { type: "remote", url: "http://127.0.0.1:27123/mcp/", enabled: true } } }
   let install
   let config
 
@@ -172,6 +176,9 @@ describe("installer config bootstrap: existing config is preserved", () => {
         expect(config.$schema).toBe(original.$schema)
         expect(config.theme).toBe("custom")
         expect(config.plugin).toContain("rigel-foreign-plugin")
+        // The user-owned obsidian MCP server is preserved byte-identically: the
+        // installer only adds the runtime plugin entry.
+        expect(config.mcp).toEqual(original.mcp)
       })
     })
   })
@@ -342,6 +349,56 @@ describe("clean install with no external Context7", () => {
         })
         expect(result.registered.filter((name) => name === "context7")).toHaveLength(1)
         expect(host.get("context7")).toMatchObject({ type: "remote", url: "https://mcp.context7.com/mcp", oauth: false })
+      })
+
+      test("#then the generated manifest materializes the bundled and external MCP policy and it drives real registration", async () => {
+        const policy = manifest.metadata.global.mcpPolicy
+        expect(policy.bundledLocal).toContain("ssh")
+        expect(policy.externalConnections).toContain("obsidian")
+        expect(policy.externalEnvKeys).toEqual({ obsidian: "OBSIDIAN_API_KEY" })
+        expect(policy.externalEndpoints).toEqual({ obsidian: "https://127.0.0.1:27124/mcp/" })
+        // From the REAL materialized policy: ssh is registered exactly once as a
+        // real local server, and obsidian is absent (no key) with typed guidance.
+        const host = new Map()
+        const collection = { get: (name) => host.get(name), set: (name, config) => host.set(name, config) }
+        function fakeDomain(c) { return { transform: async (cb) => { cb(c); return { dispose: undefined } } } }
+        const result = await registerNativeBuiltinMcps({ mcp: fakeDomain(collection) }, {
+          retained: policy.retained,
+          bundledLocal: policy.bundledLocal,
+          externalConnections: policy.externalConnections,
+          externalEnvKeys: policy.externalEnvKeys,
+          obsidianUrl: policy.externalEndpoints.obsidian,
+          disabledMcps: manifest.metadata.global.mcp.disabled,
+          env: {},
+        })
+        expect(result.registered.filter((name) => name === "ssh")).toHaveLength(1)
+        expect(host.get("ssh")).toMatchObject({ type: "local", command: ["npx", "-y", "@hypnosis/ssh-mcp-server@2.3.3"], disabled: false })
+        expect(result.registered).not.toContain("obsidian")
+        expect(result.guided).toEqual([{ name: "obsidian", reason: "missing-env", fix: expect.any(String) }])
+      })
+
+      test("#then with an obsidian key the runtime emits exactly one real obsidian remote server at the materialized endpoint", async () => {
+        const policy = manifest.metadata.global.mcpPolicy
+        const host = new Map()
+        const collection = { get: (name) => host.get(name), set: (name, config) => host.set(name, config) }
+        function fakeDomain(c) { return { transform: async (cb) => { cb(c); return { dispose: undefined } } } }
+        const result = await registerNativeBuiltinMcps({ mcp: fakeDomain(collection) }, {
+          retained: policy.retained,
+          bundledLocal: policy.bundledLocal,
+          externalConnections: policy.externalConnections,
+          externalEnvKeys: policy.externalEnvKeys,
+          obsidianUrl: policy.externalEndpoints.obsidian,
+          disabledMcps: manifest.metadata.global.mcp.disabled,
+          env: { OBSIDIAN_API_KEY: "boundary-secret" },
+        })
+        expect(result.registered.filter((name) => name === "obsidian")).toHaveLength(1)
+        expect(result.guided).toEqual([])
+        expect(host.get("obsidian")).toMatchObject({
+          type: "remote",
+          url: "https://127.0.0.1:27124/mcp/",
+          oauth: false,
+          headers: { Authorization: "Bearer boundary-secret" },
+        })
       })
 
       test("#then each seeded agent's head model matches the manifest's resolved model", () => {

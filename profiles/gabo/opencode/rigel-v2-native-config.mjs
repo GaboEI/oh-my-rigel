@@ -1079,11 +1079,48 @@ export function readNativeRepoRoot(manifest) {
  * the profile keeps (`retained`) and the ones it disables (`builtinsDisabled`).
  * Both normalize to string arrays; an absent block yields empty arrays.
  */
+// The SINGLE source of truth for the materialized `metadata.global.mcpPolicy`
+// entry. BOTH agent-manifest writers (build-target-agent-manifest.mjs and
+// generate-v2-agents.mjs) call this, so the policy has exactly one writer and the
+// two manifests can never drift. Input is the raw `integration-manifest.json`
+// `mcpPolicy` block.
+export function buildMcpPolicyEntry(mcpPolicy = {}) {
+  const policy = isPlainObject(mcpPolicy) ? mcpPolicy : {}
+  const strings = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "string") : []
+  const record = (value) => isPlainObject(value) ? { ...value } : {}
+  return {
+    retained: strings(policy.omoBuiltinsRetained),
+    builtinsDisabled: strings(policy.omoBuiltinsDisabled),
+    bundledLocal: strings(policy.bundledLocal),
+    externalConnections: strings(policy.coreExternalConnections),
+    externalEnvKeys: record(policy.externalEnvKeys),
+    externalEndpoints: record(policy.externalEndpoints),
+    bundledSupplyChain: record(policy.bundledSupplyChain),
+  }
+}
+
 export function readNativeMcpBuiltinsPolicy(manifest) {
   const raw = manifest?.metadata?.global?.mcpPolicy
   const source = isPlainObject(raw) ? raw : {}
   const normalize = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "string") : []
-  return { retained: normalize(source.retained), builtinsDisabled: normalize(source.builtinsDisabled) }
+  const externalEnvKeys = isPlainObject(source.externalEnvKeys) ? source.externalEnvKeys : {}
+  return {
+    retained: normalize(source.retained),
+    builtinsDisabled: normalize(source.builtinsDisabled),
+    // The bundled local servers (ssh) and the external connections (obsidian)
+    // materialized from the integration manifest, plus the env var name each
+    // external connection reads its key from. All names only, never a secret.
+    bundledLocal: normalize(source.bundledLocal),
+    externalConnections: normalize(source.externalConnections),
+    externalEnvKeys: Object.fromEntries(
+      Object.entries(externalEnvKeys).filter(([, value]) => typeof value === "string" && value.length > 0),
+    ),
+    externalEndpoints: Object.fromEntries(
+      Object.entries(isPlainObject(source.externalEndpoints) ? source.externalEndpoints : {})
+        .filter(([, value]) => typeof value === "string" && value.length > 0),
+    ),
+    bundledSupplyChain: isPlainObject(source.bundledSupplyChain) ? { ...source.bundledSupplyChain } : {},
+  }
 }
 
 export function readNativeMaxTools(manifest) {

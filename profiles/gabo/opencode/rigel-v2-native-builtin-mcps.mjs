@@ -34,6 +34,18 @@ import { fileURLToPath } from "node:url"
 
 export const GREP_APP_MCP_NAME = "grep_app"
 export const LSP_MCP_NAME = "lsp"
+export const SSH_MCP_NAME = "ssh"
+export const OBSIDIAN_MCP_NAME = "obsidian"
+// The bundled SSH command, VERSION-PINNED for supply-chain reproducibility. The
+// pinned version, license, and npm integrity are recorded in the profile
+// integration-manifest (mcpPolicy.bundledSupplyChain.ssh) and asserted by
+// validate-profile, so a drift is caught. Offline limit: `npx` still resolves the
+// pinned tarball FROM the npm registry and caches it, so the FIRST use needs
+// network; this is pinned-reproducible, NOT offline-reproducible, and must not be
+// described as reproducible without that caveat. The server is keyless; the
+// Obsidian key AND endpoint are read from the live environment / the materialized
+// policy and never persisted, so no loopback origin is hardcoded here.
+export const SSH_MCP_COMMAND = ["npx", "-y", "@hypnosis/ssh-mcp-server@2.3.3"]
 
 const PACKAGE_REL = "packages/lsp-daemon"
 const LSP_TOOLS_PACKAGE_REL = "packages/lsp-tools-mcp"
@@ -282,6 +294,122 @@ export function createContext7McpConfig(env = process.env) {
   }
 }
 
+// The Obsidian key is optional in the same sense as the Context7 key: absent,
+// empty, or placeholder values are treated as "not configured", so no server is
+// emitted and no fake header is produced.
+export function normalizeObsidianApiKey(value) {
+  return normalizeContext7ApiKey(value)
+}
+
+function obsidianKeyName(options = {}) {
+  const envKeys = options.externalEnvKeys && typeof options.externalEnvKeys === "object" ? options.externalEnvKeys : {}
+  const name = envKeys[OBSIDIAN_MCP_NAME]
+  return typeof name === "string" && name ? name : "OBSIDIAN_API_KEY"
+}
+
+// The bundled protective SSH MCP: a real local stdio server, keyless. It reads
+// the operator's own OpenSSH configuration; `SSH_PROFILES_FILE` is an optional
+// external profiles path (a path, never a secret) passed through only when set.
+export function createSshMcpConfig(options = {}) {
+  const env = options.env ?? process.env
+  const profilesFile = typeof env?.SSH_PROFILES_FILE === "string" && env.SSH_PROFILES_FILE.trim() !== ""
+    ? env.SSH_PROFILES_FILE.trim()
+    : null
+  return {
+    type: "local",
+    command: [...SSH_MCP_COMMAND],
+    disabled: false,
+    ...(profilesFile ? { environment: { SSH_PROFILES_FILE: profilesFile } } : {}),
+  }
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim()
+  }
+  return null
+}
+
+// Loopback hosts the Obsidian Local REST API may bind to. A bare hostname here is
+// NOT an origin URL, so the profile origin rule (which rejects hardcoded loopback
+// base URLs) does not apply to this allowlist.
+const OBSIDIAN_LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"])
+
+// Fail-closed endpoint validation: the Bearer key is only ever sent to an allowed
+// LOCAL endpoint. Rejects any non-loopback origin, any embedded userinfo, and any
+// query or fragment, so a misconfigured or hostile OBSIDIAN_API_URL can never
+// exfiltrate the key to a remote host.
+export function isAllowedObsidianEndpoint(rawUrl) {
+  if (typeof rawUrl !== "string" || rawUrl.trim() === "") return false
+  let parsed
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false
+  if (parsed.username || parsed.password) return false
+  if (parsed.search || parsed.hash) return false
+  return OBSIDIAN_LOOPBACK_HOSTS.has(parsed.hostname)
+}
+
+function resolveObsidianUrl(options = {}) {
+  const env = options.env ?? process.env
+  return firstNonEmptyString(env?.OBSIDIAN_API_URL, options.obsidianUrl)
+}
+
+// The Obsidian MCP: a real remote (Streamable HTTP) server at the Local REST API
+// endpoint. Returns a config ONLY when the key is configured AND the endpoint
+// passes the fail-closed loopback check; otherwise returns null so the caller
+// emits no server and never sends the key. The key lives only in the Authorization
+// header, is read from the live environment, and is never persisted or logged.
+export function createObsidianMcpConfig(options = {}) {
+  const env = options.env ?? process.env
+  const apiKey = normalizeObsidianApiKey(env?.[obsidianKeyName(options)])
+  if (!apiKey) return null
+  const url = resolveObsidianUrl(options)
+  if (!url || !isAllowedObsidianEndpoint(url)) return null
+  return {
+    type: "remote",
+    url,
+    disabled: false,
+    oauth: false,
+    headers: { Authorization: `Bearer ${apiKey}` },
+  }
+}
+
+// Secret-free, actionable fix for an expected external connection that is not
+// live. Never contains the key value: it interpolates the descriptor name and the
+// (possibly default) endpoint only, so the operator gets an exact command to run.
+function obsidianGuidanceFix(options = {}, apiKeyPresent, endpoint) {
+  const keyName = obsidianKeyName(options)
+  const urlToken = endpoint ?? "<obsidian-local-rest-api-endpoint>"
+  if (!apiKeyPresent) {
+    return `export ${keyName}=<obsidian-local-rest-api-key> && export OBSIDIAN_API_URL=${urlToken} then restart (Obsidian Local REST API plugin MCP >= 4.0.0, loopback endpoint only; for the HTTPS endpoint trust the plugin CA, or enable the non-encrypted HTTP server and point OBSIDIAN_API_URL at its http loopback endpoint)`
+  }
+  return `OBSIDIAN_API_URL must be a loopback http(s) endpoint with no credentials, query, or fragment; set OBSIDIAN_API_URL=${urlToken} (or unset it to use the default) then restart`
+}
+
+// Typed guidance for an external connection that is expected but not yet
+// configured. Names, reasons, and a secret-free, actionable fix only, never a
+// thrown error: the caller logs it and the server is simply absent.
+export function collectBuiltinMcpGuidance(options = {}) {
+  const disabled = new Set(Array.isArray(options.disabledMcps) ? options.disabledMcps : [])
+  const externalConnections = Array.isArray(options.externalConnections) ? options.externalConnections : []
+  const env = options.env ?? process.env
+  const guidance = []
+  if (externalConnections.includes(OBSIDIAN_MCP_NAME) && !disabled.has(OBSIDIAN_MCP_NAME) && !createObsidianMcpConfig(options)) {
+    const apiKey = normalizeObsidianApiKey(env?.[obsidianKeyName(options)])
+    const url = resolveObsidianUrl(options)
+    if (!apiKey) {
+      guidance.push({ name: OBSIDIAN_MCP_NAME, reason: "missing-env", fix: obsidianGuidanceFix(options, false, url) })
+    } else {
+      guidance.push({ name: OBSIDIAN_MCP_NAME, reason: "untrusted-endpoint", fix: obsidianGuidanceFix(options, true, url) })
+    }
+  }
+  return guidance
+}
+
 // Port of the `createBuiltinMcps` policy for the OmO builtins the profile
 // retains (`mcpPolicy.omoBuiltinsRetained`). `websearch` is host-provided in V2.
 // Context7 ownership is the RUNTIME's: the installer NEVER seeds `context7` into
@@ -302,6 +430,19 @@ export function createBuiltinMcpConfigs(options = {}) {
   if (retained.includes(CONTEXT7_MCP_NAME) && !disabled.has(CONTEXT7_MCP_NAME)) {
     configs[CONTEXT7_MCP_NAME] = createContext7McpConfig(options.env ?? process.env)
   }
+  // The bundled SSH server and the external Obsidian connection are gated on
+  // their own policy arrays (materialized from `bundledLocal` and
+  // `coreExternalConnections`), so the three retained builtins above are left
+  // byte-identical. Obsidian is emitted only when its key is configured.
+  const bundledLocal = Array.isArray(options.bundledLocal) ? options.bundledLocal : []
+  const externalConnections = Array.isArray(options.externalConnections) ? options.externalConnections : []
+  if (bundledLocal.includes(SSH_MCP_NAME) && !disabled.has(SSH_MCP_NAME)) {
+    configs[SSH_MCP_NAME] = createSshMcpConfig(options)
+  }
+  if (externalConnections.includes(OBSIDIAN_MCP_NAME) && !disabled.has(OBSIDIAN_MCP_NAME)) {
+    const obsidian = createObsidianMcpConfig(options)
+    if (obsidian) configs[OBSIDIAN_MCP_NAME] = obsidian
+  }
   return configs
 }
 
@@ -310,13 +451,15 @@ export function createBuiltinMcpConfigs(options = {}) {
 export async function registerNativeBuiltinMcps(context, options = {}) {
   const registered = []
   const mcpDomain = context?.mcp
-  if (!mcpDomain || typeof mcpDomain.transform !== "function") return { registered, planned: [], dispose: undefined }
+  const guided = collectBuiltinMcpGuidance(options)
+  if (!mcpDomain || typeof mcpDomain.transform !== "function") return { registered, planned: [], guided, dispose: undefined }
   const configs = createBuiltinMcpConfigs(options)
   // `planned` is the policy decision (synchronously computed, and the reliable
   // value in the runtime log). `registered` is the set this call establishes
   // synchronously; it may be empty because the host applies the mcp transform
   // asynchronously, so the authoritative LIVE check is the host inventory
-  // (/api/mcp). Both are names only, never credentials.
+  // (/api/mcp). `guided` lists expected external connections not yet configured.
+  // All three are names only, never credentials.
   const planned = Object.keys(configs)
   const registration = await mcpDomain.transform((collection) => {
     for (const [name, config] of Object.entries(configs)) {
@@ -326,5 +469,5 @@ export async function registerNativeBuiltinMcps(context, options = {}) {
       registered.push(name)
     }
   })
-  return { registered, planned, dispose: registration?.dispose }
+  return { registered, planned, guided, dispose: registration?.dispose }
 }
