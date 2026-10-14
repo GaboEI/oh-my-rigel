@@ -7,6 +7,7 @@ import {
   removeRigelCliEntries,
   resolveNotificationOptions,
   resolveProfileOpenCodeBlock,
+  resolveSidebarOptions,
   stripJsonComments,
 } from "./notification-activation-config.mjs"
 
@@ -112,6 +113,26 @@ describe("resolveNotificationOptions", () => {
   })
 })
 
+describe("resolveSidebarOptions", () => {
+  test("#given no profile #then the sidebar is ON (V1 contract: absent = enabled)", () => {
+    expect(resolveSidebarOptions({}).enabled).toBe(true)
+    expect(resolveSidebarOptions({ profile: {} }).enabled).toBe(true)
+  })
+
+  test("#given an explicit disabled block #then the sidebar is OFF", () => {
+    expect(resolveSidebarOptions({ profile: { tui: { sidebar: { enabled: false } } } }).enabled).toBe(false)
+  })
+
+  test("#given an explicit enabled block #then the sidebar is ON", () => {
+    expect(resolveSidebarOptions({ profile: { tui: { sidebar: { enabled: true } } } }).enabled).toBe(true)
+  })
+
+  test("#given an env override #then it wins", () => {
+    expect(resolveSidebarOptions({ profile: {}, enabledOverride: false }).enabled).toBe(false)
+    expect(resolveSidebarOptions({ profile: { tui: { sidebar: { enabled: false } } }, enabledOverride: true }).enabled).toBe(true)
+  })
+})
+
 describe("registerNotificationCliPlugin", () => {
   const runtimeDir = "/lab/rigel/runtime/rigel-v2-native"
   const options = { enabled: true }
@@ -191,6 +212,25 @@ describe("registerCompanionCliPlugin family identity", () => {
   test("#given repeated registration #then it is idempotent", () => {
     const once = registerCompanionCliPlugin({ plugins: ["keep.mjs"] }, { runtimeDir: v1Runtime, familyRoot, options, notificationEnabled: true })
     const twice = registerCompanionCliPlugin(once, { runtimeDir: v1Runtime, familyRoot, options, notificationEnabled: true })
+    expect(JSON.stringify(twice)).toBe(JSON.stringify(once))
+  })
+
+  test("#then the family entry carries tui.sidebar so the composer can read it", () => {
+    const defaulted = registerCompanionCliPlugin({ plugins: [] }, { runtimeDir: v1Runtime, familyRoot, options, notificationEnabled: true })
+    const entry = defaulted.plugins.find((value) => typeof value === "object" && value.package === v1Runtime)
+    // V1 contract: absent sidebarOptions => ON.
+    expect(entry.options.tui.sidebar).toEqual({ enabled: true })
+    expect(entry.options.notification).toBe(options)
+  })
+
+  test("#given sidebarOptions #then the disabled flag survives the idempotent rebuild", () => {
+    const once = registerCompanionCliPlugin(
+      { plugins: [] },
+      { runtimeDir: v1Runtime, familyRoot, options, sidebarOptions: { enabled: false }, notificationEnabled: true },
+    )
+    const entry = once.plugins.find((value) => typeof value === "object" && value.package === v1Runtime)
+    expect(entry.options.tui.sidebar).toEqual({ enabled: false })
+    const twice = registerCompanionCliPlugin(once, { runtimeDir: v1Runtime, familyRoot, options, sidebarOptions: { enabled: false }, notificationEnabled: true })
     expect(JSON.stringify(twice)).toBe(JSON.stringify(once))
   })
 })

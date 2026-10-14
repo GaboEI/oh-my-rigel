@@ -28,6 +28,7 @@ import {
   registerRuntimePluginEntry,
   resolveGoalOptionOverrides,
   resolveRuntimeNotificationOptions,
+  resolveRuntimeSidebarOptions,
 } from "./rigel-v2-runtime-materialize.mjs"
 import { registerCompanionCliPlugin, removeRigelCliEntries } from "./notification-activation-config.mjs"
 import { GOAL_VENDOR_ARTIFACT, goalVendorDigestKey, goalVendorTargetDir } from "./rigel-v2-goal-vendor.mjs"
@@ -663,10 +664,12 @@ function main() {
       txn.failAt("rollback:after-config")
       const cliBefore = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
       const notificationOptions = resolveRuntimeNotificationOptions(profileFile, process.env)
+      const sidebarOptions = resolveRuntimeSidebarOptions(profileFile, process.env)
       const cliCompanion = registerCompanionCliPlugin(cliBefore, {
         runtimeDir: targetRuntime,
         familyRoot: paths.stateRoot,
         options: notificationOptions,
+        sidebarOptions,
         notificationEnabled: notificationOptions.enabled,
       })
       writeJson(cliConfigFile, registerGoalCliEntry(cliCompanion, { tuiShimDir: goalPaths.tuiEntry }))
