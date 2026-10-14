@@ -33,6 +33,7 @@ import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import {
   buildRuntimeSnapshot,
+  buildViewNodes,
   computeLoopLive,
   computeView,
   deriveAgents,
@@ -40,12 +41,37 @@ import {
   deriveJobBoard,
   deriveLoop,
   deriveRoster,
-  describeView,
   isLoopFresh,
   parseLoopDocument,
   toRosterRow,
   viewKey,
 } from "./rigel-v2-sidebar-core.mjs"
+import { materialize } from "./rigel-v2-sidebar-node.mjs"
+import { adaptTheme } from "./rigel-v2-sidebar-theme.mjs"
+
+/**
+ * The OpenTUI Solid runtime the V1 `materialize` consumes. Per the official V2
+ * CLI-plugin contract the host provides the OpenTUI PEERS (`@opentui/core`,
+ * `@opentui/solid`, `solid-js`) — the runtime package declares them as
+ * `peerDependencies`. It is resolved through a LAZY dynamic import (never a
+ * static import) so a host/runtime that does not expose it degrades the sidebar
+ * instead of failing to load the whole companion CLI entry. `null` means the
+ * runtime is unavailable: the surface then writes its receipt but registers no
+ * slot (no crash, no text into the host).
+ */
+let hostSolid = null
+try {
+  const solid = await import("@opentui/solid")
+  if (
+    typeof solid?.createElement === "function" &&
+    typeof solid?.setProp === "function" &&
+    typeof solid?.insert === "function"
+  ) {
+    hostSolid = { createElement: solid.createElement, setProp: solid.setProp, insert: solid.insert }
+  }
+} catch {
+  hostSolid = null
+}
 
 export const SIDEBAR_CLI_ID = "oh-my-rigel.sidebar"
 
@@ -262,7 +288,7 @@ export function readActiveLoop(projectDir, now) {
 
 /**
  * Build the sidebar CLI surface. `overrides` carries the test seams (`stateRoot`,
- * `snapshotPath`, `logFile`, `log`, `now`, `directory`, `renderView`, `config`);
+ * `snapshotPath`, `logFile`, `log`, `now`, `directory`, `solid`, `config`);
  * the live configuration is read from `context.options`.
  */
 export function createSidebarCliSurface(overrides = {}) {
@@ -328,32 +354,34 @@ export function createSidebarCliSurface(overrides = {}) {
         }
       }
 
-      const renderView = (view) => {
-        try {
-          if (typeof overrides.renderView === "function") return overrides.renderView(view)
-          return describeView(view)
-        } catch (error) {
-          logger({ event: "render-failed", error: describeError(error) })
-          return ""
-        }
-      }
+      // The slot must receive a REAL element tree (the V1 flow): buildViewNodes
+      // -> materialize through the OpenTUI Solid runtime. A render failure is
+      // logged and RE-THROWN; the host must never receive text, `""`, or the raw
+      // IR (`buildViewNodes`), which are not mountable nodes. Tests inject a stub
+      // runtime via `overrides.solid`.
+      const solidForRender = overrides.solid ?? hostSolid
 
-      const render = () => {
+      const render = (props) => {
+        void props
         try {
           const { view } = compute()
           currentView = view
-          return renderView(view)
+          return materialize(buildViewNodes(view, adaptTheme(context?.theme)), solidForRender)
         } catch (error) {
           logger({ event: "render-failed", error: describeError(error) })
-          return ""
+          throw error
         }
       }
 
-      if (hasRenderer) {
+      if (hasRenderer && solidForRender) {
         const slot = context?.ui?.slot
         if (typeof slot === "function") {
           try {
-            const result = slot({ append: SIDEBAR_SLOT_APPEND, render })
+            // Current V2 hosts take a single options object; early previews took
+            // a positional `(name, render)` pair. Branch on the callback arity so
+            // either host registers (same guard the goal plugin uses).
+            const result =
+              slot.length <= 1 ? slot({ append: SIDEBAR_SLOT_APPEND, render }) : slot(SIDEBAR_SLOT_APPEND, render)
             if (typeof result === "function") disposers.push(result)
             else if (result && typeof result.dispose === "function") disposers.push(() => result.dispose())
             logger({ event: "slot-registered", append: SIDEBAR_SLOT_APPEND })
@@ -364,7 +392,9 @@ export function createSidebarCliSurface(overrides = {}) {
           logger({ event: "slot-unavailable" })
         }
       } else {
-        logger({ event: "headless-receipt-only" })
+        // No live renderer, or the host did not provide the OpenTUI Solid peer:
+        // write the receipt, register no slot, and never crash the companion.
+        logger({ event: hasRenderer ? "solid-runtime-unavailable" : "headless-receipt-only" })
       }
 
       // The receipt is written even headless, so a lab run can assert the
