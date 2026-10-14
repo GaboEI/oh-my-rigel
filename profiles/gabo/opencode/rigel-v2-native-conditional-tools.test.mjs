@@ -57,10 +57,13 @@ function fakeContext({ storage, pty, onSubscription } = {}) {
 const GATE_OFF = { interactive_bash: false, task_system: false, goal: false, monitor: false, team_mode: false, hashline_edit: false, preemptive_compaction: false }
 
 describe("gate reader", () => {
-  test("defaults every gate to false and only accepts explicit true", () => {
+  test("defaults every gate to false, accepts explicit true, and quarantines goal", () => {
     expect(readNativeGates(undefined)).toEqual(GATE_OFF)
     expect(readNativeGates({ metadata: { global: { gates: { task_system: "yes", goal: 1 } } } })).toEqual(GATE_OFF)
-    expect(readNativeGates({ metadata: { global: { gates: { task_system: true, goal: true } } } })).toEqual({ ...GATE_OFF, task_system: true, goal: true })
+    // Explicit `true` is honoured for every gate EXCEPT the quarantined `goal`,
+    // whose inherited surface must never register.
+    expect(readNativeGates({ metadata: { global: { gates: { task_system: true, goal: true } } } })).toEqual({ ...GATE_OFF, task_system: true })
+    expect(readNativeGates({ metadata: { global: { gates: { goal: true } } } }).goal).toBe(false)
   })
 })
 
@@ -214,6 +217,27 @@ describe("registration on the V2 host", () => {
     expect(subscriptions).toBe(1)
     await result.definitions.create_goal.execute({ objective: "Ship Wave 1" }, { sessionID: "ses_goal" })
     expect((await result.goalController.getGoal("ses_goal")).objective).toBe("Ship Wave 1")
+    await result.dispose()
+  })
+
+  test("quarantines the goal family when a manifest forces gates.goal", async () => {
+    // given: a hand-edited manifest forces the gate on; the runtime reads it
+    // through readNativeGates, so the quarantine keeps the legacy surface off.
+    let subscriptions = 0
+    const fake = fakeContext({ storage: memoryStorage(), onSubscription: () => { subscriptions += 1 } })
+    // when
+    const result = await registerConditionalNativeTools({
+      context: fake.context,
+      manifest: { metadata: { global: { gates: { goal: true } } } },
+      log: () => {},
+    })
+    // then: N2 (no goal tool), N3/N4 (no continuation subscription), N5 (no controller).
+    expect(result.gates.goal).toBe(false)
+    expect(result.registered).toEqual([])
+    expect(fake.added).toEqual([])
+    expect(subscriptions).toBe(0)
+    expect(result.goalController).toBeUndefined()
+    expect(result.definitions.create_goal).toBeUndefined()
     await result.dispose()
   })
 

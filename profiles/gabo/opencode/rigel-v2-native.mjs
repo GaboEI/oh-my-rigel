@@ -38,6 +38,7 @@ import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-v
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
 import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeGates, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativeOpenclaw, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs } from "./rigel-v2-native-config.mjs"
+import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
 import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
 import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
 import { createRuntimeHostSkillSource, registerNativeSkills, selectSkillsForChild, formatSkillInjection } from "./rigel-v2-native-skills.mjs"
@@ -395,6 +396,12 @@ export default {
     if (!hostVersionCheck.ok) {
       throw new Error(hostVersionCheck.message)
     }
+    // The vendored community engine is the sole Goal owner and reads its state
+    // ONLY through OPENCODE_GOAL_STATE_PATH. Bind that variable to a path inside
+    // the Rigel state tree before the engine first touches state; an unsafe or V1
+    // value throws so the host fails the plugin load instead of writing V1 state.
+    // A source/test load (not a deployment) leaves the environment untouched.
+    installGoalStatePath()
     if (typeof context?.tool?.transform !== "function") {
       throw new Error("OpenCode V2 tool.transform is unavailable")
     }

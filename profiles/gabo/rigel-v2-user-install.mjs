@@ -26,10 +26,24 @@ import { fileURLToPath } from "node:url"
 import {
   materializeNativeRuntime,
   registerRuntimePluginEntry,
+  resolveGoalOptionOverrides,
   resolveRuntimeNotificationOptions,
 } from "./rigel-v2-runtime-materialize.mjs"
 import { registerCompanionCliPlugin, removeRigelCliEntries } from "./notification-activation-config.mjs"
-import { goalVendorDigestKey } from "./rigel-v2-goal-vendor.mjs"
+import { GOAL_VENDOR_ARTIFACT, goalVendorDigestKey, goalVendorTargetDir } from "./rigel-v2-goal-vendor.mjs"
+import {
+  GOAL_ENGINE_SHIM_DIRNAME,
+  GOAL_TUI_SHIM_DIRNAME,
+  adoptGoalState,
+  assertGoalStatePathSafe,
+  goalEntryOptions,
+  isGoalEngineEntry,
+  registerGoalCliEntry,
+  registerGoalServerEntry,
+  removeGoalEntries,
+  resolveGoalOptions,
+  resolveGoalStatePath,
+} from "./rigel-v2-goal-registration.mjs"
 import { renderCleanInstallProfile } from "./rigel-v2-clean-install-profile.mjs"
 import {
   beginLifecycleTransaction,
@@ -356,17 +370,33 @@ function generateAgentManifest({ versionDir, home, configFile }) {
   return output
 }
 
+/** The vendored engine's artifact root and the loader shim the host loads. */
+function goalEnginePaths(runtimeDir) {
+  const artifactRoot = path.join(goalVendorTargetDir(runtimeDir), "node_modules", ...GOAL_VENDOR_ARTIFACT.name.split("/"))
+  // The host loads the shim directories (`.`/`./tui` entrypoints), not the
+  // vendored files: the server shim for `opencode.json`, the TUI shim for
+  // `cli.json`.
+  return {
+    artifactRoot,
+    engineEntry: path.join(runtimeDir, GOAL_ENGINE_SHIM_DIRNAME),
+    tuiEntry: path.join(runtimeDir, GOAL_TUI_SHIM_DIRNAME),
+  }
+}
+
 function removeOurConfigEntries(configFile, stateRoot) {
   const canonicalState = canonicalize(stateRoot)
   const config = fs.existsSync(configFile) ? readJson(configFile) : {}
   if (Array.isArray(config.plugin)) {
     config.plugin = config.plugin.filter((entry) => !(typeof entry === "string" && under(canonicalize(entry), canonicalState)))
   }
-  writeJsonAtomic(configFile, config)
   const cliConfigFile = path.join(path.dirname(configFile), "cli.json")
+  const cli = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
+  // The goal engine is its own slot: strip it from both configs regardless of the
+  // runtime-family filter, which deliberately ignores it.
+  const stripped = removeGoalEntries(config, cli)
+  writeJsonAtomic(configFile, stripped.config)
   if (fs.existsSync(cliConfigFile)) {
-    const cli = readJson(cliConfigFile)
-    writeJsonAtomic(cliConfigFile, removeRigelCliEntries(cli, { familyRoot: stateRoot }))
+    writeJsonAtomic(cliConfigFile, removeRigelCliEntries(stripped.cli, { familyRoot: stateRoot }))
   }
 }
 
@@ -442,6 +472,21 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
     env: process.env,
   })
   const runtimeDigest = treeDigest(path.join(versionDir, "runtime"))
+  // The single effective state seam: OPENCODE_GOAL_STATE_PATH, always inside the
+  // Rigel state tree. Adoption of a compatible EXTERNAL community state is
+  // opt-in and by copy only (the source stays byte-identical); an incompatible,
+  // modified, newer or V1 source fails closed and no external state is read
+  // otherwise.
+  const goalStatePath = resolveGoalStatePath(paths.stateRoot)
+  const adoptFrom = process.env.RIGEL_V2_GOAL_ADOPT_FROM
+  if (typeof adoptFrom === "string" && adoptFrom.trim() !== "") {
+    adoptGoalState({
+      sourcePath: adoptFrom,
+      targetPath: goalStatePath,
+      stateRoot: paths.stateRoot,
+      expectedDigest: process.env.RIGEL_V2_GOAL_ADOPT_SHA256,
+    })
+  }
   // Additive: the version key keeps its exact meaning for `runtime.digestMatches`
   // and rollback, and the pinned goal vendor's materialized-tree digest is recorded
   // beside it under a namespaced key.
@@ -459,6 +504,8 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
     stateRoot: paths.stateRoot,
     pluginEntry: result.pluginEntry,
     agentManifest,
+    goalStatePath,
+    goalOptions: result.goalOptions,
     installedAt: previousState?.installedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     versionDigests,
@@ -485,6 +532,8 @@ function statusOf(state, paths) {
   const configFamily = configPlugins.filter((entry) => typeof entry === "string" && under(canonicalize(entry), canonicalState))
   checks.push({ name: "config.registersRuntime", pass: configPlugins.includes(state.pluginEntry) })
   checks.push({ name: "config.singleRigelEntry", pass: configFamily.length === 1 && configFamily[0] === state.pluginEntry })
+  // The vendored goal engine is its own slot in the SAME array: exactly one.
+  checks.push({ name: "goal.singleServerEntry", pass: configPlugins.filter(isGoalEngineEntry).length === 1 })
 
   // cli.json: exactly one Rigel-family companion entry pointing at the SAME
   // runtime as the server config, and the builtin-disable marker present iff the
@@ -493,15 +542,29 @@ function statusOf(state, paths) {
   const cliConfigFile = path.join(path.dirname(paths.configFile), "cli.json")
   const cli = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
   const cliPlugins = Array.isArray(cli.plugins) ? cli.plugins : []
-  const cliFamily = cliPlugins.filter((entry) => entry && typeof entry === "object" && typeof entry.package === "string" && under(canonicalize(entry.package), canonicalState))
+  // The goal TUI entry lives under the state root too but belongs to the goal
+  // slot, so it must not count as the runtime companion.
+  const cliFamily = cliPlugins.filter((entry) => !isGoalEngineEntry(entry) && entry && typeof entry === "object" && typeof entry.package === "string" && under(canonicalize(entry.package), canonicalState))
   const markerCount = cliPlugins.filter((entry) => entry === "-opencode.notifications").length
   const notificationEnabled = cliFamily[0]?.options?.notification?.enabled === true
   checks.push({ name: "cli.singleRigelEntry", pass: cliFamily.length === 1 })
   checks.push({ name: "cli.runtimeMatchesConfig", pass: cliFamily.length === 1 && cliFamily[0].package === state.pluginEntry })
   checks.push({ name: "cli.disabledMarkerCorrect", pass: markerCount === (notificationEnabled ? 1 : 0) })
+  checks.push({ name: "goal.singleCliEntry", pass: cliPlugins.filter(isGoalEngineEntry).length === 1 })
 
   const currentDigest = fs.existsSync(runtime) ? treeDigest(runtime) : null
   checks.push({ name: "runtime.digestMatches", pass: currentDigest !== null && currentDigest === state.versionDigests?.[state.version] })
+
+  if (state.goalStatePath !== undefined) {
+    let inside = false
+    try {
+      assertGoalStatePathSafe(state.goalStatePath, paths.stateRoot)
+      inside = true
+    } catch {
+      inside = false
+    }
+    checks.push({ name: "goal.statePathInsideRoot", pass: inside })
+  }
   return { version: state.version, previousVersion: state.previousVersion ?? null, checks, pass: checks.every((entry) => entry.pass) }
 }
 
@@ -544,7 +607,11 @@ function main() {
   // transaction so a failed install/upgrade restores it byte-identically (and a
   // clean install's freshly seeded copy is removed on rollback).
   const { profileFile: omoProfileFile, promptFile: omoPromptFile } = editableProfilePaths(paths.home)
-  const transactionFiles = [paths.configFile, cliConfigFile, stateFile, skillsStateFile, omoProfileFile, omoPromptFile]
+  // The adopted goal state is written by install/upgrade, so it belongs to the
+  // same compensating transaction: a failure after adoption must restore a
+  // pre-existing file byte-identically, or remove one that was absent. Without
+  // this entry a failed install could overwrite a prior state or leave a new one.
+  const transactionFiles = [paths.configFile, cliConfigFile, stateFile, skillsStateFile, omoProfileFile, omoPromptFile, resolveGoalStatePath(paths.stateRoot)]
   const profileFile = process.env.RIGEL_V2_PROFILE_FILE || path.join(sourceRoot, "profiles/gabo/omo.jsonc")
   const previousState = fs.existsSync(stateFile) ? readJson(stateFile) : null
 
@@ -589,17 +656,20 @@ function main() {
     lifecycle(transactionFiles, (txn) => {
       const config = fs.existsSync(paths.configFile) ? readJson(paths.configFile) : {}
       config.plugin = registerRuntimePluginEntry(Array.isArray(config.plugin) ? config.plugin : [], { runtimeDir: targetRuntime, familyRoot: paths.stateRoot })
+      const goalPaths = goalEnginePaths(targetRuntime)
+      const goalOverrides = { ...goalEntryOptions((config.plugin ?? []).find(isGoalEngineEntry)), ...resolveGoalOptionOverrides(profileFile, process.env) }
+      config.plugin = registerGoalServerEntry(config.plugin, { engineEntry: goalPaths.engineEntry, options: resolveGoalOptions({ overrides: goalOverrides }) })
       writeJson(paths.configFile, config)
       txn.failAt("rollback:after-config")
       const cliBefore = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
       const notificationOptions = resolveRuntimeNotificationOptions(profileFile, process.env)
-      const cliAfter = registerCompanionCliPlugin(cliBefore, {
+      const cliCompanion = registerCompanionCliPlugin(cliBefore, {
         runtimeDir: targetRuntime,
         familyRoot: paths.stateRoot,
         options: notificationOptions,
         notificationEnabled: notificationOptions.enabled,
       })
-      writeJson(cliConfigFile, cliAfter)
+      writeJson(cliConfigFile, registerGoalCliEntry(cliCompanion, { tuiShimDir: goalPaths.tuiEntry }))
       txn.failAt("rollback:after-cli")
       const state = {
         ...previousState,
@@ -607,6 +677,7 @@ function main() {
         previousVersion: null,
         pluginEntry: targetRuntime,
         agentManifest: path.join(paths.stateRoot, "versions", target, "agent-manifest.mjs"),
+        goalStatePath: resolveGoalStatePath(paths.stateRoot),
         updatedAt: new Date().toISOString(),
         rollbackLog: [...(previousState.rollbackLog ?? []), { from: previousState.version, to: target, byteIdentical: expected === actual, at: new Date().toISOString() }],
       }

@@ -56,6 +56,14 @@ describe("Rigel lab goal gate: mode detection", () => {
     expect(detectGoalMode(home).mode).toBe("legacy")
   })
 
+  test("#given the vendored managed engine referenced #when detecting #then mode is managed, not legacy", () => {
+    const home = makeHome({
+      configs: { "opencode.json": `{"plugin":[["/state/versions/1/runtime/vendor/opencode-goal-plugin/node_modules/@prevalentware/opencode-goal-plugin/dist/server.js",{"auto_continue":true}]]}` },
+      omoGoalEnabled: true,
+    })
+    expect(detectGoalMode(home).mode).toBe("managed")
+  })
+
   test("#given a missing config file #when detecting #then mode is unknown, never internal", () => {
     const home = makeHome({ configs: { "opencode.json": "{}", "tui.json": "{}" }, omoGoalEnabled: true })
     expect(detectGoalMode(home).mode).toBe("unknown")
@@ -88,6 +96,17 @@ describe("Rigel lab goal gate: probe and invariant", () => {
     const verdict = verifyGoalInvariant("internal", { present: false, version: null, count: 0 }, { present: true, version: "1", count: 1 })
     expect(verdict.pass).toBe(false)
     expect(verdict.reason).toContain("internal goal mode")
+  })
+
+  test("#given managed mode #when the retired V1 goals.json stays absent #then the invariant passes", () => {
+    const verdict = verifyGoalInvariant("managed", { present: false, version: null, count: 0 }, { present: false, version: null, count: 0 })
+    expect(verdict.pass).toBe(true)
+  })
+
+  test("#given managed mode #when the retired V1 goals.json appears #then the invariant fails", () => {
+    const verdict = verifyGoalInvariant("managed", { present: false, version: null, count: 0 }, { present: true, version: "2", count: 1 })
+    expect(verdict.pass).toBe(false)
+    expect(verdict.reason).toContain("managed goal mode")
   })
 
   test("#given legacy mode with schema 1 unchanged #when verifying #then it passes", () => {
@@ -125,12 +144,12 @@ describe("Rigel lab goal gate: probing an existing goals.json", () => {
 describe("Rigel lab goal gate: reference detection", () => {
   test("#given a config with the plugin package #when scanning #then it is readable and referenced", () => {
     const home = makeHome({ configs: { "opencode.json": `["@prevalentware/opencode-goal-plugin@latest"]` } })
-    expect(readGoalConfig(path.join(home, ".config/opencode/opencode.json"))).toEqual({ readable: true, referenced: true })
+    expect(readGoalConfig(path.join(home, ".config/opencode/opencode.json"))).toEqual({ readable: true, referenced: true, managed: false })
   })
 
   test("#given a missing config #when scanning #then it is not readable", () => {
     const home = makeHome({})
-    expect(readGoalConfig(path.join(home, ".config/opencode/tui.json"))).toEqual({ readable: false, referenced: false })
+    expect(readGoalConfig(path.join(home, ".config/opencode/tui.json"))).toEqual({ readable: false, referenced: false, managed: false })
   })
 
   test("#given internal goal enabled in JSONC with comments #when parsing #then it is true", () => {

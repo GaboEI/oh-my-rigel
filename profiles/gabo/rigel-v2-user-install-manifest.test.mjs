@@ -58,6 +58,15 @@ function runInstall(args, env) {
   })
 }
 
+function runCommand(command, args, env) {
+  return spawnSync("node", [installerPath, command, ...args, "--json"], {
+    cwd: repoRoot,
+    env,
+    encoding: "utf8",
+    timeout: 240_000,
+  })
+}
+
 // Forward the parent's temp root: the spawned installer and the sandboxed
 // manifest builder it launches must not depend on an OS temp directory that can
 // be quota-limited, and forwarding it keeps every produced path inside the same
@@ -163,11 +172,11 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
         expect(resolved.command).toContain(deploymentDist)
       })
 
-      test("#then every existing install check stays green with the dark goal vendor present", () => {
+      test("#then every pre-existing install check stays green with the goal engine registered", () => {
         const emitted = JSON.parse(install.stdout)
         const checks = Object.fromEntries(emitted.status.checks.map((check) => [check.name, check.pass]))
-        // The vendor is additive and does not enter the Rigel family, so the
-        // pre-existing check set is unchanged and still green.
+        // The goal engine is its own family slot, so the runtime-family checks are
+        // unchanged and still green.
         for (const name of [
           "runtime.materialized",
           "agentManifest.present",
@@ -175,7 +184,7 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
           "cli.singleRigelEntry",
           "runtime.digestMatches",
         ]) {
-          expect(checks[name], `${name} regressed with the dark vendor present`).toBe(true)
+          expect(checks[name], `${name} regressed with the goal engine registered`).toBe(true)
         }
         expect(emitted.status.pass).toBe(true)
       })
@@ -189,6 +198,40 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
         expect(state.versionDigests["1"]).toMatch(/^[0-9a-f]{64}$/)
         expect(state.versionDigests["opencode-goal-plugin:1"]).toMatch(/^[0-9a-f]{64}$/)
         expect(state.versionDigests["opencode-goal-plugin:1"]).not.toBe(state.versionDigests["1"])
+      })
+
+      test("#then the goal engine is the sole owner: exactly one entry in each config, carrying the Rigel defaults", () => {
+        const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
+        const goalServer = config.plugin.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+        expect(goalServer).toHaveLength(1)
+        expect(goalServer[0][1]).toEqual({
+          auto_continue: true,
+          defer_while_tasks_active: true,
+          max_auto_turns: 1000,
+          min_continue_interval_seconds: 3,
+          max_prompt_failures: 3,
+          no_progress_token_threshold: 50,
+          max_no_progress_turns: 2,
+          restricted_agents: [],
+          allow_goal_execution_from_plan: false,
+        })
+        // The foreign plugin the clean config declared is preserved.
+        expect(config.plugin).toContain("rigel-foreign-plugin")
+        const cli = JSON.parse(fs.readFileSync(path.join(path.dirname(configFile), "cli.json"), "utf8"))
+        const goalCli = cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))
+        expect(goalCli).toHaveLength(1)
+      })
+
+      test("#then the goal checks are green and the state path is bound inside the state tree", () => {
+        const emitted = JSON.parse(install.stdout)
+        const checks = Object.fromEntries(emitted.status.checks.map((check) => [check.name, check.pass]))
+        expect(checks["goal.singleServerEntry"]).toBe(true)
+        expect(checks["goal.singleCliEntry"]).toBe(true)
+        expect(checks["goal.statePathInsideRoot"]).toBe(true)
+        expect(emitted.status.pass).toBe(true)
+        const state = JSON.parse(fs.readFileSync(path.join(stateRoot, "install-state.json"), "utf8"))
+        expect(state.goalStatePath.startsWith(stateRoot)).toBe(true)
+        expect(state.goalStatePath.endsWith(path.join("goal-state", "goals.json"))).toBe(true)
       })
     })
   })
@@ -243,5 +286,115 @@ describe("rigel-v2-user-install runtime manifest with default state root under H
         expectCompleteManifest(manifest)
       })
     })
+  })
+})
+
+describe("rigel-v2-user-install goal lifecycle: absorb, idempotent reinstall, uninstall", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-user-install-goal-"))
+  const home = path.join(base, "home")
+  const configFile = path.join(base, "config", "opencode", "opencode.json")
+  const stateRoot = path.join(base, "state")
+  let env
+  const readConfig = () => JSON.parse(fs.readFileSync(configFile, "utf8"))
+  const goalEntries = (config) => config.plugin.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+
+  beforeAll(() => {
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(configFile), { recursive: true, mode: 0o700 })
+    // A pre-existing external goal install (the retired package) plus a foreign plugin.
+    fs.writeFileSync(configFile, `${JSON.stringify({ plugin: ["rigel-foreign-plugin", ["@prevalentware/opencode-goal-plugin@latest", {}]] }, null, 2)}\n`, { mode: 0o600 })
+    env = withTemporaryRoot({
+      PATH: process.env.PATH,
+      HOME: path.join(base, "installer-home"),
+      XDG_CONFIG_HOME: path.join(base, "xdg", "config"),
+      XDG_DATA_HOME: path.join(base, "xdg", "data"),
+      XDG_STATE_HOME: path.join(base, "xdg", "state"),
+      XDG_CACHE_HOME: path.join(base, "xdg", "cache"),
+      OMO_DISABLE_PROCESS_CLEANUP: "1",
+    })
+  }, 300_000)
+
+  afterAll(() => {
+    fs.rmSync(base, { recursive: true, force: true })
+  })
+
+  describe("#given a pre-existing external goal install", () => {
+    test("#when installed #then the external entry is absorbed into exactly one vendored engine", () => {
+      const install = runCommand("install", ["--version", "1", "--home", home, "--config", configFile, "--state", stateRoot], env)
+      expect(install.status, `install failed: ${install.stderr || install.stdout}`).toBe(0)
+      const config = readConfig()
+      expect(goalEntries(config)).toHaveLength(1)
+      // The retired external specifier is gone; the foreign plugin is preserved.
+      expect(config.plugin.some((entry) => Array.isArray(entry) && String(entry[0]).includes("@prevalentware/opencode-goal-plugin@"))).toBe(false)
+      expect(config.plugin).toContain("rigel-foreign-plugin")
+    }, 300_000)
+
+    test("#when reinstalled #then the goal entry is replaced in place, never duplicated", () => {
+      const install = runCommand("install", ["--version", "1", "--home", home, "--config", configFile, "--state", stateRoot], env)
+      expect(install.status, `reinstall failed: ${install.stderr || install.stdout}`).toBe(0)
+      expect(goalEntries(readConfig())).toHaveLength(1)
+    }, 300_000)
+
+    test("#when uninstalled #then the goal entries are removed from both configs and foreign plugins stay", () => {
+      const uninstall = runCommand("uninstall", ["--home", home, "--config", configFile, "--state", stateRoot], env)
+      expect(uninstall.status, `uninstall failed: ${uninstall.stderr || uninstall.stdout}`).toBe(0)
+      const config = readConfig()
+      expect(goalEntries(config)).toHaveLength(0)
+      expect(config.plugin).toContain("rigel-foreign-plugin")
+      const cli = JSON.parse(fs.readFileSync(path.join(path.dirname(configFile), "cli.json"), "utf8"))
+      expect(cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))).toHaveLength(0)
+    }, 300_000)
+  })
+})
+
+describe("rigel-v2-user-install goal upgrade + rollback", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-user-install-upgrade-"))
+  const home = path.join(base, "home")
+  const configFile = path.join(base, "config", "opencode", "opencode.json")
+  const stateRoot = path.join(base, "state")
+  let env
+  const readConfig = () => JSON.parse(fs.readFileSync(configFile, "utf8"))
+  const goalEntries = (config) => config.plugin.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+
+  beforeAll(() => {
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(configFile), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(configFile, `${JSON.stringify({ plugin: ["rigel-foreign-plugin"] }, null, 2)}\n`, { mode: 0o600 })
+    env = withTemporaryRoot({
+      PATH: process.env.PATH,
+      HOME: path.join(base, "installer-home"),
+      XDG_CONFIG_HOME: path.join(base, "xdg", "config"),
+      XDG_DATA_HOME: path.join(base, "xdg", "data"),
+      XDG_STATE_HOME: path.join(base, "xdg", "state"),
+      XDG_CACHE_HOME: path.join(base, "xdg", "cache"),
+      OMO_DISABLE_PROCESS_CLEANUP: "1",
+    })
+  }, 300_000)
+
+  afterAll(() => {
+    fs.rmSync(base, { recursive: true, force: true })
+  })
+
+  describe("#given an installed goal engine", () => {
+    test("#when upgraded #then exactly one goal entry survives, repointed at the new version", () => {
+      expect(runCommand("install", ["--version", "1", "--home", home, "--config", configFile, "--state", stateRoot], env).status).toBe(0)
+      const upgrade = runCommand("upgrade", ["--version", "2", "--home", home, "--config", configFile, "--state", stateRoot], env)
+      expect(upgrade.status, `upgrade failed: ${upgrade.stderr || upgrade.stdout}`).toBe(0)
+      const entries = goalEntries(readConfig())
+      expect(entries).toHaveLength(1)
+      expect(entries[0][0]).toContain("/versions/2/")
+    }, 300_000)
+
+    test("#when rolled back #then exactly one goal entry survives, repointed at the previous version and status is green", () => {
+      const rollback = runCommand("rollback", ["--home", home, "--config", configFile, "--state", stateRoot], env)
+      expect(rollback.status, `rollback failed: ${rollback.stderr || rollback.stdout}`).toBe(0)
+      const entries = goalEntries(readConfig())
+      expect(entries).toHaveLength(1)
+      expect(entries[0][0]).toContain("/versions/1/")
+      const emitted = JSON.parse(rollback.stdout)
+      expect(emitted.status.pass).toBe(true)
+    }, 300_000)
   })
 })

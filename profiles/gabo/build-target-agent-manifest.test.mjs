@@ -193,6 +193,14 @@ describe("build-target-agent-manifest", () => {
         expect(manifest.metadata.global.gates).toBeDefined()
         expect(manifest.metadata.global.categories).toBeDefined()
       })
+
+      test.skipIf(!hasDist)("#then the regenerated manifest quarantines the inherited goal and grants no goal_* tool", () => {
+        // The generator must never bake gates.goal:true nor a legacy `goal_*`
+        // tool permission, so a reinstall/update cannot revive the surface (N10).
+        expect(manifest.metadata.global.gates.goal).toBe(false)
+        const tools = manifest.metadata.global.tools ?? {}
+        for (const key of Object.keys(tools)) expect(key.startsWith("goal_")).toBe(false)
+      })
     })
   })
 })

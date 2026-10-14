@@ -30,6 +30,8 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs"
 import { userInfo } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
+import { quarantineNativeGates } from "./rigel-v2-native-goal-quarantine.mjs"
+
 /** Monitor gate defaults, from config/schema/monitor.ts. */
 export const NATIVE_MONITOR_DEFAULTS = Object.freeze({
   enabled: false,
@@ -893,12 +895,17 @@ function isPlainObject(value) {
  * with every known gate present as a boolean; an absent or malformed gate is
  * `false`. Unknown keys are ignored so a newer generator can add gates without
  * breaking an older runtime.
+ *
+ * The `goal` gate is quarantined by {@link quarantineNativeGates}: the inherited
+ * Goal is replaced by the vendored community engine, so a manifest that forces
+ * `goal: true` (hand-edited or materialized before the switchover) still reads
+ * `goal: false`. This is the runtime fail-closed backstop.
  */
 export function readNativeGates(manifest) {
   const gates = isPlainObject(manifest?.metadata?.global?.gates) ? manifest.metadata.global.gates : {}
   const resolved = {}
   for (const key of GATE_KEYS) resolved[key] = gates[key] === true
-  return Object.freeze(resolved)
+  return Object.freeze(quarantineNativeGates(resolved))
 }
 
 /**
@@ -1204,7 +1211,10 @@ export function isNativeGateEnabled(manifest, gate) {
  */
 export function deriveNativeGates(view) {
   const disabledTools = Array.isArray(view?.disabled?.tools) ? view.disabled.tools : []
-  return {
+  // The inherited Goal is quarantined: `goal.enabled` stays present and inert in
+  // `omo.jsonc`, but the generated gate is always false so the legacy surface
+  // never registers. See `rigel-v2-native-goal-quarantine.mjs`.
+  return quarantineNativeGates({
     monitor: view?.monitor?.enabled === true,
     goal: view?.goal?.enabled === true,
     task_system: view?.experimental?.task_system === true,
@@ -1213,7 +1223,7 @@ export function deriveNativeGates(view) {
     hashline_edit: view?.hashline_edit === true,
     // T34: V1 `experimental.preemptive_compaction`, off unless explicitly set.
     preemptive_compaction: view?.experimental?.preemptive_compaction === true,
-  }
+  })
 }
 
 export { GATE_KEYS }

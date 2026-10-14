@@ -31,6 +31,15 @@ export const FAMILIES = Object.freeze([
   "goal",
 ])
 
+/**
+ * Families whose runtime entrypoint is intentionally ABSENT in V2 after the PR B
+ * goal switchover: the inherited Goal is quarantined, and the vendored community
+ * engine that replaces it is a SEPARATE plugin, not the runtime entrypoint the
+ * oracle drives. The family's parity is still asserted at the helper level
+ * (`scenarios/goal.mjs`); only the end-to-end entrypoint case is withdrawn.
+ */
+export const QUARANTINED_ENTRYPOINT_FAMILIES = Object.freeze(["goal"])
+
 export const scenarios = Object.freeze([
   ...delegation,
   ...ultrawork,

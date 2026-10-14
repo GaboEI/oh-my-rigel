@@ -48,6 +48,7 @@ import {
   deriveNativeMinOpenCodeVersion,
   resolveNativePluginConfig,
 } from "./opencode/rigel-v2-native-config.mjs"
+import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
 import { buildIsolatedV2Env } from "./isolated-v2-env.mjs"
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
@@ -254,7 +255,7 @@ export async function buildTargetAgentManifest(options = {}) {
       // A V1 tool default can carry a hard global disable for a family the native
       // profile explicitly enables (`task_*: false` is the default). The native
       // gate wins.
-      const tools = { ...(primary.tools ?? {}) }
+      const tools = stripLegacyGoalToolPermission({ ...(primary.tools ?? {}) })
       if (gates.task_system) tools["task_*"] = true
       if (gates.goal) tools["goal_*"] = true
       if (gates.monitor) tools["monitor_*"] = true

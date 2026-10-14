@@ -54,8 +54,9 @@ describe("#given the manifest materializer and the runtime gate reader", () => {
     }
   })
 
-  test("#when a materialized gates-on manifest is read #then every gated family registers", () => {
-    // given
+  test("#when a materialized gates-on manifest is read #then every gated family registers except the quarantined goal", () => {
+    // given: the view enables the inherited Goal, but the quarantine keeps its
+    // gate false, so the legacy goal tools must not register (N2).
     const manifest = materialize({ monitor: { enabled: true }, goal: { enabled: true }, experimental: { task_system: true }, disabled: { tools: [] } })
     const gates = readNativeGates(manifest)
     const taskStore = { readTask: async () => null, writeTask: async () => {}, listTasks: async () => [] }
@@ -64,7 +65,9 @@ describe("#given the manifest materializer and the runtime gate reader", () => {
     const conditional = buildConditionalToolDefinitions({ gates, taskStore, goalStore, tmuxPath: "/usr/bin/tmux", ptyRunner: { run: async () => {} } })
     const families = createNativeToolFamilies({ clients: [fakeContext()], location: { directory: "/work" }, manifest, context: fakeContext(), pluginConfig: { monitor: { enabled: true } }, serverApi: { available: true, origin: "http://127.0.0.1:1" } })
     // then
-    expect(conditional.names.sort()).toEqual([...TASK_TOOL_NAMES, ...GOAL_TOOL_NAMES, "interactive_bash"].sort())
+    expect(gates.goal).toBe(false)
+    expect(conditional.names.sort()).toEqual([...TASK_TOOL_NAMES, "interactive_bash"].sort())
+    for (const name of GOAL_TOOL_NAMES) expect(conditional.names, name).not.toContain(name)
     for (const name of ["monitor_start", "monitor_stop", "monitor_list", "monitor_output"]) {
       expect(families.tools[name], name).toBeDefined()
     }

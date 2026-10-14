@@ -389,39 +389,6 @@ export const scenarios = [
   },
 
   // -------------------------------------------------------------------------
-  // goal: real entrypoint -> registered goal command -> controller lifecycle
-  // -------------------------------------------------------------------------
-  {
-    id: "goal.entrypoint-command",
-    family: "goal",
-    integration: true,
-    entrypoint: true,
-    observableType: "state-persistence",
-    why: "The real setup() registers the goal command (gate on); driving set/show/pause/resume/clear produces the same goal record transitions as the V1 goal controller over its store.",
-    loadV1: () => import(`${PKG}/omo-opencode/src/hooks/goal/controller.ts`),
-    loadV2: () => import("./runtime-entrypoint.mjs"),
-    tolerance: { kind: "exact" },
-    observeV1: async (v1) => {
-      const project = tempDir("diff-entrypoint-goal-")
-      const controller = v1.createGoalController({ projectDir: project })
-      const created = await controller.setGoal("ses_entrypoint", "Ship the oracle")
-      const got = await controller.getGoal("ses_entrypoint")
-      const paused = await controller.pauseGoal("ses_entrypoint")
-      const resumed = await controller.resumeGoal("ses_entrypoint")
-      await controller.clearGoal("ses_entrypoint")
-      const after = await controller.getGoal("ses_entrypoint")
-      return { created: projectGoal(created), got: projectGoal(got), paused: projectGoal(paused), resumed: projectGoal(resumed), after: projectGoal(after) }
-    },
-    observeV2: (v2) => v2.driveGoalCommand({ sessionID: "ses_entrypoint" }),
-    corpus: [{ name: "goal lifecycle" }],
-    mutation: {
-      target: "driveGoalCommand",
-      perturb: () => async () => ({ created: null, got: null, paused: null, resumed: null, after: null }),
-      onDisk: { find: 'name: "goal",', replace: 'name: "goal-disabled",' },
-    },
-  },
-
-  // -------------------------------------------------------------------------
   // skills: real entrypoint -> delegated child prompt carries the skill body
   // -------------------------------------------------------------------------
   {

@@ -124,7 +124,7 @@ describe("stageGoalVendor", () => {
     expect(digestOfDirectory(path.join(repoRoot, "profiles/gabo/vendor/opencode-goal-plugin"))).toBe(sourceBefore)
   })
 
-  test("#given a materialized runtime #when the config is produced #then exactly one plugin entry exists and no goal key is registered", () => {
+  test("#given a materialized runtime #when the config is produced #then exactly one runtime entry and exactly one goal entry are registered", () => {
     // given a real source root and an empty target config
     const runtimeDir = path.join(largeRoot, "runtime-config")
     const configDir = path.join(largeRoot, "config", "opencode")
@@ -137,18 +137,60 @@ describe("stageGoalVendor", () => {
     // when
     const result = materializeNativeRuntime({ sourceRoot: repoRoot, runtimeDir, agentManifestPath, configFile })
 
-    // then the vendor is present but nothing live was registered on its behalf:
-    // the server config keeps exactly its two keys and a single family entry, and
-    // neither config mentions the vendored engine or its upstream id.
+    // then the engine is registered exactly once: one runtime string entry and
+    // one goal tuple carrying the Rigel-managed default options.
     expect(result.goalVendor.treeDigest).toMatch(/^[0-9a-f]{64}$/)
     expect(fs.existsSync(result.goalVendor.engineEntry)).toBe(true)
     const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
-    expect(config.plugin).toEqual([runtimeDir])
-    expect(Object.keys(config).sort()).toEqual(["$schema", "plugin"])
-    expect(JSON.stringify(config)).not.toContain("opencode-goal-plugin")
+    expect(config.plugin.filter((entry) => entry === runtimeDir)).toHaveLength(1)
+    const goalEntries = config.plugin.filter((entry) => Array.isArray(entry))
+    expect(goalEntries).toHaveLength(1)
+    // The host loads a directory entrypoint, so the entry points at the Rigel-owned
+    // shim whose `.` export re-exports the vendored server.
+    const shimDir = path.join(runtimeDir, "rigel-goal-engine")
+    expect(goalEntries[0][0]).toBe(shimDir)
+    expect(fs.existsSync(path.join(shimDir, "server.js"))).toBe(true)
+    expect(fs.readFileSync(path.join(shimDir, "server.js"), "utf8")).toContain(result.goalVendor.engineEntry)
+    expect(result.goalOptions).toEqual({
+      auto_continue: true,
+      defer_while_tasks_active: true,
+      max_auto_turns: 1000,
+      min_continue_interval_seconds: 3,
+      max_prompt_failures: 3,
+      no_progress_token_threshold: 50,
+      max_no_progress_turns: 2,
+      restricted_agents: [],
+      allow_goal_execution_from_plan: false,
+    })
+    expect(goalEntries[0][1]).toEqual(result.goalOptions)
+    expect("default_token_budget" in result.goalOptions).toBe(false)
+    expect("max_goal_duration_seconds" in result.goalOptions).toBe(false)
 
     const cli = JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8"))
-    expect(JSON.stringify(cli)).not.toContain("opencode-goal-plugin")
-    expect(JSON.stringify(cli)).not.toContain("goal-mode")
+    const goalCli = cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))
+    expect(goalCli).toHaveLength(1)
+  })
+
+  test("#given a reinstall over an existing goal entry #when the config is produced #then the entry is replaced in place, never duplicated", () => {
+    // given
+    const runtimeDir = path.join(largeRoot, "runtime-reinstall")
+    const configDir = path.join(largeRoot, "config-reinstall", "opencode")
+    fs.mkdirSync(configDir, { recursive: true })
+    const configFile = path.join(configDir, "opencode.json")
+    fs.writeFileSync(configFile, `${JSON.stringify({ plugin: [] }, null, 2)}\n`)
+    const agentManifestPath = path.join(largeRoot, "agent-manifest-reinstall.mjs")
+    fs.writeFileSync(agentManifestPath, "export default {}\n")
+
+    // when installed twice
+    materializeNativeRuntime({ sourceRoot: repoRoot, runtimeDir, agentManifestPath, configFile })
+    materializeNativeRuntime({ sourceRoot: repoRoot, runtimeDir, agentManifestPath, configFile })
+
+    // then exactly one runtime entry and one goal entry survive (C3)
+    const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
+    expect(config.plugin.filter((entry) => entry === runtimeDir)).toHaveLength(1)
+    expect(config.plugin.filter((entry) => Array.isArray(entry))).toHaveLength(1)
+    const cli = JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8"))
+    const goalCli = cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))
+    expect(goalCli).toHaveLength(1)
   })
 })
