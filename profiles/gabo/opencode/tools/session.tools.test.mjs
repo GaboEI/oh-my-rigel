@@ -356,6 +356,76 @@ describe("#given a session search tool", () => {
   })
 })
 
+describe("#given a setup-context client that can enumerate sessions", () => {
+  // A setup-context double whose `session` surface exposes `list`, so the tools
+  // can enumerate through the client instead of an injected HTTP server API.
+  function fakeListClient({ sessions = [], messagesById = {} } = {}) {
+    return {
+      session: {
+        list: async () => ({ data: sessions }),
+        get: async ({ sessionID }) => ({ data: sessions.find((s) => s.id === sessionID) }),
+        context: async ({ sessionID }) => ({ data: messagesById[sessionID] ?? [] }),
+      },
+    }
+  }
+
+  test("#when a setup-context client can list sessions and no server API is present #then session_list enumerates through the client", async () => {
+    // given
+    const client = fakeListClient({
+      sessions: [
+        sessionInfo("ses_parent", { updated: 300, directory: PROJECT }),
+        sessionInfo("ses_child", { updated: 400, parentID: "ses_parent", directory: PROJECT }),
+      ],
+      messagesById: {
+        ses_parent: [message("m1", "user", "hello", 1)],
+        ses_child: [message("m2", "user", "hello", 2)],
+      },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], directory: PROJECT }).session_list.execute({})
+    // then
+    expect(output).toContain("ses_parent")
+    expect(output).not.toContain("ses_child")
+    expect(output).not.toBe("Error: OpenCode V2 server API unavailable")
+  })
+
+  test("#when a project_path is supplied to a client-enumerated list #then the directory filter still applies", async () => {
+    // given
+    const client = fakeListClient({
+      sessions: [
+        sessionInfo("ses_here", { updated: 2, directory: PROJECT }),
+        sessionInfo("ses_elsewhere", { updated: 1, directory: "/work/other" }),
+      ],
+      messagesById: {
+        ses_here: [message("m1", "user", "a", 1)],
+        ses_elsewhere: [message("m2", "user", "b", 2)],
+      },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], directory: PROJECT }).session_list.execute({ project_path: PROJECT })
+    // then
+    expect(output).toContain("ses_here")
+    expect(output).not.toContain("ses_elsewhere")
+  })
+
+  test("#when a setup-context client can list sessions and no server API is present #then a global session_search scans client sessions", async () => {
+    // given
+    const client = fakeListClient({
+      sessions: [sessionInfo("ses_a", { updated: 2 }), sessionInfo("ses_b", { updated: 1 })],
+      messagesById: {
+        ses_a: [message("m1", "user", "needle", 1)],
+        ses_b: [message("m2", "user", "nothing", 2)],
+      },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], directory: PROJECT }).session_search.execute({ query: "needle" })
+    // then
+    expect(output).toContain("Found 1 matches:")
+    expect(output).toContain("[ses_a]")
+    expect(output).not.toContain("[ses_b]")
+  })
+})
+
 describe("#given a session read tool", () => {
   test("#when the session reports no messages #then the V1 not-found string is returned", async () => {
     // given

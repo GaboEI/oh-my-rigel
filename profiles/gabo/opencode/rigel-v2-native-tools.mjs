@@ -48,10 +48,9 @@ export function createNativeToolFamilies({ clients, location, manifest, context,
   const gates = readNativeGates(manifest)
   const tools = {}
 
-  // `serverApi` is consumed only by the monitor family below. The session
-  // family keeps its client-based path, so this migration changes no session
-  // surface; wiring the session server transport is a separate, atomic task.
-  Object.assign(tools, createSessionTools({ clients, directory: location?.directory, readTodos }))
+  // `serverApi` is consumed by the session family (the enumeration fallback when
+  // the setup-context client cannot list sessions) and by the monitor family.
+  Object.assign(tools, createSessionTools({ clients, directory: location?.directory, readTodos, serverApi }))
   tools.look_at = createLookAtTool({ clients, location, resolveModel: resolveLookAtModel })
 
   let registry

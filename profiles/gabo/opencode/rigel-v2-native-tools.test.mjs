@@ -35,6 +35,36 @@ function fakeServerApi() {
   }
 }
 
+// A fake injected HTTP server API carrying only the session methods the
+// session family reads: enumerating sessions and enriching each one. Distinct
+// from `fakeServerApi` (terminal-only) so it can prove serverApi forwarding.
+function fakeSessionServerApi() {
+  return {
+    available: true,
+    origin: "http://127.0.0.1:4321",
+    getSessions: async () => ({ ok: true, status: 200, data: { data: [{ id: "ses_a", time: { created: 1, updated: 2 }, directory: "/work" }] } }),
+    getSessionContext: async () => ({ ok: true, status: 200, data: { data: [{ id: "m1", role: "user", time: { created: 1 }, parts: [{ type: "text", text: "needle here" }] }] } }),
+  }
+}
+
+// Identical to `fakeContext` except the session domain has NO `list`: a context
+// that could list would enumerate client-side and mask whether the aggregator
+// forwarded `serverApi` into the session family.
+function fakeListlessContext() {
+  return {
+    session: {
+      get: async () => ({ data: undefined }),
+      messages: async () => ({ data: [] }),
+      create: async () => ({ data: { id: "ses_child" } }),
+      prompt: async () => ({ data: {} }),
+      wait: async () => {},
+      context: async () => ({ data: [] }),
+    },
+    storage: { get: async () => undefined, set: async () => {}, remove: async () => {}, scan: async () => [] },
+    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
+  }
+}
+
 function familiesFor(manifest, { serverApi = fakeServerApi() } = {}) {
   return createNativeToolFamilies({
     clients: [fakeContext()],
@@ -100,4 +130,25 @@ test("every registered tool exposes a description, input schema, and execute", (
     expect(definition.input?.type, name).toBe("object")
     expect(typeof definition.execute, name).toBe("function")
   }
+})
+
+test("#when the setup context cannot list sessions but the aggregator is handed a session-capable server API #then session_list and session_search forward to it", async () => {
+  // given a listless setup context and a session-capable server API
+  const families = createNativeToolFamilies({
+    clients: [fakeListlessContext()],
+    location: { directory: "/work" },
+    manifest: {},
+    context: fakeListlessContext(),
+    pluginConfig: {},
+    serverApi: fakeSessionServerApi(),
+  })
+
+  // when session_list and session_search execute
+  const listed = await families.tools.session_list.execute({})
+  const found = await families.tools.session_search.execute({ query: "needle" })
+
+  // then both read from the forwarded server API instead of reporting it unavailable
+  expect(listed).toContain("ses_a")
+  expect(listed).not.toBe("Error: OpenCode V2 server API unavailable")
+  expect(found).toContain("Found 1 matches:")
 })
