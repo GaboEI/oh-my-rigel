@@ -3,21 +3,22 @@
  *
  * Ports the observable semantics of
  * `packages/omo-opencode/src/tools/session-manager/tools.ts` onto the V2
- * session domain. The V2 plugin setup context still exposes only `get` and
- * `context` (one known session id), so scoped reads and searches keep working
- * through it. Everything the setup context cannot do - enumerating sessions,
- * cross-session search, and the persisted transcript - is served by the
- * injected `serverApi` (`rigel-v2-native-http.mjs` `createServerApi`):
- *   - `getSessions`        -> `session_list` and global `session_search`
+ * session domain. The V2 plugin setup context exposes `get`/`context` for
+ * scoped reads. The injected HTTP `serverApi` (`rigel-v2-native-http.mjs`
+ * `createServerApi`) is the PRIMARY enumeration authority for `session_list`
+ * and global `session_search` (the live host's session domain exposes no
+ * `list`); a setup-context client `session.list`, when a host provides it, is
+ * the secondary path. The server API is also the transcript source:
+ *   - `getSessions`        -> `session_list`/global `session_search`
  *   - `getSessionContext`  -> per-session enrichment (the V1 N+1)
  *   - `getSessionExport`   -> `session_read include_transcript` + `session_info`
  *
  * The HTTP transport is Basic-auth, loopback-only and injectable; this module
  * never builds a URL, a port or a credential. `serverApi` is optional so the
- * module loads before the runtime wires it: with no server API, `session_list`
- * and global `session_search` return the typed
- * `Error: OpenCode V2 server API unavailable` string (never a throw), while
- * scoped tools keep using the setup context.
+ * module loads before the runtime wires it: when neither the server API nor the
+ * setup-context `session.list` exists, `session_list` and global
+ * `session_search` return the typed `Error: OpenCode V2 server API unavailable`
+ * string (never a throw), while scoped tools keep using the setup context.
  *
  * Preserved V1 behavior:
  *   - `session_list`: project_path default, parentID/main-session filter, the
@@ -181,6 +182,42 @@ function hasServerApi(serverApi) {
   return Boolean(serverApi) && typeof serverApi.getSessions === "function" && typeof serverApi.getSessionContext === "function"
 }
 
+function sessionListApiOf(client) {
+  const api = sessionApiOf(client)
+  return typeof api?.list === "function" ? api : undefined
+}
+
+// Resolve the enumeration source. The injected HTTP server API is the primary
+// authority on a live V2 host (the setup-context session domain exposes no
+// `list` there); the in-process client `session.list` is the secondary path for
+// a host that does expose it.
+function resolveEnumerationSource(clients, serverApi) {
+  if (hasServerApi(serverApi)) return { kind: "server", serverApi }
+  for (const client of (clients ?? []).filter(Boolean)) {
+    if (sessionListApiOf(client)) return { kind: "client", client }
+  }
+  return undefined
+}
+
+// Enumerate via the resolved source. The client `session.list` receives only the
+// parameters it documents (limit, directory); the server path keeps the full
+// V1 query (limit + order + directory).
+async function listSessions(source, query) {
+  if (source.kind === "client") {
+    const mapped = {}
+    if (typeof query?.limit === "number") mapped.limit = query.limit
+    if (typeof query?.directory === "string") mapped.directory = query.directory
+    return listFromResult(await sessionListApiOf(source.client).list(mapped))
+  }
+  return await fetchSessions(source.serverApi, query)
+}
+
+// Read a session's messages through the same source that enumerated it.
+async function readMessagesFrom(source, sessionID) {
+  if (source.kind === "client") return await getClientMessages(source.client, sessionID)
+  return await fetchContextMessages(source.serverApi, sessionID)
+}
+
 function errorMessageOf(error) {
   return error instanceof Error ? error.message : String(error)
 }
@@ -257,11 +294,11 @@ function sessionUpdatedAt(session) {
 }
 
 // V1 `getMainSessions`: no parentID, optional directory match, newest first.
-async function enumerateMainSessions(serverApi, directory) {
+async function enumerateMainSessions(source, directory) {
   const filter = normalizeProjectFilter(directory)
   const query = { limit: SESSION_ENUM_LIMIT, order: "desc" }
   if (filter) query.directory = filter
-  const sessions = await fetchSessions(serverApi, query)
+  const sessions = await listSessions(source, query)
   return sessions
     .filter((session) => !session?.parentID)
     .filter((session) => !filter || sessionDirectoriesMatch(sessionDirectory(session), filter))
@@ -269,8 +306,8 @@ async function enumerateMainSessions(serverApi, directory) {
 }
 
 // V1 `getAllSessions`: every session (children included), newest first.
-async function enumerateAllSessions(serverApi) {
-  const sessions = await fetchSessions(serverApi, { limit: SESSION_ENUM_LIMIT, order: "desc" })
+async function enumerateAllSessions(source) {
+  const sessions = await listSessions(source, { limit: SESSION_ENUM_LIMIT, order: "desc" })
   return sessions
     .slice()
     .sort((a, b) => sessionUpdatedAt(b) - sessionUpdatedAt(a))
@@ -302,6 +339,7 @@ function withinDateRange(info, from, to) {
  * @param {Function} [input.readTodos]  per-session todo reader owned by the runtime
  */
 export function createSessionTools({ clients = [], serverApi, directory, readTodos } = {}) {
+  const enumerationSource = resolveEnumerationSource(clients, serverApi)
   async function readMessages(sessionID) {
     const client = pickClient(clients)
     if (client) return await getClientMessages(client, sessionID)
@@ -358,16 +396,16 @@ export function createSessionTools({ clients = [], serverApi, directory, readTod
     },
     async execute(args = {}) {
       try {
-        if (!hasServerApi(serverApi)) return SERVER_API_UNAVAILABLE
+        if (!enumerationSource) return SERVER_API_UNAVAILABLE
         const filterDirectory = args.project_path ?? directory
-        const mainSessions = await enumerateMainSessions(serverApi, filterDirectory)
+        const mainSessions = await enumerateMainSessions(enumerationSource, filterDirectory)
         let sessionIDs = mainSessions.map((session) => session?.id).filter(Boolean)
         if (typeof args.limit === "number" && args.limit > 0) sessionIDs = sessionIDs.slice(0, args.limit)
         if (sessionIDs.length === 0) return NO_SESSIONS_MESSAGE
 
         const infos = []
         for (const sessionID of sessionIDs) {
-          const messages = await fetchContextMessages(serverApi, sessionID)
+          const messages = await readMessagesFrom(enumerationSource, sessionID)
           if (messages.length === 0) continue
           infos.push(buildSessionInfo(sessionID, messages, { todos: [], transcriptEntries: 0 }))
         }
@@ -444,7 +482,7 @@ export function createSessionTools({ clients = [], serverApi, directory, readTod
         const query = args.query
         if (typeof query !== "string" || !query) return "Error: Missing required parameter 'query'."
         const scopedID = typeof args.session_id === "string" && args.session_id ? args.session_id : undefined
-        if (!scopedID && !hasServerApi(serverApi)) return SERVER_API_UNAVAILABLE
+        if (!scopedID && !enumerationSource) return SERVER_API_UNAVAILABLE
         const resultLimit = typeof args.limit === "number" && args.limit > 0 ? args.limit : DEFAULT_SEARCH_LIMIT
         const caseSensitive = args.case_sensitive === true
         const searchOperation = async () => {
@@ -452,12 +490,12 @@ export function createSessionTools({ clients = [], serverApi, directory, readTod
             const messages = (await readMessages(scopedID)) ?? []
             return searchInMessages(scopedID, messages, query, caseSensitive, resultLimit)
           }
-          const sessionIDs = (await enumerateAllSessions(serverApi)).slice(0, MAX_SEARCH_SESSIONS)
+          const sessionIDs = (await enumerateAllSessions(enumerationSource)).slice(0, MAX_SEARCH_SESSIONS)
           const allResults = []
           for (const sessionID of sessionIDs) {
             if (allResults.length >= resultLimit) break
             const remaining = resultLimit - allResults.length
-            const messages = await fetchContextMessages(serverApi, sessionID)
+            const messages = await readMessagesFrom(enumerationSource, sessionID)
             allResults.push(...searchInMessages(sessionID, messages, query, caseSensitive, remaining))
           }
           return allResults.slice(0, resultLimit)

@@ -356,6 +356,102 @@ describe("#given a session search tool", () => {
   })
 })
 
+describe("#given a setup-context client that can enumerate sessions", () => {
+  // A setup-context double whose `session` surface exposes `list`, so the tools
+  // can enumerate through the client instead of an injected HTTP server API.
+  function fakeListClient({ sessions = [], messagesById = {} } = {}) {
+    return {
+      session: {
+        list: async () => ({ data: sessions }),
+        get: async ({ sessionID }) => ({ data: sessions.find((s) => s.id === sessionID) }),
+        context: async ({ sessionID }) => ({ data: messagesById[sessionID] ?? [] }),
+      },
+    }
+  }
+
+  test("#when a setup-context client can list sessions and no server API is present #then session_list enumerates through the client", async () => {
+    // given
+    const client = fakeListClient({
+      sessions: [
+        sessionInfo("ses_parent", { updated: 300, directory: PROJECT }),
+        sessionInfo("ses_child", { updated: 400, parentID: "ses_parent", directory: PROJECT }),
+      ],
+      messagesById: {
+        ses_parent: [message("m1", "user", "hello", 1)],
+        ses_child: [message("m2", "user", "hello", 2)],
+      },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], directory: PROJECT }).session_list.execute({})
+    // then
+    expect(output).toContain("ses_parent")
+    expect(output).not.toContain("ses_child")
+    expect(output).not.toBe("Error: OpenCode V2 server API unavailable")
+  })
+
+  test("#when a project_path is supplied to a client-enumerated list #then the directory filter still applies", async () => {
+    // given
+    const client = fakeListClient({
+      sessions: [
+        sessionInfo("ses_here", { updated: 2, directory: PROJECT }),
+        sessionInfo("ses_elsewhere", { updated: 1, directory: "/work/other" }),
+      ],
+      messagesById: {
+        ses_here: [message("m1", "user", "a", 1)],
+        ses_elsewhere: [message("m2", "user", "b", 2)],
+      },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], directory: PROJECT }).session_list.execute({ project_path: PROJECT })
+    // then
+    expect(output).toContain("ses_here")
+    expect(output).not.toContain("ses_elsewhere")
+  })
+
+  test("#when a setup-context client can list sessions and no server API is present #then a global session_search scans client sessions", async () => {
+    // given
+    const client = fakeListClient({
+      sessions: [sessionInfo("ses_a", { updated: 2 }), sessionInfo("ses_b", { updated: 1 })],
+      messagesById: {
+        ses_a: [message("m1", "user", "needle", 1)],
+        ses_b: [message("m2", "user", "nothing", 2)],
+      },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], directory: PROJECT }).session_search.execute({ query: "needle" })
+    // then
+    expect(output).toContain("Found 1 matches:")
+    expect(output).toContain("[ses_a]")
+    expect(output).not.toContain("[ses_b]")
+  })
+
+  test("#when both a setup-context client that can list and an injected server API exist #then enumeration prefers the server API", async () => {
+    // given a client whose `list` would answer, and a session-capable server API
+    let clientListCalls = 0
+    const client = {
+      session: {
+        list: async () => {
+          clientListCalls += 1
+          return { data: [sessionInfo("ses_client", { updated: 1 })] }
+        },
+        get: async () => ({ data: undefined }),
+        context: async () => ({ data: [] }),
+      },
+    }
+    const serverApi = fakeServerApi({
+      sessions: [sessionInfo("ses_server", { updated: 5, directory: PROJECT })],
+      messagesById: { ses_server: [message("m1", "user", "from server", 1)] },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], serverApi, directory: PROJECT }).session_list.execute({})
+    // then the injected HTTP server API is the primary enumeration authority
+    expect(serverApi.calls.getSessions).toHaveLength(1)
+    expect(clientListCalls).toBe(0)
+    expect(output).toContain("ses_server")
+    expect(output).not.toContain("ses_client")
+  })
+})
+
 describe("#given a session read tool", () => {
   test("#when the session reports no messages #then the V1 not-found string is returned", async () => {
     // given
@@ -541,5 +637,37 @@ describe("#given the preserved setup-context session domain", () => {
     expect(read).toContain("=== Todos ===")
     expect(read).toContain("[ ] [pending] ship it")
     expect(info).toContain("Has Todos: Yes (1 items)")
+  })
+})
+
+describe("#given a V2 user message that stores its text at the message root", () => {
+  // The live host returns a user message as `{ type:"user", text, files }` with
+  // no `parts`/`content` array (captured from `GET /api/session/{id}/context` on
+  // NLS1). A reader that only walks `parts` cannot see the user's own text, so
+  // `session_search` misses it and `session_read` omits it.
+  function rootTextMessage(id, text, created) {
+    return { id, type: "user", time: { created }, text, files: [] }
+  }
+
+  test("#when a global session_search queries root-level user text #then it is found", async () => {
+    // given
+    const serverApi = fakeServerApi({
+      sessions: [sessionInfo("ses_root", { updated: 2, directory: PROJECT })],
+      messagesById: { ses_root: [rootTextMessage("m1", "the needle lives at the message root", 1)] },
+    })
+    // when
+    const output = await createSessionTools({ serverApi, directory: PROJECT }).session_search.execute({ query: "needle" })
+    // then
+    expect(output).toContain("Found 1 matches:")
+    expect(output).toContain("[ses_root]")
+  })
+
+  test("#when session_read renders a root-level user message #then its text is shown", async () => {
+    // given
+    const serverApi = fakeServerApi({ messagesById: { ses_root: [rootTextMessage("m1", "visible user text", 1)] } })
+    // when
+    const output = await createSessionTools({ serverApi, directory: PROJECT }).session_read.execute({ session_id: "ses_root" })
+    // then
+    expect(output).toContain("visible user text")
   })
 })

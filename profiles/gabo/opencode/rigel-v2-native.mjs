@@ -384,6 +384,15 @@ export function createNativePermissionWiring({ manifest: agentManifest, resolveA
   }
 }
 
+// The session family enumerates sessions in-process when the setup context's
+// session domain exposes `list` (the same object `session.tools.mjs` reads);
+// otherwise the HTTP server API is the only enumeration authority, so the
+// runtime must build and verify one even with the monitor gate off.
+function hasInProcessSessionEnumeration(context) {
+  return [context?.session, context?.client?.session, context?.v2?.session]
+    .some((domain) => typeof domain?.list === "function")
+}
+
 export default {
   id: "oh-my-rigel",
   setup: async (context) => {
@@ -1350,16 +1359,15 @@ export default {
       })()
       : undefined
     // The monitor engine runs a real V2 persistent terminal served over the
-    // host HTTP API. Build the identity-gated server API and verify it once; only
-    // a verified API is handed to the tool families, so a non-serve context keeps
-    // today's behavior byte-identical. The probe sends nothing unless the origin
-    // is this host's own server and a server credential is present (fails closed).
-    // Build and verify the server transport ONLY when the monitor gate is on:
-    // the persistent-terminal transport is the monitor family's only consumer,
-    // so a gate-off context must not probe. A verified API is the only one
-    // handed to the aggregator; an unverified or absent one leaves the monitor
-    // family inert without changing any other surface.
-    const serverApi = nativeGates.monitor === true
+    // host HTTP API, and the session family needs the HTTP enumeration endpoint
+    // whenever the setup context exposes no in-process `session.list`. Build the
+    // identity-gated server API and verify it once; only a verified API is handed
+    // to the tool families, so a context that can enumerate in-process (or has no
+    // resolvable local server) keeps today's behavior. The probe sends nothing
+    // unless the origin is this host's own server and the credential from the
+    // host's own service handoff resolves (fails closed).
+    const needsServerApi = nativeGates.monitor === true || !hasInProcessSessionEnumeration(context)
+    const serverApi = needsServerApi
       ? createServerApi({ argv: process.argv, env: process.env, context })
       : undefined
     if (serverApi) {
