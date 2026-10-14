@@ -23,7 +23,6 @@ import { createNotificationPlugin } from "./rigel-v2-native-cli-notification.mjs
 import { createLegacyNoticeCliSurface } from "./rigel-v2-native-cli-legacy-notice.mjs"
 import { createNudgeCliSurface } from "./rigel-v2-native-cli-nudge.mjs"
 import { createTaskToastCliSurface } from "./rigel-v2-native-cli-task-toast.mjs"
-import { createSidebarCliSurface } from "./rigel-v2-native-cli-sidebar.mjs"
 import { createBtwCliSurface } from "./rigel-v2-native-cli-btw.mjs"
 
 export const CLI_PLUGIN_ID = "oh-my-rigel.cli"
@@ -41,17 +40,11 @@ export function createCompanionCliPlugin(overrides = {}) {
   return {
     id: CLI_PLUGIN_ID,
     setup(context) {
-      // The sidebar surface is OFF by default in the runtime. It is composed
-      // only when the config opts in with `tui.sidebar.enabled === true`, so
-      // Rigel never calls `ui.slot` for `sidebar.content` (the Models/Agents
-      // panel) otherwise. Every other surface keeps its own gate unchanged.
-      const sidebarEnabled = context?.options?.tui?.sidebar?.enabled === true
       const surfaces = [
         createNotificationPlugin(overrides.notification ?? {}),
         createLegacyNoticeCliSurface(overrides.legacyPluginNotice ?? {}),
         createNudgeCliSurface(overrides.nativeEditionNudge ?? {}),
         createTaskToastCliSurface(overrides.taskToast ?? {}),
-        ...(sidebarEnabled ? [createSidebarCliSurface(overrides.sidebar ?? {})] : []),
         createBtwCliSurface(overrides.btw ?? {}),
       ]
       const disposers = []

@@ -181,9 +181,9 @@ export default {
   },
   "tui-sidebar": {
     classification: "Migrar",
-    status: "Migrado",
+    status: "Pendiente de ejecución",
     rationale:
-      "La barra lateral de TUI de `features/tui-sidebar/` se migra bajo la clave `tui.sidebar.enabled` (ausente = encendida; false = inerte). `rigel-v2-sidebar-core.mjs` porta el esquema de snapshot (v1), los derivers (roster + estado, orden por prioridad), `computeView`/`viewKey`, los caps (12 agentes / 12 jobs), la ventana de frescura del loop (120 s) y la redaccion de activeGoal; `rigel-v2-native-cli-sidebar.mjs` registra el slot `sidebar.content` desde datos reactivos y escribe un recibo durable `sidebar-snapshot.json` (observable en el lab headless).",
-    futureEvidence: "`rigel-v2-sidebar-core.mjs`; `rigel-v2-sidebar-core.test.mjs`; `rigel-v2-native-cli-sidebar.mjs`; `rigel-v2-native-cli-sidebar.test.mjs`",
+      "Decision cerrada de Gabo (2026-10-14): el sidebar V2 nativo previo se retira por completo, sin cuarentena. El sidebar heredado activo de OmO sigue siendo `features/tui-sidebar/` (superficie V1 intacta, fuera del alcance del port nativo). Se eliminan `rigel-v2-native-cli-sidebar.mjs` y `rigel-v2-sidebar-core.mjs`; el compositor `rigel-v2-native-cli.mjs` deja de componer `createSidebarCliSurface` y conserva exactamente las cinco superficies protegidas (Notification, LegacyNotice, Nudge, TaskToast y BTW) en su orden. La fila queda pendiente de ejecucion: el sidebar V2 futuro se reescribira desde cero, no reutilizara los modulos retirados y su prueba aislada todavia no existe.",
+    futureEvidence: "`sidebar-decoupling-audit.test.mjs`; el sidebar heredado de OmO en `packages/omo-opencode/src/features/tui-sidebar/` (superficie V1, sin port nativo V2); reescritura del sidebar V2 pendiente",
   },
 }

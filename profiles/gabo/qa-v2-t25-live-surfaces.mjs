@@ -21,10 +21,9 @@
  *     without the metadata is left byte-identical.
  *
  * Companion CLI entrypoint (`rigel-v2-native-cli.mjs` default `setup`, the
- * composed `./tui`): legacy notice, native-edition nudge, task-toast and
- * sidebar effects are asserted on the real toasts/slots/receipts, plus the btw
- * `/btw` command opening its picker. Deduplication, gates and child-skip are
- * asserted as negatives.
+ * composed `./tui`): legacy notice, native-edition nudge and task-toast effects
+ * are asserted on the real toasts/receipts, plus the btw `/btw` command opening
+ * its picker. Deduplication, gates and child-skip are asserted as negatives.
  *
  * Exit code is non-zero when any feature verdict fails.
  */
@@ -153,7 +152,6 @@ async function runCliPhase() {
   const FIXED = 1_700_000_000_000
   const handlers = new Map()
   const toasts = []
-  const slots = []
   const layers = []
   const selects = []
   const cliSessions = { ses_root: {}, ses_child: { parentID: "ses_root" }, ses_task: {} }
@@ -179,7 +177,6 @@ async function runCliPhase() {
     ui: {
       toast: { show: (toast) => toasts.push(toast) },
       dialog: { select: (spec) => { selects.push(spec); return spec }, clear() {}, show() {}, open: false },
-      slot: (spec) => { slots.push(spec); return { update() {}, dispose() {} } },
     },
     keymap: { layer: (fn) => { layers.push(fn); return () => {} }, intercept: () => {}, clearPendingSequence() {} },
     attention: { notify: async (payload) => { toasts.push({ attention: true, ...payload }); return { ok: true } } },
@@ -200,7 +197,6 @@ async function runCliPhase() {
       version: "test",
     },
     taskToast: { now: () => FIXED, log: () => {} },
-    sidebar: { stateRoot: path.join(sandbox, "sidebar-state"), now: () => FIXED, log: () => {} },
     btw: {
       getCurrentSessionID: () => "ses_root",
       logFile: path.join(sandbox, "btw.log"),
@@ -242,12 +238,6 @@ async function runCliPhase() {
   const doneToast = toasts.find((t) => t.title === "Task Completed")
   check("task-toast", "positive: execution succeeded -> completion toast", Boolean(doneToast) && doneToast.variant === "success", JSON.stringify(doneToast))
 
-  // --- sidebar ---
-  const sidebarSlot = slots.find((s) => s.append === "sidebar.content" || s.replace === "sidebar.content" || s.prepend === "sidebar.content")
-  check("tui-sidebar", "positive: sidebar.content slot registered", Boolean(sidebarSlot), `slots=${slots.length}`)
-  const sidebarReceipt = readJsonSafe(path.join(sandbox, "sidebar-state", "oh-my-rigel", "sidebar-snapshot.json")) ?? readJsonSafe(path.join(stateHome, "oh-my-rigel", "sidebar-snapshot.json"))
-  check("tui-sidebar", "positive: durable snapshot receipt written", Boolean(sidebarReceipt), JSON.stringify(sidebarReceipt)?.slice(0, 160))
-
   // --- btw CLI: /btw command opens the picker ---
   let btwCommand
   for (const layerFn of layers) {
@@ -261,22 +251,6 @@ async function runCliPhase() {
     await btwCommand.run("")
     check("btw-cli", "positive: /btw opens the parent picker", selects.some((s) => typeof s?.onSelect === "function" && Array.isArray(s?.options)), `selects=${selects.length}`)
   }
-
-  // --- sidebar gate negative + cleanup ---
-  const gatedHandlers = new Map()
-  const gatedSlots = []
-  const gatedContext = {
-    options: { tui: { sidebar: { enabled: false } } },
-    renderer: { isDestroyed: false },
-    location: { current: { directory: projDir } },
-    data: { on: (n, h) => { gatedHandlers.set(n, h); return () => {} }, session: { get: () => undefined, list: async () => [] } },
-    ui: { toast: { show() {} }, dialog: {}, slot: (spec) => { gatedSlots.push(spec); return { update() {}, dispose() {} } } },
-    keymap: { layer: () => () => {} },
-  }
-  const gated = createCompanionCliPlugin({ sidebar: { stateRoot: path.join(sandbox, "gated-sidebar"), log: () => {} } })
-  const gatedDispose = gated.setup(gatedContext)
-  check("tui-sidebar", "negative: tui.sidebar.enabled=false -> no slot", gatedSlots.length === 0, `slots=${gatedSlots.length}`)
-  if (typeof gatedDispose === "function") gatedDispose()
 
   // --- dispose is safe + idempotent cleanup ---
   let disposeThrew = false

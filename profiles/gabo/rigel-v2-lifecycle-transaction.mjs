@@ -10,8 +10,10 @@
  *
  * This module makes every such operation compensating: the three files are
  * snapshotted byte for byte before the first write, any version directory the
- * operation creates is tracked, and on any thrown error the files are restored
- * byte-identically and the created directories are removed. Writes go through
+ * operation creates is tracked, any directory the operation replaces is moved
+ * aside and restorable, and on any thrown error the files are restored
+ * byte-identically, the created directories are removed and the replaced
+ * directories are put back. Writes go through
  * {@link writeTextAtomic} (unique temp file, fsync, rename, fsync parent), so a
  * single file is never observed half-written.
  *
@@ -97,6 +99,7 @@ export function failAt(name) {
 export function beginLifecycleTransaction({ files }) {
   const snapshot = snapshotFiles(files)
   const createdDirs = []
+  const replacedDirs = []
   let settled = false
   return {
     failAt,
@@ -105,8 +108,25 @@ export function beginLifecycleTransaction({ files }) {
     trackCreatedDir(dir) {
       if (!fs.existsSync(dir)) createdDirs.push(dir)
     },
+    /**
+     * Move an existing directory aside so a fresh tree can be materialised in its
+     * place without inheriting files a previous operation wrote (for example a
+     * runtime module retired by a same-version reinstall). The move is recorded:
+     * on rollback the fresh tree is removed and the original is renamed back
+     * byte-identically, and on commit the aside copy is discarded. A directory
+     * that does not exist is a no-op, so a clean install tracks nothing here.
+     */
+    trackReplacedDir(dir) {
+      if (!fs.existsSync(dir)) return
+      const backup = `${dir}.txn-${crypto.randomBytes(6).toString("hex")}`
+      fs.renameSync(dir, backup)
+      replacedDirs.push({ dir, backup })
+    },
     commit() {
       settled = true
+      for (const { backup } of replacedDirs) {
+        try { fs.rmSync(backup, { recursive: true, force: true }) } catch { /* best-effort */ }
+      }
     },
     rollback() {
       if (settled) return
@@ -114,6 +134,10 @@ export function beginLifecycleTransaction({ files }) {
       restoreFiles(snapshot)
       for (const dir of [...createdDirs].reverse()) {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+      }
+      for (const { dir, backup } of [...replacedDirs].reverse()) {
+        try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+        try { fs.renameSync(backup, dir) } catch { /* best-effort */ }
       }
     },
   }

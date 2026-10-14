@@ -457,14 +457,22 @@ function resolvePaths(flags) {
   return { home, stateRoot, configFile }
 }
 
-function installVersion({ paths, version, runtimeSource, previousState, migrating }) {
+function installVersion({ paths, version, runtimeSource, previousState, migrating, txn }) {
   const versionDir = path.join(paths.stateRoot, "versions", version)
   fs.mkdirSync(versionDir, { recursive: true, mode: 0o700 })
+  const runtimeDir = path.join(versionDir, "runtime")
+  // A reinstall of the same version must materialise from CLEAN staging: move the
+  // existing runtime tree aside (inside the transaction) so a module a previous
+  // install wrote cannot survive a removal. The move is compensated, so any later
+  // failure restores the prior runtime byte-identically; on success the aside copy
+  // is discarded. A clean install (no prior runtime) tracks nothing here.
+  txn?.trackCreatedDir(runtimeDir)
+  txn?.trackReplacedDir(runtimeDir)
   const agentManifest = generateAgentManifest({ versionDir, home: paths.home, configFile: paths.configFile })
   const result = materializeNativeRuntime({
     sourceRoot,
     runtimeSourceDir: runtimeSource,
-    runtimeDir: path.join(versionDir, "runtime"),
+    runtimeDir,
     familyRoot: paths.stateRoot,
     agentManifestPath: agentManifest,
     configFile: paths.configFile,
@@ -619,7 +627,7 @@ function main() {
     const version = String(flags.version || "1")
     lifecycle(transactionFiles, (txn) => {
       txn.trackCreatedDir(path.join(paths.stateRoot, "versions", version))
-      const state = installVersion({ paths, version, runtimeSource: flags["runtime-source"], previousState, migrating: false })
+      const state = installVersion({ paths, version, runtimeSource: flags["runtime-source"], previousState, migrating: false, txn })
       txn.failAt("install:after-runtime")
       writeJson(stateFile, state)
       txn.failAt("install:after-state")
@@ -635,7 +643,7 @@ function main() {
     if (version === "" || version === previousState.version) fail(`upgrade requiere una versión distinta de la instalada (${previousState.version})`)
     lifecycle(transactionFiles, (txn) => {
       txn.trackCreatedDir(path.join(paths.stateRoot, "versions", version))
-      const state = installVersion({ paths, version, runtimeSource: flags["runtime-source"], previousState, migrating: true })
+      const state = installVersion({ paths, version, runtimeSource: flags["runtime-source"], previousState, migrating: true, txn })
       txn.failAt("upgrade:after-runtime")
       writeJson(stateFile, state)
       txn.failAt("upgrade:after-state")

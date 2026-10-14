@@ -71,7 +71,9 @@ const EXPECTED_STATUS_ROWS = [
   ["btw-side", "Migrado"],
   ["opengateway-provider", "Migrado"],
   ["task-toast-manager", "Migrado"],
-  ["tui-sidebar", "Migrado"],
+  // The 2026-10-14 sidebar retirement withdrew the native V2 port; the future
+  // sidebar is a from-scratch rewrite. Pinned as an explicit open debt.
+  ["tui-sidebar", "Pendiente de ejecución"],
   ["gpt-apply-patch-guard", "Migrado"],
   ["boulder", "Migrado"],
   ["doctor", "Migrado"],
@@ -84,9 +86,10 @@ const TERMINAL_STATUSES = new Set(["Migrado", "Equivale a builtin V2", "unwired 
 
 // T25 open-debt register. A non-terminal row is only allowed if it is named
 // here, so a regeneration can never introduce a NEW silent pending/partial row.
-// T25 closed every open row: the register is empty, and a new non-terminal row
-// now fails the suite until it is either migrated or explicitly re-registered.
-const OPEN_GAPS_T25 = []
+// The 2026-10-14 sidebar retirement withdrew the native V2 port, so
+// `tui-sidebar` is re-registered here as an explicit open debt until the
+// from-scratch rewrite lands. Any other non-terminal row still fails the suite.
+const OPEN_GAPS_T25 = ["tui-sidebar"]
 
 
 // The rationale is greedy so a stray " | " inside it does not split the row.
