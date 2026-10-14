@@ -1695,6 +1695,34 @@ test("native runtime setup survives a guidance receipt write failure", async () 
   }
 })
 
+// The real service surface does not export XDG_STATE_HOME, and a receipt that is
+// not written is not durable. The guidance receipt must therefore resolve the
+// same profile-kit state fallback ($HOME/.local/state/oh-my-rigel) the other
+// receipt writers use, instead of dropping the receipt.
+test("native runtime writes the MCP guidance receipt under the profile-kit state fallback", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  try {
+    await withLiveAgentConfig({}, async () => {
+      await withObsidianEnv({}, async () => {
+        await withNativeMcpPolicy(MCP_POLICY_WITH_OBSIDIAN, async () => {
+          const dispose = await plugin.setup(reactiveFallbackContext(createEventFeed()))
+          try {
+            const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "mcp-guidance.json")
+            expect(existsSync(receiptPath)).toBe(true)
+            expect(JSON.parse(readFileSync(receiptPath, "utf8")).guidance[0].name).toBe("obsidian")
+          } finally {
+            await dispose()
+          }
+        })
+      })
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
 test("native runtime reads keyword_detector disabled and enabled lists from the merged plugin config", () => {
   // given / when / then
   expect(nativeRuntime.readKeywordDetectorConfig({
