@@ -30,7 +30,18 @@
     "excluded": ["openrouter"],
     "omoBuiltinsRetained": ["grep_app", "lsp", "context7"],
     "omoBuiltinsDisabled": [],
-    "externalConfigurationRequired": ["context7", "playwright", "obsidian"]
+    "externalConfigurationRequired": ["context7", "playwright", "obsidian"],
+    "externalEnvKeys": { "obsidian": "OBSIDIAN_API_KEY" },
+    "externalEndpoints": { "obsidian": "https://127.0.0.1:27124/mcp/" },
+    "bundledSupplyChain": {
+      "ssh": {
+        "package": "@hypnosis/ssh-mcp-server",
+        "version": "2.3.3",
+        "license": "MIT",
+        "integrity": "sha512-SzUHJ4cMJueGpSMYC3cBllkUYPz1QkBtKcJgRHIATGxuviQ8fDBNvcf1ec0GK5Ti39+9bXH+qnvJSC7K9GKQ9g==",
+        "offlineNote": "npx resolves this pinned version from the npm registry and caches it; the first use requires network. Pinned-reproducible, not offline-reproducible."
+      }
+    }
   },
   "skillPolicy": {
     "bundled": ["prompt-master", "juez-tester", "juez-repo", "github-public-writing", "opencode-multi-auth-fix", "defuddle", "obsidian-vault-writing-rules", "obsidian-second-brain-audit", "obsidian-cli", "obsidian-markdown", "obsidian-bases", "json-canvas", "tui-design", "skill-creator"],

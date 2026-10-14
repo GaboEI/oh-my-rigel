@@ -546,19 +546,31 @@ export default {
     // are registered natively through `context.mcp.transform` exactly as V1
     // registered them through the plugin config. A missing LSP runtime degrades
     // to a disabled server instead of a broken one.
+    const mcpBuiltinsPolicy = readNativeMcpBuiltinsPolicy(manifest)
     const builtinMcpRegistration = await registerNativeBuiltinMcps(context, {
       cwd: location.directory,
       repoRoot: readNativeRepoRoot(manifest),
       configDir: resolveOpenCodeConfigDir(),
       disabledMcps: readNativeMcpPolicy(manifest).disabled,
-      retained: readNativeMcpBuiltinsPolicy(manifest).retained,
+      retained: mcpBuiltinsPolicy.retained,
+      bundledLocal: mcpBuiltinsPolicy.bundledLocal,
+      externalConnections: mcpBuiltinsPolicy.externalConnections,
+      externalEnvKeys: mcpBuiltinsPolicy.externalEnvKeys,
+      obsidianUrl: mcpBuiltinsPolicy.externalEndpoints.obsidian,
       env: process.env,
     })
     // Live builtin-MCP inventory (names only, never credentials): `planned` is the
     // policy decision and the reliable signal; `registered` may be empty because the
     // host applies the mcp transform asynchronously, so the authoritative live check
     // is the host inventory (/api/mcp).
-    console.error(`[oh-my-rigel] Native V2 builtin MCP inventory: planned=${builtinMcpRegistration.planned.join(",") || "(none)"} registered=${builtinMcpRegistration.registered.join(",") || "(none)"}`)
+    const guidedMcps = builtinMcpRegistration.guided.map((entry) => `${entry.name}:${entry.reason}`).join(",") || "(none)"
+    console.error(`[oh-my-rigel] Native V2 builtin MCP inventory: planned=${builtinMcpRegistration.planned.join(",") || "(none)"} registered=${builtinMcpRegistration.registered.join(",") || "(none)"} guided=${guidedMcps}`)
+    // Surface the actionable, secret-free fix so the operator gets the exact
+    // command/instruction (the inventory line above carries name:reason only).
+    // The fix never contains a credential value.
+    for (const entry of builtinMcpRegistration.guided) {
+      console.error(`[oh-my-rigel] MCP guidance (${entry.name}): ${entry.fix}`)
+    }
     // V1 `features/opengateway-provider`: when an OpenGateway credential is
     // present (env `OPENGATEWAY_API_KEY` or the isolated auth store), register
     // the provider and the packaged catalog through the V2 provider transform.

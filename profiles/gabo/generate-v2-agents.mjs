@@ -8,7 +8,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import legacyModule from "../../dist/index.js"
 import { sortAgentsByCanonicalOrder } from "./opencode/rigel-v2-native-agent-order.mjs"
-import { deriveNativeGates, deriveNativeMinOpenCodeVersion, resolveNativePluginConfig } from "./opencode/rigel-v2-native-config.mjs"
+import { buildMcpPolicyEntry, deriveNativeGates, deriveNativeMinOpenCodeVersion, resolveNativePluginConfig } from "./opencode/rigel-v2-native-config.mjs"
 import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
 import { agentChain } from "./opencode/rigel-v2-native-model-chains.mjs"
 import { SISYPHUS_AGENT_ID, SISYPHUS_PROMPT_IDENTITY_MODELS, applySisyphusFormatExampleFix, disposeBakeHooks, extractModelName, fixSisyphusAgentMap } from "./opencode/rigel-v2-native-sisyphus-prompt.mjs"
@@ -205,10 +205,7 @@ try {
         // T38: materialized MCP retention policy + repo root for the native
         // builtin-MCP registration (grep_app remote, lsp local).
         repoRoot: sourceRoot,
-        mcpPolicy: {
-          retained: [...(manifestMcpPolicy.omoBuiltinsRetained ?? [])],
-          builtinsDisabled: [...(manifestMcpPolicy.omoBuiltinsDisabled ?? [])],
-        },
+        mcpPolicy: buildMcpPolicyEntry(manifestMcpPolicy),
         tmuxVisualization: pluginView.team_mode?.tmux_visualization === true,
         // V1 `minimum-opencode-version.ts` refuses an unsupported host. The
         // native runtime enforces the same floor from the materialized minimum
