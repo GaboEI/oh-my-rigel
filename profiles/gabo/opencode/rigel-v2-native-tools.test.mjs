@@ -132,12 +132,12 @@ test("every registered tool exposes a description, input schema, and execute", (
   }
 })
 
-test("#when the setup context cannot list sessions but the aggregator is handed a session-capable server API #then session_list and session_search forward to it", async () => {
-  // given a listless setup context and a session-capable server API
+test("#when the monitor gate is off and the setup context cannot list sessions but the aggregator is handed a session-capable server API #then session_list and session_search forward to it", async () => {
+  // given monitor-off gates, a listless setup context, and a session-capable server API
   const families = createNativeToolFamilies({
     clients: [fakeListlessContext()],
     location: { directory: "/work" },
-    manifest: {},
+    manifest: { metadata: { global: { gates: { monitor: false } } } },
     context: fakeListlessContext(),
     pluginConfig: {},
     serverApi: fakeSessionServerApi(),
@@ -147,8 +147,11 @@ test("#when the setup context cannot list sessions but the aggregator is handed 
   const listed = await families.tools.session_list.execute({})
   const found = await families.tools.session_search.execute({ query: "needle" })
 
-  // then both read from the forwarded server API instead of reporting it unavailable
+  // then both read from the forwarded server API instead of reporting it unavailable,
+  // and the monitor family stays unregistered under the off gate
   expect(listed).toContain("ses_a")
   expect(listed).not.toBe("Error: OpenCode V2 server API unavailable")
   expect(found).toContain("Found 1 matches:")
+  expect(families.tools.monitor_start).toBeUndefined()
+  expect(families.registry).toBeUndefined()
 })

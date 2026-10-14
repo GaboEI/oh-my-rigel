@@ -1830,3 +1830,76 @@ test("a malformed live agent model yields no Model.Ref and never falls back to t
   const resolved = resolveProactiveAgentModels(manifest.agents, undefined, explicit, { chainFallback: false })
   expect(resolved.get("oracle")).toBeUndefined()
 })
+
+// Regression for `NLS1_GATE_FAIL_SESSION_TOOLS`: with the monitor gate OFF and a
+// setup context whose session domain cannot enumerate (the live host), the
+// runtime must still build the HTTP server API from the host's own service
+// handoff so `session_list`/`session_search` enumerate instead of returning the
+// typed unavailable string. A revert of the `hasInProcessSessionEnumeration`
+// gate (serverApi built only under `monitor === true`) fails this test.
+test("native runtime builds the session HTTP authority with the monitor gate off and no in-process session.list", async () => {
+  const sandbox = mkdtempSync(join(tmpdir(), "rigel-session-authority-"))
+  const home = join(sandbox, "home")
+  const origin = "http://127.0.0.1:49374"
+  mkdirSync(join(home, ".local", "state", "opencode"), { recursive: true })
+  mkdirSync(join(home, ".config", "opencode"), { recursive: true })
+  writeFileSync(
+    join(home, ".local", "state", "opencode", "service.json"),
+    JSON.stringify({ url: origin, pid: process.pid, version: "2.0.27" }),
+  )
+  writeFileSync(
+    join(home, ".config", "opencode", "service.json"),
+    JSON.stringify({ hostname: "127.0.0.1", port: 49374, password: "svc-pw" }),
+  )
+  const jsonResponse = (body, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+  const previousHome = process.env.HOME
+  const previousFetch = globalThis.fetch
+  process.env.HOME = home
+  globalThis.fetch = async (url) => {
+    const href = String(url)
+    if (href.endsWith("/api/info")) return jsonResponse({ version: "2.0.27", pid: process.pid, urls: [origin] })
+    if (href.endsWith("/context")) {
+      return jsonResponse({ data: [{ id: "m1", role: "user", time: { created: 1 }, parts: [{ type: "text", text: "hello" }] }] })
+    }
+    if (href.includes("/api/session")) {
+      return jsonResponse({ data: [{ id: "ses_live", directory: "/native-v2", time: { created: 1, updated: 2 } }] })
+    }
+    return jsonResponse({})
+  }
+  const tools = {}
+  const context = {
+    location: { directory: "/native-v2" },
+    agent: {
+      list: async () => ({ data: [] }),
+      transform: async (callback) => { callback({ update() {}, default() {} }); return { dispose() {} } },
+      reload: async () => {},
+    },
+    model: { list: async () => ({ data: [] }) },
+    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
+    session: {
+      hook: async () => ({ dispose() {} }),
+      create: async () => ({ data: { id: "ses_child" } }),
+      prompt: async () => ({ data: {} }),
+    },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (value) => { if (value?.name) tools[value.name] = value } })
+        return { dispose() {} }
+      },
+    },
+  }
+  try {
+    const dispose = await plugin.setup(context)
+    expect(tools.session_list).toBeDefined()
+    expect(tools.monitor_start).toBeUndefined()
+    const result = await tools.session_list.execute({})
+    expect(result.content).toContain("ses_live")
+    expect(result.content).not.toBe("Error: OpenCode V2 server API unavailable")
+    await dispose()
+  } finally {
+    globalThis.fetch = previousFetch
+    process.env.HOME = previousHome
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+})

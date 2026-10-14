@@ -424,6 +424,32 @@ describe("#given a setup-context client that can enumerate sessions", () => {
     expect(output).toContain("[ses_a]")
     expect(output).not.toContain("[ses_b]")
   })
+
+  test("#when both a setup-context client that can list and an injected server API exist #then enumeration prefers the server API", async () => {
+    // given a client whose `list` would answer, and a session-capable server API
+    let clientListCalls = 0
+    const client = {
+      session: {
+        list: async () => {
+          clientListCalls += 1
+          return { data: [sessionInfo("ses_client", { updated: 1 })] }
+        },
+        get: async () => ({ data: undefined }),
+        context: async () => ({ data: [] }),
+      },
+    }
+    const serverApi = fakeServerApi({
+      sessions: [sessionInfo("ses_server", { updated: 5, directory: PROJECT })],
+      messagesById: { ses_server: [message("m1", "user", "from server", 1)] },
+    })
+    // when
+    const output = await createSessionTools({ clients: [client], serverApi, directory: PROJECT }).session_list.execute({})
+    // then the injected HTTP server API is the primary enumeration authority
+    expect(serverApi.calls.getSessions).toHaveLength(1)
+    expect(clientListCalls).toBe(0)
+    expect(output).toContain("ses_server")
+    expect(output).not.toContain("ses_client")
+  })
 })
 
 describe("#given a session read tool", () => {

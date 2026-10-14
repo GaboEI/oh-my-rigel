@@ -4,18 +4,19 @@
  * Ports the observable semantics of
  * `packages/omo-opencode/src/tools/session-manager/tools.ts` onto the V2
  * session domain. The V2 plugin setup context exposes `get`/`context` for
- * scoped reads, and `session.list` is the primary enumeration authority for
- * `session_list` and global `session_search` when a client provides it. The
- * injected `serverApi` (`rigel-v2-native-http.mjs` `createServerApi`) is the
- * fallback enumeration path and the transcript source:
- *   - `getSessions`        -> fallback `session_list`/global `session_search`
- *   - `getSessionContext`  -> fallback per-session enrichment (the V1 N+1)
+ * scoped reads. The injected HTTP `serverApi` (`rigel-v2-native-http.mjs`
+ * `createServerApi`) is the PRIMARY enumeration authority for `session_list`
+ * and global `session_search` (the live host's session domain exposes no
+ * `list`); a setup-context client `session.list`, when a host provides it, is
+ * the secondary path. The server API is also the transcript source:
+ *   - `getSessions`        -> `session_list`/global `session_search`
+ *   - `getSessionContext`  -> per-session enrichment (the V1 N+1)
  *   - `getSessionExport`   -> `session_read include_transcript` + `session_info`
  *
  * The HTTP transport is Basic-auth, loopback-only and injectable; this module
  * never builds a URL, a port or a credential. `serverApi` is optional so the
- * module loads before the runtime wires it: when neither the setup-context
- * `session.list` nor the server API exists, `session_list` and global
+ * module loads before the runtime wires it: when neither the server API nor the
+ * setup-context `session.list` exists, `session_list` and global
  * `session_search` return the typed `Error: OpenCode V2 server API unavailable`
  * string (never a throw), while scoped tools keep using the setup context.
  *
@@ -186,14 +187,15 @@ function sessionListApiOf(client) {
   return typeof api?.list === "function" ? api : undefined
 }
 
-// Resolve the enumeration source: prefer the in-process setup-context client's
-// `session.list` (credential-free, same authority the runtime uses for its own
-// session reads), and fall back to the injected HTTP server API.
+// Resolve the enumeration source. The injected HTTP server API is the primary
+// authority on a live V2 host (the setup-context session domain exposes no
+// `list` there); the in-process client `session.list` is the secondary path for
+// a host that does expose it.
 function resolveEnumerationSource(clients, serverApi) {
+  if (hasServerApi(serverApi)) return { kind: "server", serverApi }
   for (const client of (clients ?? []).filter(Boolean)) {
     if (sessionListApiOf(client)) return { kind: "client", client }
   }
-  if (hasServerApi(serverApi)) return { kind: "server", serverApi }
   return undefined
 }
 

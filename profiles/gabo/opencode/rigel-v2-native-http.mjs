@@ -13,6 +13,10 @@
 //     host's own server). The synthetic fallback host `localhost` on port 4096
 //     means "no V2 server" and is refused, because the legacy installation owns
 //     that port;
+//   - process-registration: the origin equals the host's OWN local service
+//     handoff (`.../opencode/service.json`, the file `opencode serve --service`
+//     writes and `@opencode/client/service` reads) AND that file's `pid` is this
+//     same process - proving the descriptor describes this very process's server;
 //   - process-argv: the origin equals this process's own `serve --hostname/--port`
 //     (the plugin and the server are the same process);
 //   - process-socket: an origin supplied only by the environment is trusted only
@@ -32,15 +36,20 @@
 //
 // Credentials: the server accepts `OPENCODE_PASSWORD`, then the newer
 // `OPENCODE_SERVER_PASSWORD`, with `OPENCODE_SERVER_USERNAME` (default
-// `opencode`). These are the V2 process's own launch variables; no V1 file is
-// ever read. An empty value is treated as absent so a partial host environment
-// fails closed instead of sending a broken credential.
+// `opencode`). When the process environment carries no password (the normal
+// `opencode serve --service` case), the credential comes from the host's own
+// service registration file's `password`, paired to that same origin so the
+// credential is never redirected to a different loopback. No V1 file is ever
+// read. An empty value is treated as absent so a partial host environment fails
+// closed instead of sending a broken credential.
 //
 // Every public method resolves to a typed result and never throws. The
 // exceptions are `identityCheck` and `verifyIdentity`, which return
 // `{ ok }` / `{ ok, reason }` so a caller can fail closed.
 
 import fs from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 
 const DEFAULT_TIMEOUT_MS = 10000
 const SEARCH_TIMEOUT_MS = 60000
@@ -53,6 +62,14 @@ const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
 const SYNTHETIC_FALLBACK_HOST = "localhost"
 const SYNTHETIC_FALLBACK_PORT = "4096"
 const ENV_ORIGIN_KEYS = ["RIGEL_V2_SERVER_ORIGIN", "OPENCODE_SERVER_ORIGIN", "OPENCODE_SERVER_URL"]
+// The host's own local service handoff: the file `opencode serve --service`
+// writes and `@opencode/client/service` reads. The default path matches the
+// official client: `${XDG_STATE_HOME ?? ~/.local/state}/opencode/service.json`.
+const SERVICE_FILE_ENV_KEYS = ["RIGEL_V2_SERVICE_FILE", "OPENCODE_SERVICE_FILE"]
+const SERVICE_CONFIG_ENV_KEYS = ["RIGEL_V2_SERVICE_CONFIG_FILE", "OPENCODE_SERVICE_CONFIG_FILE"]
+const SERVICE_STATE_DIR = "opencode"
+const SERVICE_FILE_NAME = "service.json"
+const SERVICE_USERNAME = "opencode"
 const SESSION_QUERY_KEYS = ["limit", "order", "search", "parentID", "directory", "project", "subpath", "cursor"]
 const TERMINAL_BODY_KEYS = ["command", "args", "title", "env", "size"]
 const SHELL_BODY_KEYS = ["command", "cwd", "timeout", "metadata"]
@@ -136,6 +153,144 @@ function originFromUrl(raw, source) {
   return originFromParts(url.protocol, url.hostname, url.port, source)
 }
 
+// Resolve the local service registration file path (the file the server writes
+// for its clients). Matches the official client default
+// (`${XDG_STATE_HOME ?? ~/.local/state}/opencode/service.json`), with an explicit
+// env override so a caller can point at a non-default registration.
+export function serviceRegistrationPath({ env = {}, home } = {}) {
+  try {
+    for (const key of SERVICE_FILE_ENV_KEYS) {
+      const value = env?.[key]
+      if (typeof value === "string" && value.trim() !== "") return value
+    }
+    const stateHome = typeof env?.XDG_STATE_HOME === "string" && env.XDG_STATE_HOME.trim() !== ""
+      ? env.XDG_STATE_HOME
+      : join(homeRoot({ env, home }), ".local", "state")
+    return join(stateHome, SERVICE_STATE_DIR, SERVICE_FILE_NAME)
+  } catch {
+    return undefined
+  }
+}
+
+// Resolve the local service CONFIG file path, where the host persists the
+// service password (the `password` field of the same `service.json` name).
+// Matches the official default (`${XDG_CONFIG_HOME ?? ~/.config}/opencode/service.json`).
+export function serviceConfigPath({ env = {}, home } = {}) {
+  try {
+    for (const key of SERVICE_CONFIG_ENV_KEYS) {
+      const value = env?.[key]
+      if (typeof value === "string" && value.trim() !== "") return value
+    }
+    const configHome = typeof env?.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim() !== ""
+      ? env.XDG_CONFIG_HOME
+      : join(homeRoot({ env, home }), ".config")
+    return join(configHome, SERVICE_STATE_DIR, SERVICE_FILE_NAME)
+  } catch {
+    return undefined
+  }
+}
+
+function readJsonObject(fsImpl, path) {
+  if (typeof path !== "string") return undefined
+  try {
+    const text = fsImpl.readFileSync(path, "utf8")
+    if (typeof text !== "string" || text.trim() === "") return undefined
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// The host handoff is discoverable only when the host environment is available:
+// an explicit `home` or the caller-provided env's HOME. Without one there is no
+// host to discover, and a process (such as a test) must not read the
+// developer's own files.
+function discoverableHome({ env, home }) {
+  if (typeof home === "string" && home.trim() !== "") return home
+  const fromEnv = env?.HOME
+  return typeof fromEnv === "string" && fromEnv.trim() !== "" ? fromEnv : undefined
+}
+
+// The home root for a default path: an explicit `home`, the caller-provided
+// env's HOME, then the process home (the official default).
+function homeRoot({ env, home }) {
+  return discoverableHome({ env, home }) ?? homedir()
+}
+
+// Read the host's OWN local service handoff: the STATE registration (origin +
+// pid; the file `opencode serve --service` writes and `@opencode/client` reads)
+// merged with the CONFIG service file (where the host persists the password).
+// Returns a loopback origin plus the service password, or `undefined`. Never
+// throws: an unreadable, malformed, or non-loopback file fails closed, and an
+// absent host environment (no HOME) yields `undefined` without touching disk.
+// `pidMatches` is true only when the registration's `pid` equals the caller's
+// own process id, which proves the descriptor describes this very process.
+export function readServiceRegistration({ env = {}, home, processPid, fsImpl = fs } = {}) {
+  try {
+    const root = discoverableHome({ env, home })
+    if (root === undefined) return undefined
+    const paths = { env, home: root }
+    const statePath = serviceRegistrationPath(paths)
+    const stateInfo = readJsonObject(fsImpl, statePath)
+
+    // No state registration: fall back to the config file alone (origin from its
+    // own hostname/port, password from its own field; no pid to prove).
+    if (!stateInfo) {
+      const configPath = serviceConfigPath(paths)
+      const configInfo = readJsonObject(fsImpl, configPath)
+      if (!configInfo) return undefined
+      const resolved = originFromParts("http:", configInfo.hostname ?? "127.0.0.1", configInfo.port, "process-registration")
+      if (!resolved) return undefined
+      const password = typeof configInfo.password === "string" && configInfo.password.length > 0 ? configInfo.password : undefined
+      return { origin: resolved.origin, host: resolved.host, port: resolved.port, pid: undefined, pidMatches: false, password, version: undefined, path: configPath }
+    }
+
+    const resolved = originFromUrl(typeof stateInfo.url === "string" ? stateInfo.url : undefined, "process-registration")
+    if (!resolved) return undefined
+    const pid = Number.isInteger(stateInfo.pid) ? stateInfo.pid : undefined
+    const pidMatches = pid !== undefined && Number.isInteger(processPid) && pid === processPid
+    const statePassword = typeof stateInfo.password === "string" && stateInfo.password.length > 0 ? stateInfo.password : undefined
+    // Only this process's own registration justifies reading the config file for
+    // the persisted password; a foreign or stale registration never reaches for
+    // it. The config password is accepted only when it describes the SAME origin
+    // (no credential redirection) or carries no origin of its own.
+    let password = statePassword
+    if (password === undefined && pidMatches) {
+      const configInfo = readJsonObject(fsImpl, serviceConfigPath(paths))
+      const configResolved = configInfo
+        ? originFromParts("http:", configInfo.hostname ?? "127.0.0.1", configInfo.port, "process-registration")
+        : undefined
+      const candidate = typeof configInfo?.password === "string" && configInfo.password.length > 0 ? configInfo.password : undefined
+      if (candidate !== undefined && (!configResolved || configResolved.origin === resolved.origin)) password = candidate
+    }
+    return {
+      origin: resolved.origin,
+      host: resolved.host,
+      port: resolved.port,
+      pid,
+      pidMatches,
+      password,
+      version: typeof stateInfo.version === "string" ? stateInfo.version : undefined,
+      path: statePath,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+// Build the Basic credential from the host registration's password. The
+// username matches the official client (`opencode`).
+export function registrationCredential(registration) {
+  const password = registration?.password
+  if (typeof password !== "string" || password.length === 0) return undefined
+  return {
+    username: SERVICE_USERNAME,
+    password,
+    authorization: `Basic ${Buffer.from(`${SERVICE_USERNAME}:${password}`).toString("base64")}`,
+  }
+}
+
 // Resolve the loopback server origin from a serve argv. Returns `{ origin }`
 // only when a valid port is present and the host is loopback. Any port is
 // accepted, including 4096. Never throws.
@@ -153,10 +308,11 @@ export function parseServerOrigin(argv) {
 }
 
 // Resolve the server origin candidate from host and process sources, in trust
-// order: the host context, then this process's own argv, then an explicit
-// environment origin. `parseServerOrigin(argv)` remains available for argv-only
-// callers. Never throws; an unresolvable origin yields `{ origin: undefined }`.
-export function resolveServerOrigin({ argv = [], env = {}, context = {} } = {}) {
+// order: the host context, then the host's own local service registration, then
+// this process's own argv, then an explicit environment origin.
+// `parseServerOrigin(argv)` remains available for argv-only callers. Never
+// throws; an unresolvable origin yields `{ origin: undefined }`.
+export function resolveServerOrigin({ argv = [], env = {}, context = {}, registration } = {}) {
   try {
     const contextUrl = context?.serverUrl
     if (contextUrl !== undefined && contextUrl !== null) {
@@ -167,6 +323,13 @@ export function resolveServerOrigin({ argv = [], env = {}, context = {} } = {}) 
           resolved.host === SYNTHETIC_FALLBACK_HOST && resolved.port === SYNTHETIC_FALLBACK_PORT
         if (!synthetic) return resolved
       }
+    }
+    // The host's own registration is what its clients use, so it outranks this
+    // process's argv and the environment - but only when its `pid` is this very
+    // process's own, so a stale or foreign registration can never shadow argv or
+    // a host context. Trust is decided by `resolveTrustedOrigin`.
+    if (registration?.origin && registration.pidMatches === true) {
+      return { origin: registration.origin, host: registration.host, port: registration.port, source: "process-registration" }
     }
     const fromArgv = parseServerOrigin(argv)
     if (fromArgv.origin) return { ...fromArgv, source: "argv" }
@@ -227,8 +390,8 @@ export function socketOwnedBySelf(host, port, {
 // Decide whether the resolved origin may receive the credential, using only
 // pre-credential proofs. `trusted` is the gate: an untrusted origin is never
 // contacted by `verifyIdentity` or `raw`.
-export function resolveTrustedOrigin({ argv = [], env = {}, context = {} } = {}, socketOwner = socketOwnedBySelf) {
-  const candidate = resolveServerOrigin({ argv, env, context })
+export function resolveTrustedOrigin({ argv = [], env = {}, context = {}, registration } = {}, socketOwner = socketOwnedBySelf) {
+  const candidate = resolveServerOrigin({ argv, env, context, registration })
   if (!candidate.origin) return { origin: undefined, trusted: false, anchor: undefined }
 
   const hostUrl = context?.serverUrl
@@ -240,6 +403,13 @@ export function resolveTrustedOrigin({ argv = [], env = {}, context = {} } = {},
     if (hostResolved && !synthetic && hostResolved.origin === candidate.origin) {
       return { ...candidate, trusted: true, anchor: "host-context" }
     }
+  }
+
+  // The host's own registration file (the same handoff its clients read) is
+  // trusted only when its `pid` is this very process's, which proves the
+  // descriptor is this process's own server.
+  if (registration?.pidMatches && registration.origin === candidate.origin) {
+    return { ...candidate, trusted: true, anchor: "process-registration" }
   }
 
   const argvResolved = parseServerOrigin(argv)
@@ -275,12 +445,27 @@ export function createServerApi({
   context,
   fetchImpl = globalThis.fetch,
   socketOwner = socketOwnedBySelf,
+  registration,
+  home,
+  processPid = process.pid,
+  fsImpl = fs,
 } = {}) {
-  const resolution = resolveTrustedOrigin({ argv, env, context }, socketOwner)
+  // The registration is the host's own local service handoff. A caller may pass
+  // one directly (tests); otherwise it is read from the default (or
+  // env-overridden) path. `null` disables the read so a caller can prove the
+  // env/argv-only behavior.
+  const service =
+    registration === undefined ? readServiceRegistration({ env, home, processPid, fsImpl }) : registration
+  const resolution = resolveTrustedOrigin({ argv, env, context, registration: service }, socketOwner)
   const origin = resolution.origin
   const trusted = resolution.trusted === true
   const anchor = resolution.anchor
-  const credential = resolveCredential(env)
+  // Credential priority: the process's own launch env, then the host
+  // registration's password - but only when the resolved origin is that same
+  // registration's origin, so the credential is never redirected elsewhere.
+  const credential =
+    resolveCredential(env) ??
+    (service?.password !== undefined && service.origin === origin ? registrationCredential(service) : undefined)
   const authorization = credential?.authorization
   const hasFetch = typeof fetchImpl === "function"
   // The credential may be sent only to a trusted origin, and functional calls

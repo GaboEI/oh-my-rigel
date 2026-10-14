@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { createServerApi, parseServerOrigin, resolveCredential, resolveServerOrigin, socketOwnedBySelf } from "./rigel-v2-native-http.mjs"
+import { createServerApi, parseServerOrigin, readServiceRegistration, resolveCredential, resolveServerOrigin, serviceConfigPath, serviceRegistrationPath, socketOwnedBySelf } from "./rigel-v2-native-http.mjs"
 
 const SERVE_ARGV = ["/usr/bin/opencode", "serve", "--hostname", "127.0.0.1", "--port", "4097"]
 const ORIGIN = "http://127.0.0.1:4097"
@@ -666,5 +666,182 @@ describe("createServerApi verifyIdentity", () => {
     expect((await unauth.verifyIdentity()).ok).toBe(false)
     const noOrigin = createServerApi({ argv: [], env: ENV, context: {}, fetchImpl: async () => jsonResponse({}) })
     expect((await noOrigin.verifyIdentity()).ok).toBe(false)
+  })
+})
+
+// The host's own local service handoff: the STATE registration (origin + pid)
+// and the CONFIG file (the persisted password) that `opencode serve --service`
+// and `@opencode/client` share. A memory filesystem keeps these tests hermetic
+// and never reads the developer's real XDG roots.
+const SERVICE_HOME = "/tmp/rigel-service-home"
+const SERVICE_STATE_FILE = path.join(SERVICE_HOME, ".local", "state", "opencode", "service.json")
+const SERVICE_CONFIG_FILE = path.join(SERVICE_HOME, ".config", "opencode", "service.json")
+const SERVICE_ORIGIN = "http://127.0.0.1:49374"
+const SERVICE_USER = "opencode"
+
+function memFs(files) {
+  return {
+    readFileSync(file) {
+      if (Object.prototype.hasOwnProperty.call(files, file)) return files[file]
+      const error = new Error(`ENOENT: no such file or directory, open '${file}'`)
+      error.code = "ENOENT"
+      throw error
+    },
+  }
+}
+
+function basicFor(password, username = SERVICE_USER) {
+  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
+}
+
+describe("serviceRegistrationPath", () => {
+  test("defaults to the XDG state dir and honours an explicit override", () => {
+    expect(serviceRegistrationPath({ env: { HOME: "/h" } })).toBe(path.join("/h", ".local", "state", "opencode", "service.json"))
+    expect(serviceRegistrationPath({ env: { HOME: "/h", XDG_STATE_HOME: "/s" } })).toBe(path.join("/s", "opencode", "service.json"))
+    expect(serviceRegistrationPath({ env: { OPENCODE_SERVICE_FILE: "/x/service.json" } })).toBe("/x/service.json")
+    expect(serviceConfigPath({ env: { HOME: "/h" } })).toBe(path.join("/h", ".config", "opencode", "service.json"))
+  })
+})
+
+describe("readServiceRegistration", () => {
+  const PID = 4242
+
+  test("merges the state origin+pid with the config password and marks this process's own", () => {
+    const fs = memFs({
+      [SERVICE_STATE_FILE]: JSON.stringify({ url: SERVICE_ORIGIN, pid: PID, version: "2.0.27" }),
+      [SERVICE_CONFIG_FILE]: JSON.stringify({ hostname: "127.0.0.1", port: 49374, password: "svc-pw" }),
+    })
+    expect(readServiceRegistration({ env: { HOME: SERVICE_HOME }, processPid: PID, fsImpl: fs })).toEqual({
+      origin: SERVICE_ORIGIN,
+      host: "127.0.0.1",
+      port: "49374",
+      pid: PID,
+      pidMatches: true,
+      password: "svc-pw",
+      version: "2.0.27",
+      path: SERVICE_STATE_FILE,
+    })
+  })
+
+  test("returns undefined without a host home, never touching disk", () => {
+    const fs = { readFileSync() { throw new Error("readFileSync must not be called without a host home") } }
+    expect(readServiceRegistration({ env: {}, processPid: PID, fsImpl: fs })).toBeUndefined()
+  })
+
+  test("fails closed on a missing, malformed, or non-loopback registration", () => {
+    expect(readServiceRegistration({ env: { HOME: SERVICE_HOME }, processPid: PID, fsImpl: memFs({}) })).toBeUndefined()
+    expect(readServiceRegistration({ env: { HOME: SERVICE_HOME }, processPid: PID, fsImpl: memFs({ [SERVICE_STATE_FILE]: "{ not json" }) })).toBeUndefined()
+    expect(readServiceRegistration({ env: { HOME: SERVICE_HOME }, processPid: PID, fsImpl: memFs({ [SERVICE_STATE_FILE]: JSON.stringify({ url: "http://10.0.0.5:49374", pid: PID }) }) })).toBeUndefined()
+  })
+
+  test("marks pidMatches false when the registration belongs to another process", () => {
+    const fs = memFs({ [SERVICE_STATE_FILE]: JSON.stringify({ url: SERVICE_ORIGIN, pid: PID + 1 }) })
+    expect(readServiceRegistration({ env: { HOME: SERVICE_HOME }, processPid: PID, fsImpl: fs }).pidMatches).toBe(false)
+  })
+
+  test("accepts the config-only handoff (origin from hostname/port, no pid)", () => {
+    const fs = memFs({ [SERVICE_CONFIG_FILE]: JSON.stringify({ hostname: "127.0.0.1", port: 49374, password: "svc-pw" }) })
+    const registration = readServiceRegistration({ env: { HOME: SERVICE_HOME }, processPid: PID, fsImpl: fs })
+    expect(registration.origin).toBe(SERVICE_ORIGIN)
+    expect(registration.password).toBe("svc-pw")
+    expect(registration.pidMatches).toBe(false)
+  })
+
+  test("does not pair the config password to a different origin", () => {
+    const fs = memFs({
+      [SERVICE_STATE_FILE]: JSON.stringify({ url: SERVICE_ORIGIN, pid: PID }),
+      [SERVICE_CONFIG_FILE]: JSON.stringify({ hostname: "127.0.0.1", port: 4096, password: "other" }),
+    })
+    expect(readServiceRegistration({ env: { HOME: SERVICE_HOME }, processPid: PID, fsImpl: fs }).password).toBeUndefined()
+  })
+})
+
+describe("createServerApi host service registration", () => {
+  const PID = process.pid
+
+  test("builds a trusted, verified API from the host handoff and sends its Basic credential", async () => {
+    const seen = []
+    const fs = memFs({
+      [SERVICE_STATE_FILE]: JSON.stringify({ url: SERVICE_ORIGIN, pid: PID, version: "2.0.27" }),
+      [SERVICE_CONFIG_FILE]: JSON.stringify({ hostname: "127.0.0.1", port: 49374, password: "svc-pw" }),
+    })
+    const api = createServerApi({
+      argv: ["opencode", "serve", "--service"],
+      env: { HOME: SERVICE_HOME },
+      context: {},
+      processPid: PID,
+      fsImpl: fs,
+      fetchImpl: async (url, init = {}) => {
+        seen.push({ url, auth: init.headers?.Authorization })
+        return jsonResponse({ version: "2.0.27", pid: PID, urls: [SERVICE_ORIGIN] })
+      },
+    })
+    const identity = await api.verifyIdentity()
+    expect(identity.ok).toBe(true)
+    expect(api.available).toBe(true)
+    expect(api.anchor).toBe("process-registration")
+    expect(seen[0].url).toBe(`${SERVICE_ORIGIN}/api/info`)
+    expect(seen[0].auth).toBe(basicFor("svc-pw"))
+  })
+
+  test("fails closed and sends nothing when the registration pid is not this process", async () => {
+    let fetched = 0
+    const fs = memFs({
+      [SERVICE_STATE_FILE]: JSON.stringify({ url: SERVICE_ORIGIN, pid: PID + 1 }),
+      [SERVICE_CONFIG_FILE]: JSON.stringify({ hostname: "127.0.0.1", port: 49374, password: "svc-pw" }),
+    })
+    const api = createServerApi({
+      argv: ["opencode", "serve", "--service"],
+      env: { HOME: SERVICE_HOME },
+      context: {},
+      processPid: PID,
+      fsImpl: fs,
+      fetchImpl: async () => {
+        fetched += 1
+        return jsonResponse({})
+      },
+    })
+    const identity = await api.verifyIdentity()
+    expect(identity.ok).toBe(false)
+    expect(api.available).toBe(false)
+    expect(fetched).toBe(0)
+  })
+
+  test("prefers the process env credential over the registration password", async () => {
+    const seen = []
+    const fs = memFs({
+      [SERVICE_STATE_FILE]: JSON.stringify({ url: SERVICE_ORIGIN, pid: PID }),
+      [SERVICE_CONFIG_FILE]: JSON.stringify({ hostname: "127.0.0.1", port: 49374, password: "svc-pw" }),
+    })
+    const api = createServerApi({
+      argv: [],
+      env: { HOME: SERVICE_HOME, OPENCODE_SERVER_PASSWORD: "env-pw" },
+      context: {},
+      processPid: PID,
+      fsImpl: fs,
+      fetchImpl: async (url, init = {}) => {
+        seen.push(init.headers?.Authorization)
+        return jsonResponse({ version: "2.0.27", pid: PID, urls: [SERVICE_ORIGIN] })
+      },
+    })
+    await api.verifyIdentity()
+    expect(seen[0]).toBe(basicFor("env-pw"))
+  })
+
+  test("the registration origin outranks this process's serve argv", async () => {
+    const fs = memFs({
+      [SERVICE_STATE_FILE]: JSON.stringify({ url: SERVICE_ORIGIN, pid: PID }),
+      [SERVICE_CONFIG_FILE]: JSON.stringify({ hostname: "127.0.0.1", port: 49374, password: "svc-pw" }),
+    })
+    const api = createServerApi({
+      argv: ["opencode", "serve", "--port", "4097"],
+      env: { HOME: SERVICE_HOME },
+      context: {},
+      processPid: PID,
+      fsImpl: fs,
+      fetchImpl: async () => jsonResponse({ version: "2.0.27", pid: PID, urls: [SERVICE_ORIGIN] }),
+    })
+    expect(api.origin).toBe(SERVICE_ORIGIN)
+    expect(api.anchor).toBe("process-registration")
   })
 })

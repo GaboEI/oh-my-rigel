@@ -48,8 +48,8 @@ export function createNativeToolFamilies({ clients, location, manifest, context,
   const gates = readNativeGates(manifest)
   const tools = {}
 
-  // `serverApi` is consumed by the session family (the enumeration fallback when
-  // the setup-context client cannot list sessions) and by the monitor family.
+  // `serverApi` is consumed by the session family (its primary enumeration
+  // authority) and by the monitor family.
   Object.assign(tools, createSessionTools({ clients, directory: location?.directory, readTodos, serverApi }))
   tools.look_at = createLookAtTool({ clients, location, resolveModel: resolveLookAtModel })
 
