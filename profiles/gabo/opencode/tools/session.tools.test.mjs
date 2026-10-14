@@ -639,3 +639,35 @@ describe("#given the preserved setup-context session domain", () => {
     expect(info).toContain("Has Todos: Yes (1 items)")
   })
 })
+
+describe("#given a V2 user message that stores its text at the message root", () => {
+  // The live host returns a user message as `{ type:"user", text, files }` with
+  // no `parts`/`content` array (captured from `GET /api/session/{id}/context` on
+  // NLS1). A reader that only walks `parts` cannot see the user's own text, so
+  // `session_search` misses it and `session_read` omits it.
+  function rootTextMessage(id, text, created) {
+    return { id, type: "user", time: { created }, text, files: [] }
+  }
+
+  test("#when a global session_search queries root-level user text #then it is found", async () => {
+    // given
+    const serverApi = fakeServerApi({
+      sessions: [sessionInfo("ses_root", { updated: 2, directory: PROJECT })],
+      messagesById: { ses_root: [rootTextMessage("m1", "the needle lives at the message root", 1)] },
+    })
+    // when
+    const output = await createSessionTools({ serverApi, directory: PROJECT }).session_search.execute({ query: "needle" })
+    // then
+    expect(output).toContain("Found 1 matches:")
+    expect(output).toContain("[ses_root]")
+  })
+
+  test("#when session_read renders a root-level user message #then its text is shown", async () => {
+    // given
+    const serverApi = fakeServerApi({ messagesById: { ses_root: [rootTextMessage("m1", "visible user text", 1)] } })
+    // when
+    const output = await createSessionTools({ serverApi, directory: PROJECT }).session_read.execute({ session_id: "ses_root" })
+    // then
+    expect(output).toContain("visible user text")
+  })
+})

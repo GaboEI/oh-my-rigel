@@ -99,6 +99,10 @@ export function formatSearchResults(results) {
 export function messageParts(message) {
   if (Array.isArray(message?.parts)) return message.parts
   if (Array.isArray(message?.content)) return message.content
+  // A V2 user message stores its body as a root-level `text` with no parts array
+  // (`{ type:"user", text, files }`, the live `session.context`/`/context` shape).
+  // Surface it as a single text part so search, read, and the transcript see it.
+  if (typeof message?.text === "string" && message.text.length > 0) return [{ type: "text", text: message.text }]
   return []
 }
 
