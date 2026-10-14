@@ -1542,6 +1542,187 @@ test("native runtime records the clear for the streamed compaction event name", 
   }
 })
 
+// The host does not persist plugin stderr on the service surface, so the
+// stderr-only MCP guidance is not consultable after startup. The runtime must
+// also record the SAME secret-free guidance (name, reason, actionable fix) as a
+// durable receipt under $XDG_STATE_HOME, which is the surface an operator reads.
+// `nativeManifest` ships empty in-tree (the generated manifest is materialized at
+// install), so the policy is driven through the real `metadata.global.mcpPolicy`
+// boundary and restored afterwards.
+const MCP_POLICY_WITH_OBSIDIAN = {
+  externalConnections: ["obsidian"],
+  externalEnvKeys: { obsidian: "OBSIDIAN_API_KEY" },
+  externalEndpoints: { obsidian: "https://127.0.0.1:27124/mcp/" },
+}
+
+async function withNativeMcpPolicy(policy, run) {
+  const originalMetadata = nativeManifest.metadata
+  nativeManifest.metadata = { global: { mcpPolicy: policy } }
+  try {
+    return await run()
+  } finally {
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+}
+
+// The guidance is derived from the LIVE Obsidian env; strip and restore it so a
+// developer's real key/endpoint can neither create nor suppress the guidance.
+async function withObsidianEnv(overrides, run) {
+  const names = ["OBSIDIAN_API_KEY", "OBSIDIAN_API_URL"]
+  const saved = new Map(names.map((name) => [name, process.env[name]]))
+  for (const name of names) delete process.env[name]
+  for (const [name, value] of Object.entries(overrides)) process.env[name] = value
+  try {
+    return await run()
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+}
+
+test("native runtime records a durable receipt for the expected MCP guidance", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const stateRoot = mkdtempSync(join(tmpdir(), "rigel-mcp-guidance-"))
+  process.env.XDG_STATE_HOME = stateRoot
+  try {
+    await withLiveAgentConfig({}, async () => {
+      await withObsidianEnv({}, async () => {
+        await withNativeMcpPolicy(MCP_POLICY_WITH_OBSIDIAN, async () => {
+          const dispose = await plugin.setup(reactiveFallbackContext(createEventFeed()))
+          try {
+            const receiptPath = join(stateRoot, "oh-my-rigel", "mcp-guidance.json")
+            expect(existsSync(receiptPath)).toBe(true)
+            const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
+            expect(receipt.recordedAt).toEqual(expect.any(String))
+            expect(receipt.guidance).toEqual([
+              expect.objectContaining({
+                name: "obsidian",
+                reason: "missing-env",
+                fix: expect.stringContaining("OBSIDIAN_API_KEY=<obsidian-local-rest-api-key>"),
+              }),
+            ])
+          } finally {
+            await dispose()
+          }
+        })
+      })
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    rmSync(stateRoot, { recursive: true, force: true })
+  }
+})
+
+test("native runtime never carries the live Obsidian key into the guidance receipt", async () => {
+  const secret = "S3CR3T-OBSIDIAN-RECEIPT-VALUE"
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const stateRoot = mkdtempSync(join(tmpdir(), "rigel-mcp-guidance-secret-"))
+  process.env.XDG_STATE_HOME = stateRoot
+  try {
+    await withLiveAgentConfig({}, async () => {
+      // A configured key against a non-loopback endpoint forces the
+      // untrusted-endpoint guidance while the real key is live in the env.
+      await withObsidianEnv({ OBSIDIAN_API_KEY: secret, OBSIDIAN_API_URL: "http://evil.example/mcp/" }, async () => {
+        await withNativeMcpPolicy(MCP_POLICY_WITH_OBSIDIAN, async () => {
+          const dispose = await plugin.setup(reactiveFallbackContext(createEventFeed()))
+          try {
+            const raw = readFileSync(join(stateRoot, "oh-my-rigel", "mcp-guidance.json"), "utf8")
+            expect(JSON.parse(raw).guidance[0].reason).toBe("untrusted-endpoint")
+            expect(raw).not.toContain(secret)
+          } finally {
+            await dispose()
+          }
+        })
+      })
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    rmSync(stateRoot, { recursive: true, force: true })
+  }
+})
+
+test("native runtime writes no MCP guidance receipt when there is no guidance", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const stateRoot = mkdtempSync(join(tmpdir(), "rigel-mcp-guidance-none-"))
+  process.env.XDG_STATE_HOME = stateRoot
+  try {
+    await withLiveAgentConfig({}, async () => {
+      await withObsidianEnv({}, async () => {
+        await withNativeMcpPolicy({ externalConnections: [] }, async () => {
+          const dispose = await plugin.setup(reactiveFallbackContext(createEventFeed()))
+          try {
+            expect(existsSync(join(stateRoot, "oh-my-rigel", "mcp-guidance.json"))).toBe(false)
+          } finally {
+            await dispose()
+          }
+        })
+      })
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    rmSync(stateRoot, { recursive: true, force: true })
+  }
+})
+
+test("native runtime setup survives a guidance receipt write failure", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const sandbox = mkdtempSync(join(tmpdir(), "rigel-mcp-guidance-fault-"))
+  // A regular file as the state root makes mkdirSync fail (ENOTDIR), which is the
+  // real disk-failure branch of `writeStateReceipt`.
+  const blockingFile = join(sandbox, "not-a-directory")
+  writeFileSync(blockingFile, "")
+  process.env.XDG_STATE_HOME = blockingFile
+  try {
+    await withLiveAgentConfig({}, async () => {
+      await withObsidianEnv({}, async () => {
+        await withNativeMcpPolicy(MCP_POLICY_WITH_OBSIDIAN, async () => {
+          const dispose = await plugin.setup(reactiveFallbackContext(createEventFeed()))
+          expect(typeof dispose).toBe("function")
+          await dispose()
+        })
+      })
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+})
+
+// The real service surface does not export XDG_STATE_HOME, and a receipt that is
+// not written is not durable. The guidance receipt must therefore resolve the
+// same profile-kit state fallback ($HOME/.local/state/oh-my-rigel) the other
+// receipt writers use, instead of dropping the receipt.
+test("native runtime writes the MCP guidance receipt under the profile-kit state fallback", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  try {
+    await withLiveAgentConfig({}, async () => {
+      await withObsidianEnv({}, async () => {
+        await withNativeMcpPolicy(MCP_POLICY_WITH_OBSIDIAN, async () => {
+          const dispose = await plugin.setup(reactiveFallbackContext(createEventFeed()))
+          try {
+            const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "mcp-guidance.json")
+            expect(existsSync(receiptPath)).toBe(true)
+            expect(JSON.parse(readFileSync(receiptPath, "utf8")).guidance[0].name).toBe("obsidian")
+          } finally {
+            await dispose()
+          }
+        })
+      })
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
 test("native runtime reads keyword_detector disabled and enabled lists from the merged plugin config", () => {
   // given / when / then
   expect(nativeRuntime.readKeywordDetectorConfig({

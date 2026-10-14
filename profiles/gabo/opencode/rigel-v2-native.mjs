@@ -22,6 +22,7 @@ import { createNativeNoSisyphusGptEnforcement } from "./rigel-v2-native-no-sisyp
 import { isHephaestusAgentId } from "./rigel-v2-native-hephaestus.mjs"
 import fs from "node:fs"
 import path from "node:path"
+import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { createNativeContextHook, createNativeModelRequestHook } from "./rigel-v2-native-prompt.mjs"
 import { readSisyphusPromptPlan, SISYPHUS_PROMPT_RECEIPT } from "./rigel-v2-native-sisyphus-prompt.mjs"
@@ -215,8 +216,17 @@ export async function applyRequestedSkills(prompt, requestedSkills, { resolveSki
   return injection ? `${prompt}\n\n${injection}` : prompt
 }
 
-function writeStateReceipt(fileName, event) {
-  const stateRoot = process.env.XDG_STATE_HOME
+// Resolve the durable state root for the MCP guidance receipt. The real service
+// surface does not export XDG_STATE_HOME, and a receipt that is never written is
+// not durable; fall back to the same profile-kit state path (`$HOME/.local/state`)
+// the other receipt writers use (btw-context, cli-sidebar) instead of dropping it.
+function resolveMcpGuidanceReceiptRoot() {
+  const configured = process.env.XDG_STATE_HOME
+  if (typeof configured === "string" && configured.length > 0) return configured
+  return path.join(process.env.HOME || homedir(), ".local", "state")
+}
+
+function writeStateReceipt(fileName, event, stateRoot = process.env.XDG_STATE_HOME) {
   if (!stateRoot) return
   const directory = path.join(stateRoot, "oh-my-rigel")
   const receipt = path.join(directory, fileName)
@@ -570,6 +580,17 @@ export default {
     // The fix never contains a credential value.
     for (const entry of builtinMcpRegistration.guided) {
       console.error(`[oh-my-rigel] MCP guidance (${entry.name}): ${entry.fix}`)
+    }
+    // The host does not persist plugin stderr on the service surface, so the
+    // guidance logged above is not consultable after startup. Record the SAME
+    // secret-free guidance (name, reason, and the actionable fix) as a durable
+    // receipt the operator can read. No guidance, no receipt. Each entry is
+    // projected onto an explicit field allowlist so a future upstream field can
+    // never smuggle a credential into the receipt.
+    if (builtinMcpRegistration.guided.length > 0) {
+      writeStateReceipt("mcp-guidance.json", {
+        guidance: builtinMcpRegistration.guided.map(({ name, reason, fix }) => ({ name, reason, fix })),
+      }, resolveMcpGuidanceReceiptRoot())
     }
     // V1 `features/opengateway-provider`: when an OpenGateway credential is
     // present (env `OPENGATEWAY_API_KEY` or the isolated auth store), register
