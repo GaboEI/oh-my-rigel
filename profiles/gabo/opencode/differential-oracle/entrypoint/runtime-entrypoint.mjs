@@ -387,43 +387,9 @@ export async function driveReactiveFallback(input) {
   })
 }
 
-// ---------------------------------------------------------------------------
-// goal: the registered goal command drives the real goal controller
-// ---------------------------------------------------------------------------
-
-function projectGoal(response) {
-  let payload
-  try { payload = JSON.parse(response) } catch { return null }
-  if (!payload || payload.goal === undefined) return null
-  return payload.goal ? { objective: payload.goal.objective, status: payload.goal.status } : null
-}
-
-export async function driveGoalCommand(input) {
-  const previousMetadata = manifest.metadata
-  manifest.metadata = { global: { gates: { goal: true } } }
-  try {
-    return await withIsolatedEnv(async () => {
-      const handle = await startEntrypoint({})
-      try {
-        const goal = handle.capture.commands.get("goal")
-        if (!goal) throw new Error("goal command was not registered by setup()")
-        const run = (text) => goal.execute({ sessionID: input.sessionID ?? "ses_entrypoint", prompt: { text }, delivery: "queue" })
-        const created = projectGoal(await run("Ship the oracle"))
-        const got = projectGoal(await run("show"))
-        const paused = projectGoal(await run("pause"))
-        const resumed = projectGoal(await run("resume"))
-        await run("clear")
-        const after = projectGoal(await run("show"))
-        return { created, got, paused, resumed, after }
-      } finally {
-        await stopEntrypoint(handle)
-      }
-    })
-  } finally {
-    if (previousMetadata === undefined) delete manifest.metadata
-    else manifest.metadata = previousMetadata
-  }
-}
+// The inherited goal command is quarantined (PR B), so it has no runtime
+// entrypoint to drive here; the goal family's parity lives at the helper level
+// (scenarios/goal.mjs).
 
 // ---------------------------------------------------------------------------
 // skills: a delegated child prompt carries the discovered skill body

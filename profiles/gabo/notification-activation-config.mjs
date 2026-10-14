@@ -11,6 +11,8 @@
  * `notification.force_enable` is true.
  */
 
+import { isGoalEngineEntry } from "./rigel-v2-goal-registration.mjs"
+
 export const NOTIFICATION_PLUGIN_ID = "oh-my-rigel.notification"
 
 /** `cli.json` plugin entry that disables the always-on host notifier. */
@@ -150,6 +152,9 @@ function underFamily(candidate, familyRoot) {
 }
 
 function isOurRuntimeEntry(entry, { runtimeDir, familyRoot }) {
+  // The vendored goal engine sits under the state root too, but it belongs to
+  // the goal slot, not the runtime slot: never treat it as a runtime entry.
+  if (isGoalEngineEntry(entry)) return false
   const pkg = typeof entry === "string" ? entry : entry && typeof entry === "object" ? entry.package : undefined
   if (typeof pkg !== "string") return false
   return pkg === runtimeDir || underFamily(pkg, familyRoot)

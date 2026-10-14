@@ -17,6 +17,15 @@ import { discoverRuntimeModules } from "./native-runtime-modules.mjs"
 import { writeTextAtomic } from "./rigel-v2-lifecycle-transaction.mjs"
 import { goalVendorDigestKey, materializeGoalVendor } from "./rigel-v2-goal-vendor.mjs"
 import {
+  goalEntryOptions,
+  isGoalEngineEntry,
+  materializeGoalEngineShim,
+  materializeGoalTuiShim,
+  registerGoalCliEntry,
+  registerGoalServerEntry,
+  resolveGoalOptions,
+} from "./rigel-v2-goal-registration.mjs"
+import {
   parseJsonc,
   registerCompanionCliPlugin,
   resolveNotificationOptions,
@@ -125,6 +134,21 @@ export function resolveRuntimeNotificationOptions(profileFile, env = process.env
   return resolveNotificationOptions({ profile: openCodeBlock, enabledOverride })
 }
 
+/**
+ * The explicit user overrides for the community goal engine, read from the
+ * Rigel-managed profile's `goal_engine` block. This is the normal, non-vendor
+ * way to pass any supported engine option; absent means "Rigel defaults".
+ */
+export function resolveGoalOptionOverrides(profileFile, env = process.env) {
+  let profileDocument = {}
+  if (profileFile !== null && fs.existsSync(profileFile)) {
+    profileDocument = parseJsonc(fs.readFileSync(profileFile, "utf8"))
+  }
+  const openCodeBlock = resolveProfileOpenCodeBlock(profileDocument, env.OMO_PROFILE)
+  const record = openCodeBlock && typeof openCodeBlock === "object" ? openCodeBlock.goal_engine : undefined
+  return record && typeof record === "object" && !Array.isArray(record) ? record : {}
+}
+
 export function materializeNativeRuntime({
   sourceRoot,
   runtimeSourceDir = path.join(sourceRoot, "profiles/gabo/opencode"),
@@ -186,18 +210,39 @@ export function materializeNativeRuntime({
   const candidate = structuredClone(before)
   const plugins = Array.isArray(candidate.plugin) ? candidate.plugin : []
   candidate.plugin = registerRuntimePluginEntry(plugins, { runtimeDir, familyRoot: familyRoot ?? runtimeDir })
+
+  // The vendored goal engine is registered exactly once: a server tuple in
+  // `opencode.json` carrying the resolved Rigel-managed options, and a TUI
+  // object in `cli.json`. An existing entry's options and the profile's
+  // `goal_engine` block are honored as overrides, so a reinstall/update never
+  // overwrites a user choice; the Rigel defaults fill the rest.
+  const existingGoalOptions = goalEntryOptions(candidate.plugin.find(isGoalEngineEntry))
+  const goalOverrides = { ...existingGoalOptions, ...resolveGoalOptionOverrides(profileFile, env) }
+  const goalOptions = resolveGoalOptions({ overrides: goalOverrides })
+  // The host resolves a `plugin` entry to an ENTRYPOINT; the vendored artifact
+  // exports only `./server`/`./tui`, so pointing at it (file or dir) makes the
+  // host skip it. A Rigel-owned shim with a `.` export re-exporting the vendored
+  // server is what the host loads, exactly once.
+  const goalShimDir = materializeGoalEngineShim({ runtimeDir, engineEntry: goalVendor.engineEntry })
+  // The host resolves a `cli.json` `plugins` `{ package }` entry to a JS
+  // entrypoint through the package's `.`/`./tui` export; the vendored TUI is
+  // `src/tui.ts` with no `.`, so the same Rigel-owned shim pattern is required
+  // for the community goal sidebar to render.
+  const goalTuiShimDir = materializeGoalTuiShim({ runtimeDir, tuiEntry: goalVendor.tuiEntry })
+  candidate.plugin = registerGoalServerEntry(candidate.plugin, { engineEntry: goalShimDir, options: goalOptions })
   writeTextAtomic(configFile, `${JSON.stringify(candidate, null, 2)}\n`, { mode: 0o600 })
 
   const notificationOptions = resolveRuntimeNotificationOptions(profileFile, env)
   const cliConfigFile = path.join(path.dirname(configFile), "cli.json")
   const cliBefore = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
-  const cliAfter = registerCompanionCliPlugin(cliBefore, {
+  const cliCompanion = registerCompanionCliPlugin(cliBefore, {
     runtimeDir,
     familyRoot: familyRoot ?? runtimeDir,
     options: notificationOptions,
     notificationEnabled: notificationOptions.enabled,
   })
+  const cliAfter = registerGoalCliEntry(cliCompanion, { tuiShimDir: goalTuiShimDir })
   writeTextAtomic(cliConfigFile, `${JSON.stringify(cliAfter, null, 2)}\n`, { mode: 0o600 })
 
-  return { pluginEntry: runtimeDir, cliConfigFile, notificationEnabled: notificationOptions.enabled, stagedLsp, goalVendor }
+  return { pluginEntry: runtimeDir, cliConfigFile, notificationEnabled: notificationOptions.enabled, stagedLsp, goalVendor, goalOptions }
 }

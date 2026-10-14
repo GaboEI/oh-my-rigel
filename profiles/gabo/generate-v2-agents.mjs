@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url"
 import legacyModule from "../../dist/index.js"
 import { sortAgentsByCanonicalOrder } from "./opencode/rigel-v2-native-agent-order.mjs"
 import { deriveNativeGates, deriveNativeMinOpenCodeVersion, resolveNativePluginConfig } from "./opencode/rigel-v2-native-config.mjs"
+import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
 import { agentChain } from "./opencode/rigel-v2-native-model-chains.mjs"
 import { SISYPHUS_AGENT_ID, SISYPHUS_PROMPT_IDENTITY_MODELS, applySisyphusFormatExampleFix, disposeBakeHooks, extractModelName, fixSisyphusAgentMap } from "./opencode/rigel-v2-native-sisyphus-prompt.mjs"
 
@@ -173,7 +174,7 @@ try {
   // profile explicitly enables (`task_*: false` is the default). The native gate
   // wins: an enabled family must not stay denied by a stale V1 tool default, or
   // the family registers but every call is rejected by the permission gate.
-  const tools = { ...(config.tools ?? {}) }
+  const tools = stripLegacyGoalToolPermission({ ...(config.tools ?? {}) })
   if (gates.task_system) tools["task_*"] = true
   if (gates.goal) tools["goal_*"] = true
    if (gates.monitor) tools["monitor_*"] = true

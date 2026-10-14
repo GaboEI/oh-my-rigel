@@ -1320,115 +1320,33 @@ test("native runtime omits hashline_edit when the manifest gate is absent", asyn
   await dispose()
 })
 
-test("native runtime /goal delivers each command through session.prompt, not a return value", async () => {
+// The inherited Goal is quarantined. Forcing the manifest gate on must still
+// register NOTHING: no `/goal` command (N1), no legacy goal tool (N2), no goal
+// store access (N5), and a clean dispose (N7). The vendored community engine
+// owns `/goal` instead.
+test("native runtime quarantines the inherited goal: forcing gates.goal registers no command, tool or store access", async () => {
   const originalMetadata = nativeManifest.metadata
   nativeManifest.metadata = { global: { gates: { goal: true } } }
-  const { context, commands, deliveries } = goalCommandHarness()
-  try {
-    const dispose = await plugin.setup(context)
-    const goal = commands.get("goal")
-    expect(goal).toBeDefined()
-    // The V2 host sends `prompt` as a PromptInput object (arguments on `.text`)
-    // and renders only the delivered turn. Assert the delivery so a regression
-    // back to `return formatGoalResponse(...)` — which delivers nothing — fails.
-    const deliver = async (text) => {
-      const returned = await goal.execute({ sessionID: "ses_goal", prompt: { text }, delivery: "queue" })
-      expect(returned).toBeUndefined()
-      return JSON.parse(deliveries.at(-1).text)
-    }
-    expect(await deliver("Ship Wave 1")).toMatchObject({ goal: { objective: "Ship Wave 1", status: "active" } })
-    expect(await deliver("pause")).toMatchObject({ goal: { status: "paused" } })
-    expect(await deliver("resume")).toMatchObject({ goal: { status: "active" } })
-    // An empty argument is a `show` and still delivers the persisted objective.
-    expect(await deliver("")).toMatchObject({ goal: { objective: "Ship Wave 1", status: "active" } })
-    // A bare string prompt is still honored (defensive fallback).
-    const bare = await goal.execute({ sessionID: "ses_goal", prompt: "clear", delivery: "queue" })
-    expect(bare).toBeUndefined()
-    expect(JSON.parse(deliveries.at(-1).text)).toEqual({ goal: null })
-    // Whitespace-only arguments are a `show`, never a goal creation.
-    expect(await deliver("   ")).toEqual({ goal: null })
-    expect(deliveries).toHaveLength(6)
-    // Every delivery targets the invoking session with the requested delivery mode.
-    for (const entry of deliveries) {
-      expect(entry.sessionID).toBe("ses_goal")
-      expect(entry.delivery).toBe("queue")
-    }
-    await dispose()
-  } finally {
-    if (originalMetadata === undefined) delete nativeManifest.metadata
-    else nativeManifest.metadata = originalMetadata
-  }
-})
-
-test("native runtime /goal rejects an empty session without delivering or changing another goal", async () => {
-  const originalMetadata = nativeManifest.metadata
-  nativeManifest.metadata = { global: { gates: { goal: true } } }
-  const { context, commands, deliveries } = goalCommandHarness()
-  try {
-    const dispose = await plugin.setup(context)
-    const goal = commands.get("goal")
-    await goal.execute({ sessionID: "ses_goal", prompt: { text: "Keep me" }, delivery: "queue" })
-    const deliveredBefore = deliveries.length
-    // An empty session id has no host channel target: it must return void and
-    // deliver nothing rather than mutate or report on another session.
-    const empty = await goal.execute({ sessionID: "", prompt: { text: "clear" }, delivery: "queue" })
-    expect(empty).toBeUndefined()
-    expect(deliveries).toHaveLength(deliveredBefore)
-    // The other session's goal is untouched.
-    await goal.execute({ sessionID: "ses_goal", prompt: { text: "show" }, delivery: "queue" })
-    expect(JSON.parse(deliveries.at(-1).text)).toMatchObject({ goal: { objective: "Keep me" } })
-    await dispose()
-  } finally {
-    if (originalMetadata === undefined) delete nativeManifest.metadata
-    else nativeManifest.metadata = originalMetadata
-  }
-})
-
-test("native runtime /goal delivery is load-bearing: a bare return cannot substitute for session.prompt", async () => {
-  // The V2 host discards a command executor's return value and renders only what
-  // arrives through `ctx.session.prompt`. This drives the real command the way the
-  // host does — reading ONLY the delivered arguments — so the pre-fix defect
-  // (`return formatGoalResponse(...)`, no delivery) leaves the session empty and
-  // fails here, while the fixed seam passes.
-  const originalMetadata = nativeManifest.metadata
-  nativeManifest.metadata = { global: { gates: { goal: true } } }
-  const { context, commands, deliveries } = goalCommandHarness()
-  try {
-    const dispose = await plugin.setup(context)
-    const goal = commands.get("goal")
-    const returned = await goal.execute({ sessionID: "ses_goal", prompt: { text: "Ship Wave 1" }, delivery: "queue" })
-    // Contract: the executor returns void; a string here is the discarded pre-fix value.
-    expect(returned).toBeUndefined()
-    // The only user-visible effect is the delivered turn.
-    expect(deliveries).toHaveLength(1)
-    expect(JSON.parse(deliveries[0].text).goal).toMatchObject({ objective: "Ship Wave 1", status: "active" })
-    await dispose()
-  } finally {
-    if (originalMetadata === undefined) delete nativeManifest.metadata
-    else nativeManifest.metadata = originalMetadata
-  }
-})
-
-test("native runtime stop-continuation clears only its session goal", async () => {
-  const originalMetadata = nativeManifest.metadata
-  nativeManifest.metadata = { global: { gates: { goal: true } } }
-  const storage = new Map()
   const commands = new Map()
-  const hooks = new Map()
-  const deliveries = []
-  let resolveRemoved
-  const removed = new Promise((resolve) => { resolveRemoved = resolve })
+  const added = []
+  let goalStoreWrites = 0
   const context = {
     ...editorCaptureContext().context,
     storage: {
-      async get(key) { return storage.get(key) },
-      async set(key, value) { storage.set(key, value) },
-      async remove(key) { storage.delete(key); resolveRemoved() },
+      async get() { return undefined },
+      async set(key) { if (String(key).startsWith("rigel-v2/goal")) goalStoreWrites++; return undefined },
+      async remove() { return undefined },
+    },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => added.push(definition?.name), get: () => undefined })
+        return { dispose() {} }
+      },
     },
     session: {
-      hook: async (name, handler) => { hooks.set(name, handler); return { dispose() {} } },
+      hook: async () => ({ dispose() {} }),
       create: async () => ({ data: { id: "ses_native" } }),
-      prompt: async (arg) => { deliveries.push(arg); return { data: {} } },
+      prompt: async () => ({ data: {} }),
     },
     command: {
       transform: async (callback) => {
@@ -1439,27 +1357,13 @@ test("native runtime stop-continuation clears only its session goal", async () =
   }
   try {
     const dispose = await plugin.setup(context)
-    const goal = commands.get("goal")
-    await goal.execute({ sessionID: "ses_stop", prompt: "Stop me", delivery: "queue" })
-    await goal.execute({ sessionID: "ses_other", prompt: "Keep me", delivery: "queue" })
-    const request = {
-      sessionID: "ses_stop",
-      request: new Request("https://example.invalid/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: "/stop-continuation" }] }),
-      }),
-    }
-      await hooks.get("prompt")({ sessionID: "ses_stop", prompt: { text: "/stop-continuation" } })
-    await removed
-    await goal.execute({ sessionID: "ses_stop", prompt: "show", delivery: "queue" })
-    expect(JSON.parse(deliveries.at(-1).text)).toEqual({ goal: null })
-    await goal.execute({ sessionID: "ses_other", prompt: "show", delivery: "queue" })
-    expect(JSON.parse(deliveries.at(-1).text)).toMatchObject({ goal: { objective: "Keep me" } })
-    await hooks.get("http.request")({
-      sessionID: "ses_none",
-      request: new Request("https://example.invalid/chat", { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: "/stop-continuation" }] }) }),
-    })
+    // N1: the legacy command never registers, even with the gate forced true.
+    expect(commands.has("goal")).toBe(false)
+    // N2: none of the legacy goal tools register.
+    for (const name of ["create_goal", "update_goal", "get_goal"]) expect(added).not.toContain(name)
+    // N5: the legacy goal store is never written.
+    expect(goalStoreWrites).toBe(0)
+    // N7: dispose is clean.
     await dispose()
   } finally {
     if (originalMetadata === undefined) delete nativeManifest.metadata

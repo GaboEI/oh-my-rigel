@@ -2,18 +2,22 @@
 /**
  * Goal-state gate for the isolated V2 laboratory acceptance.
  *
- * Two explicit modes:
- *   - "internal": the external `@prevalentware/opencode-goal-plugin` is gone and
- *     OmO's internal goal is enabled. This requires POSITIVE reads of all three
- *     config files (opencode.json, tui.json, cli.json), the external state path
- *     (~/.local/share/opencode-goal-plugin) and the exact retired cache path
- *     (~/.cache/opencode/packages/@prevalentware/opencode-goal-plugin@latest) to
- *     be absent, and `goal.enabled === true`. In this mode the external
- *     goals.json MUST stay absent (before/after invariant).
- *   - "legacy": the external plugin is referenced in a config, or its state or
- *     exact cache path exists. The historical schema-version-1 invariant applies.
+ * Three explicit modes:
+ *   - "managed": a config references the vendored, Rigel-managed community
+ *     engine (a `vendor/opencode-goal-plugin` path inside the Rigel state tree).
+ *     This is the PR B owner: the retired V1 goals.json MUST stay absent.
+ *   - "internal": no engine is registered and OmO's internal `goal.enabled` is
+ *     true (the inherited Goal is quarantined, so this only records that no
+ *     external/community engine is present). Requires POSITIVE reads of all
+ *     three config files, the external state path and the exact retired cache
+ *     path to be absent; the external goals.json MUST stay absent.
+ *   - "legacy": the retired external plugin is referenced in a config, or its
+ *     state or exact cache path exists. The historical schema-version-1
+ *     invariant applies.
+ * The managed mode is detected first: its artifact path also contains the
+ * package name, so it must not be misread as the retired external package.
  * Any other combination, including a config that is missing or unreadable, is
- * "unknown" and fails the gate instead of silently assuming the internal mode.
+ * "unknown" and fails the gate instead of silently assuming a mode.
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -25,18 +29,32 @@ const EXTERNAL_GOAL_MARKERS = [
   "allow_goal_execution_from_plan",
 ]
 
+/**
+ * The vendored, Rigel-managed community engine. Its config entry points at the
+ * artifact INSIDE the Rigel state tree (`<stateRoot>/versions/<v>/runtime/vendor/
+ * opencode-goal-plugin/...`), so a `vendor/opencode-goal-plugin` path fragment
+ * distinguishes the MANAGED engine from the retired external package/cache.
+ */
+const MANAGED_GOAL_MARKERS = [
+  "vendor/opencode-goal-plugin",
+]
+
 export const EXTERNAL_GOAL_STATE = ".local/share/opencode-goal-plugin"
 export const EXTERNAL_GOAL_CACHE = ".cache/opencode/packages/@prevalentware/opencode-goal-plugin@latest"
 
 export function readGoalConfig(filePath) {
   let text
   try {
-    if (!fs.statSync(filePath).isFile()) return { readable: false, referenced: false }
+    if (!fs.statSync(filePath).isFile()) return { readable: false, referenced: false, managed: false }
     text = fs.readFileSync(filePath, "utf8")
   } catch {
-    return { readable: false, referenced: false }
+    return { readable: false, referenced: false, managed: false }
   }
-  return { readable: true, referenced: EXTERNAL_GOAL_MARKERS.some((marker) => text.includes(marker)) }
+  return {
+    readable: true,
+    referenced: EXTERNAL_GOAL_MARKERS.some((marker) => text.includes(marker)),
+    managed: MANAGED_GOAL_MARKERS.some((marker) => text.includes(marker)),
+  }
 }
 
 export function internalGoalEnabled(omoConfigPath) {
@@ -64,6 +82,7 @@ export function detectGoalMode(home, options = {}) {
   const configPaths = ["opencode.json", "tui.json", "cli.json"].map((name) => path.join(cfgDir, name))
   const configs = configPaths.map((file) => ({ file, ...readGoalConfig(file) }))
   const referenced = configs.filter((entry) => entry.referenced).map((entry) => entry.file)
+  const managed = configs.filter((entry) => entry.managed).map((entry) => entry.file)
   const unreadable = configs.filter((entry) => !entry.readable).map((entry) => entry.file)
   const stateDirs = options.stateDirs ?? [
     path.join(home, EXTERNAL_GOAL_STATE),
@@ -71,14 +90,20 @@ export function detectGoalMode(home, options = {}) {
   ]
   const presentDirs = stateDirs.filter((dir) => fs.existsSync(dir))
   const enabled = internalGoalEnabled(options.omoConfigPath ?? path.join(home, ".omo/omo.jsonc"))
+  // PR B: the vendored, Rigel-managed engine owns the Goal. It is checked before
+  // the legacy/external detection because its path also contains the package
+  // name; the retired external cache/state must stay absent.
+  if (managed.length > 0) {
+    return { mode: "managed", referenced, managed, presentDirs, unreadable, internalGoalEnabled: enabled }
+  }
   if (referenced.length > 0 || presentDirs.length > 0) {
-    return { mode: "legacy", referenced, presentDirs, unreadable, internalGoalEnabled: enabled }
+    return { mode: "legacy", referenced, managed, presentDirs, unreadable, internalGoalEnabled: enabled }
   }
   if (unreadable.length > 0) {
-    return { mode: "unknown", referenced, presentDirs, unreadable, internalGoalEnabled: enabled, reason: "external goal removal cannot be asserted: a config file is missing or unreadable" }
+    return { mode: "unknown", referenced, managed, presentDirs, unreadable, internalGoalEnabled: enabled, reason: "external goal removal cannot be asserted: a config file is missing or unreadable" }
   }
-  if (enabled) return { mode: "internal", referenced, presentDirs, unreadable, internalGoalEnabled: true }
-  return { mode: "unknown", referenced, presentDirs, unreadable, internalGoalEnabled: false, reason: "internal goal.enabled is not true" }
+  if (enabled) return { mode: "internal", referenced, managed, presentDirs, unreadable, internalGoalEnabled: true }
+  return { mode: "unknown", referenced, managed, presentDirs, unreadable, internalGoalEnabled: false, reason: "internal goal.enabled is not true" }
 }
 
 export function probeGoalState(home, goalsFile) {
@@ -95,6 +120,14 @@ export function probeGoalState(home, goalsFile) {
 }
 
 export function verifyGoalInvariant(mode, before, after) {
+  if (mode === "managed") {
+    // The vendored engine's state lives inside the Rigel state tree, never at the
+    // retired V1 path. The invariant is that the V1 goals.json stays absent.
+    if (before.present || after.present) {
+      return { pass: false, reason: `managed goal mode requires the retired V1 goals.json absent; before.present=${before.present} after.present=${after.present}` }
+    }
+    return { pass: true, reason: "managed goal mode: vendored engine registered; V1 goals.json absent before and after (invariant held)" }
+  }
   if (mode === "internal") {
     if (before.present || after.present) {
       return { pass: false, reason: `internal goal mode requires the external goals.json absent; before.present=${before.present} after.present=${after.present}` }

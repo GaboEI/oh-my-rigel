@@ -301,7 +301,7 @@ describe("#given an injected file system", () => {
 })
 
 describe("#given a resolved native plugin config view", () => {
-  test("#when gates are derived #then they mirror the config keys and permit interactive_bash unless disabled", () => {
+  test("#when gates are derived #then they mirror the config keys except the quarantined goal", () => {
     // given
     const off = { monitor: undefined, goal: { enabled: false }, experimental: { task_system: false }, disabled: { tools: [] } }
     // when
@@ -309,19 +309,30 @@ describe("#given a resolved native plugin config view", () => {
     // then
     expect(offGates).toEqual({ monitor: false, goal: false, task_system: false, team_mode: false, interactive_bash: true, hashline_edit: false, preemptive_compaction: false })
 
-    // given
+    // given: `goal.enabled` is present and true, but the inherited Goal is
+    // quarantined, so the derived gate is still false.
     const on = { monitor: { enabled: true }, goal: { enabled: true }, experimental: { task_system: true }, team_mode: { enabled: true }, disabled: { tools: [] } }
     // when
     const onGates = deriveNativeGates(on)
     // then
-    expect(onGates).toEqual({ monitor: true, goal: true, task_system: true, team_mode: true, interactive_bash: true, hashline_edit: false, preemptive_compaction: false })
+    expect(onGates).toEqual({ monitor: true, goal: false, task_system: true, team_mode: true, interactive_bash: true, hashline_edit: false, preemptive_compaction: false })
 
     // given
     const disabled = { monitor: { enabled: true }, goal: { enabled: true }, experimental: { task_system: true }, disabled: { tools: ["interactive_bash"] } }
     // when
     const disabledGates = deriveNativeGates(disabled)
     // then
-    expect(disabledGates).toEqual({ monitor: true, goal: true, task_system: true, team_mode: false, interactive_bash: false, hashline_edit: false, preemptive_compaction: false })
+    expect(disabledGates).toEqual({ monitor: true, goal: false, task_system: true, team_mode: false, interactive_bash: false, hashline_edit: false, preemptive_compaction: false })
+  })
+
+  test("#when goal.enabled is true or a manifest forces gates.goal #then the quarantine keeps both sides false", () => {
+    // given: config enables the inherited Goal and a hand-edited manifest forces
+    // the gate; the quarantine authority must neutralize both (N8 + N9).
+    const view = { goal: { enabled: true }, disabled: { tools: [] } }
+    const manipulatedManifest = { metadata: { global: { gates: { goal: true } } } }
+    // when / then
+    expect(deriveNativeGates(view).goal).toBe(false)
+    expect(readNativeGates(manipulatedManifest).goal).toBe(false)
   })
 
   test("#when preemptive_compaction is set #then the gate is on and the threshold is projected", () => {

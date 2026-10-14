@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test"
 
-import { FAMILIES, scenarios } from "./differential-oracle/registry.mjs"
+import { FAMILIES, QUARANTINED_ENTRYPOINT_FAMILIES, scenarios } from "./differential-oracle/registry.mjs"
 import { runMatrix, runMutations } from "./differential-oracle/harness.mjs"
 import { COMPARATORS, compare, deepEqual, normalize } from "./differential-oracle/normalize.mjs"
 import { loadV1Oracle } from "./test-support/v1-oracle.mjs"
+
+// Families whose runtime entrypoint is quarantined in V2 (the inherited Goal);
+// their parity is asserted at the helper level, not end-to-end. See registry.mjs.
+const ENTRYPOINT_FAMILIES = FAMILIES.filter((family) => !QUARANTINED_ENTRYPOINT_FAMILIES.includes(family))
 
 // Run the whole matrix once. Each scenario imports the REAL V1 owner and the
 // native V2 mirror; a degraded V1 oracle surfaces as BLOCKED and fails below.
@@ -137,12 +141,12 @@ describe("Differential oracle differential oracle: integration coverage", () => 
 })
 
 describe("Differential oracle differential oracle: full-plugin-entrypoint proof", () => {
-  test("#given the entrypoint scenarios #when grouped by family #then all nine families are covered end-to-end", () => {
+  test("#given the entrypoint scenarios #when grouped by family #then every non-quarantined family is covered end-to-end", () => {
     // given
     const families = new Set(scenarios.filter((scenario) => scenario.entrypoint).map((scenario) => scenario.family))
 
     // when / then
-    for (const family of FAMILIES) {
+    for (const family of ENTRYPOINT_FAMILIES) {
       expect(families.has(family), `family ${family} lacks a full-plugin-entrypoint scenario`).toBe(true)
     }
   })
@@ -152,7 +156,7 @@ describe("Differential oracle differential oracle: full-plugin-entrypoint proof"
     const entrypoints = scenarios.filter((scenario) => scenario.entrypoint)
 
     // when / then
-    expect(entrypoints.length).toBeGreaterThanOrEqual(FAMILIES.length)
+    expect(entrypoints.length).toBeGreaterThanOrEqual(ENTRYPOINT_FAMILIES.length)
     for (const scenario of entrypoints) {
       expect(typeof scenario.loadV2, `${scenario.id} loadV2`).toBe("function")
       expect(scenario.mutation?.onDisk?.find, `${scenario.id} on-disk mutation seam`).toBeTruthy()
@@ -166,7 +170,7 @@ describe("Differential oracle differential oracle: full-plugin-entrypoint proof"
     const results = matrix.filter((result) => ids.has(result.id))
 
     // when / then
-    expect(results.length).toBeGreaterThanOrEqual(FAMILIES.length)
+    expect(results.length).toBeGreaterThanOrEqual(ENTRYPOINT_FAMILIES.length)
     for (const result of results) {
       expect(result.verdict, `${result.id}: ${failedRows(result).join(", ")}`).toBe("PASS")
     }
@@ -178,7 +182,7 @@ describe("Differential oracle differential oracle: full-plugin-entrypoint proof"
     const results = mutations.filter((result) => ids.has(result.id))
 
     // when / then
-    expect(results.length).toBeGreaterThanOrEqual(FAMILIES.length)
+    expect(results.length).toBeGreaterThanOrEqual(ENTRYPOINT_FAMILIES.length)
     for (const result of results) {
       expect(result.verdict, `${result.id}: ${result.reason}`).toBe("RED")
     }

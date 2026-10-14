@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 
+import { deriveNativeGates } from "./opencode/rigel-v2-native-config.mjs"
+
 const root = dirname(fileURLToPath(import.meta.url))
 const readJson = (relativePath) => JSON.parse(readFileSync(join(root, relativePath), "utf8"))
 const fail = (message) => {
@@ -25,8 +27,13 @@ if (profile.websearch?.provider !== "tavily") fail("websearch must use Tavily")
 if (!profile.disabled_mcps?.includes("context7")) fail("OmO Context7 must be disabled")
 if (profile.browser_automation_engine?.provider !== "playwright") fail("Playwright must be canonical")
 if (profile.default_mode?.ultrawork !== true) fail("Ultrawork must be enabled by default through OmO's native setting")
-if (profile.goal?.enabled !== true) fail("OmO root Goal must be enabled for internal ownership")
-if (profile.disabled_hooks?.includes("goal")) fail("OmO goal hook must be enabled for internal ownership")
+// PR B: the inherited Goal is quarantined and the vendored community engine is
+// its sole owner. The `goal.enabled` key stays present in the profile (kept
+// byte-identical) but is inert and non-reactivant: the derived gate must be
+// false, so a stale `true` can never bring the legacy surface back.
+if (profile.goal?.enabled !== true) fail("the gabo profile must keep the inert legacy goal.enabled key (documented; not a reactivation switch)")
+if (deriveNativeGates(profile).goal !== false) fail("the inherited Goal must be quarantined: deriveNativeGates(profile).goal must be false")
+if (!existsSync(join(root, "vendor/opencode-goal-plugin/pin.json"))) fail("the pinned community goal vendor must be present as the Goal owner")
 // T21 (2026-10-06): compaction-context-injector is implemented natively and is
 // always-on like V1, so it must no longer sit in disabled_hooks. T22 (2026-10-06)
 // graduates compaction-todo-preserver and todo-continuation-enforcer natively, so
