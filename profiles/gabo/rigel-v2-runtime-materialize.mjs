@@ -30,6 +30,7 @@ import {
   registerCompanionCliPlugin,
   resolveNotificationOptions,
   resolveProfileOpenCodeBlock,
+  resolveSidebarOptions,
 } from "./notification-activation-config.mjs"
 
 function readJson(file) {
@@ -135,6 +136,23 @@ export function resolveRuntimeNotificationOptions(profileFile, env = process.env
 }
 
 /**
+ * Resolve the sidebar feature flag from the same `[opencode]` block the
+ * notification route reads (env override `RIGEL_V2_TUI_SIDEBAR_ENABLED` for
+ * canary). Contract: ON unless the block disables it.
+ */
+export function resolveRuntimeSidebarOptions(profileFile, env = process.env) {
+  let profileDocument = {}
+  if (profileFile !== null && fs.existsSync(profileFile)) {
+    profileDocument = parseJsonc(fs.readFileSync(profileFile, "utf8"))
+  }
+  const openCodeBlock = resolveProfileOpenCodeBlock(profileDocument, env.OMO_PROFILE)
+  const enabledOverride = env.RIGEL_V2_TUI_SIDEBAR_ENABLED === undefined
+    ? undefined
+    : env.RIGEL_V2_TUI_SIDEBAR_ENABLED === "1"
+  return resolveSidebarOptions({ profile: openCodeBlock, enabledOverride })
+}
+
+/**
  * The explicit user overrides for the community goal engine, read from the
  * Rigel-managed profile's `goal_engine` block. This is the normal, non-vendor
  * way to pass any supported engine option; absent means "Rigel defaults".
@@ -192,7 +210,21 @@ export function materializeNativeRuntime({
   fs.writeFileSync(path.join(runtimeDir, "prompts/ultrawork-combo-banner.md"), `${comboBanner}\n`, { mode: 0o600 })
   fs.copyFileSync(agentManifestPath, path.join(runtimeDir, "rigel-v2-native-agent-manifest.mjs"))
   const runtimeExports = { ".": "./index.js", "./tui": `./${cliEntryName}` }
-  fs.writeFileSync(path.join(runtimeDir, "package.json"), `${JSON.stringify({ name: "rigel-v2-native", type: "module", exports: runtimeExports }, null, 2)}\n`, { mode: 0o600 })
+  // The official V2 CLI-plugin contract: the host provides the OpenTUI peers to
+  // a plugin that renders nodes ("add OpenTUI peers when the plugin renders
+  // JSX"). Declared as peerDependencies so the sidebar shares the host's single
+  // Solid instance; a host that does not expose them makes the surface degrade
+  // (receipt-only) instead of failing the whole companion entry.
+  const runtimePeerDependencies = {
+    "@opentui/core": ">=0.5.8",
+    "@opentui/solid": ">=0.5.8",
+    "solid-js": ">=1.9.0",
+  }
+  fs.writeFileSync(
+    path.join(runtimeDir, "package.json"),
+    `${JSON.stringify({ name: "rigel-v2-native", type: "module", exports: runtimeExports, peerDependencies: runtimePeerDependencies }, null, 2)}\n`,
+    { mode: 0o600 },
+  )
   for (const file of ["index.js", cliEntryName, ...runtimeModules, "rigel-v2-native-agent-manifest.mjs", ...promptFiles.map(([name]) => `prompts/${name}`), "prompts/ultrawork-combo-banner.md"]) {
     const target = path.join(runtimeDir, file)
     if (fs.existsSync(target)) fs.chmodSync(target, 0o600)
@@ -233,12 +265,14 @@ export function materializeNativeRuntime({
   writeTextAtomic(configFile, `${JSON.stringify(candidate, null, 2)}\n`, { mode: 0o600 })
 
   const notificationOptions = resolveRuntimeNotificationOptions(profileFile, env)
+  const sidebarOptions = resolveRuntimeSidebarOptions(profileFile, env)
   const cliConfigFile = path.join(path.dirname(configFile), "cli.json")
   const cliBefore = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
   const cliCompanion = registerCompanionCliPlugin(cliBefore, {
     runtimeDir,
     familyRoot: familyRoot ?? runtimeDir,
     options: notificationOptions,
+    sidebarOptions,
     notificationEnabled: notificationOptions.enabled,
   })
   const cliAfter = registerGoalCliEntry(cliCompanion, { tuiShimDir: goalTuiShimDir })
