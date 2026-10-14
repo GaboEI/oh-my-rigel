@@ -139,22 +139,6 @@ export function resolveNotificationOptions({ profile, externalNotifierDetected =
 }
 
 /**
- * Resolve the sidebar feature flag from the effective OmO profile.
- *
- * Contract (V1 parity, `V2_MIGRATION_INVENTORY.md`): the sidebar is ON unless
- * the profile's `tui.sidebar` block explicitly disables it (`enabled: false`).
- * `enabledOverride` is the QA/env seam and wins when boolean.
- */
-export function resolveSidebarOptions({ profile, enabledOverride } = {}) {
-  const record = profile && typeof profile === "object" ? profile : {}
-  const tui = record.tui && typeof record.tui === "object" ? record.tui : undefined
-  const sidebar = tui && typeof tui.sidebar === "object" ? tui.sidebar : undefined
-  let enabled = !(sidebar && sidebar.enabled === false)
-  if (typeof enabledOverride === "boolean") enabled = enabledOverride
-  return { enabled }
-}
-
-/**
  * A path is owned by the Rigel CLI-plugin family when it equals the stable
  * family root or sits underneath it. The family root is the version-independent
  * Rigel state directory, so a version transition (which moves the runtime from
@@ -222,15 +206,10 @@ export function registerNotificationCliPlugin(cliConfig, { runtimeDir, familyRoo
  * survives; foreign plugins keep their position; the host builtin disable marker
  * is present if and only if the notification surface is enabled. Idempotent.
  */
-export function registerCompanionCliPlugin(cliConfig, { runtimeDir, familyRoot = runtimeDir, options, sidebarOptions, notificationEnabled = false, disableBuiltin = true } = {}) {
+export function registerCompanionCliPlugin(cliConfig, { runtimeDir, familyRoot = runtimeDir, options, notificationEnabled = false, disableBuiltin = true } = {}) {
   const next = { ...(cliConfig && typeof cliConfig === "object" ? cliConfig : {}) }
   const current = Array.isArray(next.plugins) ? next.plugins : []
-  // `options.tui.sidebar` MUST survive the idempotent family-entry rebuild: the
-  // entry's `options` is the only route that makes `context.options.tui.sidebar`
-  // reach the companion CLI composer, which composes the Models/Agents panel.
-  // Absent `sidebarOptions` keeps the V1 contract (ON unless explicitly false).
-  const sidebar = sidebarOptions && typeof sidebarOptions === "object" ? sidebarOptions : { enabled: true }
-  const entry = { package: runtimeDir, options: { notification: options, tui: { sidebar } } }
+  const entry = { package: runtimeDir, options: { notification: options } }
   const plugins = []
   let placed = false
   for (const candidate of current) {
