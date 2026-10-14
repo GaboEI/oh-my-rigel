@@ -8,19 +8,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SIDEBAR_CLI_ID, SIDEBAR_SLOT_APPEND, createSidebarCliSurface, resolveSidebarSnapshotPath } from "./rigel-v2-native-cli-sidebar.mjs"
-import { nodeText } from "./rigel-v2-sidebar-node.mjs"
-
-// A stub OpenTUI Solid runtime that records the element tree, so the render's
-// SHAPE (a host node, never text/IR) can be asserted without a live renderer.
-const stubSolid = {
-  createElement: (tag) => ({ tag, props: {}, children: [] }),
-  setProp: (node, name, value) => {
-    node.props[name] = value
-  },
-  insert: (parent, child) => {
-    parent.children.push(child)
-  },
-}
 
 function createFakeContext({ options, directory, renderer = { isDestroyed: false }, sessions = [], backgroundTasks, roster, withDataOn = true } = {}) {
   const handlers = new Map()
@@ -80,7 +67,6 @@ describe("createSidebarCliSurface", () => {
       stateRoot,
       log: (entry) => logs.push(entry),
       now: () => clock,
-      solid: stubSolid,
       ...overrides,
     }).setup(fake.context)
   }
@@ -170,43 +156,18 @@ describe("createSidebarCliSurface", () => {
       expect(typeof receipt.viewKey).toBe("string")
     })
 
-    test("#then the slot render returns a materialized host node carrying the view", () => {
+    test("#then the slot render returns the plain view text", () => {
       const fake = createFakeContext({ options: {}, directory, sessions: [{ id: "ses-1", agent: "atlas", status: "running" }] })
       build(fake)
-      const rendered = fake.slotCalls[0].render({ sessionID: "ses-1" })
-
-      // A host node, never text and never the raw IR array: the V2 host mounts
-      // the slot; a string or a `{kind}` IR marker is not mountable.
-      expect(typeof rendered).not.toBe("string")
-      expect(Array.isArray(rendered)).toBe(false)
-      expect(typeof rendered.tag).toBe("string")
-      expect(rendered.kind).toBeUndefined()
-      expect(nodeText(rendered)).toContain("atlas running")
-      expect(nodeText(rendered)).toContain("Agents")
+      const rendered = fake.slotCalls[0].render()
+      expect(rendered).toContain("atlas running")
+      expect(rendered).toContain("Agents")
     })
 
-    test("#then an idle host renders the empty roster notice as a node", () => {
+    test("#then an idle host renders the empty roster notice", () => {
       const fake = createFakeContext({ options: {}, directory })
       build(fake)
-      const rendered = fake.slotCalls[0].render({ sessionID: "none" })
-
-      expect(typeof rendered).not.toBe("string")
-      expect(nodeText(rendered)).toContain("No configured models")
-    })
-
-    test("#given a solid runtime that throws #then render rethrows instead of hiding the sidebar", () => {
-      const throwingSolid = {
-        createElement: () => {
-          throw new Error("renderer exploded")
-        },
-        setProp: () => {},
-        insert: () => {},
-      }
-      const fake = createFakeContext({ options: {}, directory })
-      build(fake, { solid: throwingSolid })
-
-      expect(() => fake.slotCalls[0].render({ sessionID: "ses-1" })).toThrow("renderer exploded")
-      expect(logs.some((entry) => entry.event === "render-failed")).toBe(true)
+      expect(fake.slotCalls[0].render()).toBe("No configured models")
     })
   })
 
