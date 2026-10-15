@@ -108,4 +108,34 @@ describe("#given the shared-pool skill delivery", () => {
       expect(resolvedTarget(home, entry.name)).toBe(fs.realpathSync(entry.source))
     }
   })
+
+  test("#when a managed link's source root moved #then Rigel relinks it and never rewrites a user entry", () => {
+    const home = makeHome()
+    // A prior Rigel install recorded a managed link at a source root that no longer exists.
+    const name = "tui-design"
+    const movedSource = path.join(home, "old-checkout", "profiles", "gabo", "skills", name)
+    fs.mkdirSync(path.join(home, ".local", "share", "oh-my-rigel"), { recursive: true })
+    fs.mkdirSync(skillsRoot(home), { recursive: true })
+    fs.symlinkSync(movedSource, path.join(skillsRoot(home), name), "dir")
+    fs.writeFileSync(
+      path.join(home, ".local", "share", "oh-my-rigel", "skills-v2.json"),
+      `${JSON.stringify({ generatedAt: "2026-10-15T00:00:00.000Z", discoveryRoot: skillsRoot(home), managed: [{ name, source: movedSource, kind: "rigel" }], preserved: [] }, null, 2)}\n`,
+    )
+    // A separate user-owned directory must never be touched by the relink pass.
+    const userName = "juez-repo"
+    const userDir = path.join(skillsRoot(home), userName)
+    fs.mkdirSync(userDir, { recursive: true })
+    fs.writeFileSync(path.join(userDir, "SKILL.md"), "user body\n")
+
+    runMaterialize(home)
+    const state = readState(home)
+
+    const relinked = state.managed.find((entry) => entry.name === name)
+    expect(relinked?.kind).toBe("rigel")
+    expect(resolvedTarget(home, name)).toBe(fs.realpathSync(path.join(repoRoot, "profiles/gabo/skills", name)))
+
+    expect(state.preserved).toContain(userName)
+    expect(state.managed.some((entry) => entry.name === userName)).toBe(false)
+    expect(fs.readFileSync(path.join(userDir, "SKILL.md"), "utf8")).toBe("user body\n")
+  })
 })

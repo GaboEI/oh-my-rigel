@@ -67,42 +67,71 @@ function link(source, target) {
   fs.symlinkSync(source, target, "dir")
 }
 
+/** Prior manifest (if any): name -> the source this profile last recorded for it. */
+function previousManagedSources() {
+  try {
+    const prior = JSON.parse(fs.readFileSync(stateFile, "utf8"))
+    const map = new Map()
+    for (const entry of Array.isArray(prior.managed) ? prior.managed : []) {
+      if (entry && typeof entry.name === "string" && typeof entry.source === "string") map.set(entry.name, entry.source)
+    }
+    return map
+  } catch {
+    return new Map()
+  }
+}
+function linkText(candidate) {
+  try { return fs.readlinkSync(candidate) } catch { return null }
+}
+
+/**
+ * Deliver one name into the discovery root. An absent target is linked; a target
+ * that already resolves to `source` is managed; a target that is a symlink still
+ * pointing at the source THIS profile previously recorded (proof Rigel created
+ * it) is re-pointed to the current `source`; anything else - including every
+ * non-symlink - is a user entry and is preserved untouched. A user-owned path is
+ * never removed or rewritten.
+ */
+function deliverName({ name, source, kind, target, previousManaged, managed, preserved, linkedTargets }) {
+  if (!entryExists(target)) {
+    link(source, target)
+    managed.push({ name, source, kind })
+    linkedTargets.add(name)
+    return
+  }
+  if (pointsAt(target, source)) {
+    managed.push({ name, source, kind })
+    linkedTargets.add(name)
+    return
+  }
+  const recorded = previousManaged.get(name)
+  if (recorded !== undefined && recorded === linkText(target)) {
+    fs.rmSync(target, { force: true })
+    link(source, target)
+    managed.push({ name, source, kind })
+    linkedTargets.add(name)
+    return
+  }
+  preserved.push(name)
+}
+
 fs.mkdirSync(targetRoot, { recursive: true, mode: 0o700 })
 const managed = []
 const preserved = []
 const linkedTargets = new Set()
+const previousManaged = previousManagedSources()
 
 // Keep the user's pre-Rigel skill inventory usable in OpenCode V2.  These are
 // deliberately *not* copied into the fork: their source remains user-owned.
 for (const name of listSkills(legacySkills)) {
-  const source = path.join(legacySkills, name)
-  const target = path.join(targetRoot, name)
-  if (entryExists(target)) {
-    if (pointsAt(target, source)) {
-      managed.push({ name, source, kind: "legacy-bridge" })
-      linkedTargets.add(name)
-    } else preserved.push(name)
-    continue
-  }
-  link(source, target)
-  managed.push({ name, source, kind: "legacy-bridge" })
-  linkedTargets.add(name)
+  deliverName({ name, source: path.join(legacySkills, name), kind: "legacy-bridge", target: path.join(targetRoot, name), previousManaged, managed, preserved, linkedTargets })
 }
 
 // Rigel skills fill the remaining names.  A user skill with the same name
 // always wins, which avoids silently changing an established workflow.
 for (const name of listSkills(rigelSkills)) {
   if (linkedTargets.has(name)) continue
-  const source = path.join(rigelSkills, name)
-  const target = path.join(targetRoot, name)
-  if (entryExists(target)) {
-    if (pointsAt(target, source)) managed.push({ name, source, kind: "rigel" })
-    else preserved.push(name)
-    continue
-  }
-  link(source, target)
-  managed.push({ name, source, kind: "rigel" })
-  linkedTargets.add(name)
+  deliverName({ name, source: path.join(rigelSkills, name), kind: "rigel", target: path.join(targetRoot, name), previousManaged, managed, preserved, linkedTargets })
 }
 
 // The cross-harness shared pool. Only the `skillPolicy`-authorized names are
@@ -113,16 +142,7 @@ const authorized = authorizedSharedSkills()
 for (const name of listSkills(sharedSkills)) {
   if (!authorized.has(name)) continue
   if (linkedTargets.has(name)) continue
-  const source = path.join(sharedSkills, name)
-  const target = path.join(targetRoot, name)
-  if (entryExists(target)) {
-    if (pointsAt(target, source)) managed.push({ name, source, kind: "shared" })
-    else preserved.push(name)
-    continue
-  }
-  link(source, target)
-  managed.push({ name, source, kind: "shared" })
-  linkedTargets.add(name)
+  deliverName({ name, source: path.join(sharedSkills, name), kind: "shared", target: path.join(targetRoot, name), previousManaged, managed, preserved, linkedTargets })
 }
 
 fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 })
