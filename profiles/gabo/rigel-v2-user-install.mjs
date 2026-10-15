@@ -609,11 +609,13 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
     versionDigests,
     migrationLog: previousState?.migrationLog ?? [],
     rollbackLog: previousState?.rollbackLog ?? [],
-    // C5/M5: only an install that CREATED the ast-grep runtime dir owns it, so
-    // uninstall removes it only when ownership is proven. A tree that already
-    // existed (for example a user's pre-Rigel sg) is never claimed, and
-    // ownership is carried across reinstall/upgrade.
-    astGrepOwnedDir: astGrepExistedBefore ? (previousState?.astGrepOwnedDir ?? null) : astGrepDir,
+    // C5/M5: a BOOLEAN ownership proof only - never a filesystem path. Uninstall
+    // recomputes the expected directory from `<home>` itself, so an edited or
+    // corrupted install-state.json can never redirect the removal outside the
+    // Rigel ast-grep dir. Only an install that CREATED the tree owns it; ownership
+    // is carried across reinstall/upgrade, and a tree that already existed (a
+    // user's pre-Rigel sg) is never claimed.
+    astGrepOwned: astGrepExistedBefore ? previousState?.astGrepOwned === true : true,
   }
   if (migrating && previousState) {
     base.migrationLog = [...base.migrationLog, { from: previousState.version, to: version, at: base.updatedAt }]
@@ -807,15 +809,18 @@ function main() {
             staged.push({ abs, backup })
           }
         }
-        // C5/M5: remove the ast-grep runtime dir ONLY when this install recorded
-        // ownership of it, so a user's pre-Rigel sg is never deleted. Staged with
-        // versions/bin so a failed uninstall restores it byte-identically.
-        const ownedSgDir = previousState?.astGrepOwnedDir
-        const ownedSg = typeof ownedSgDir === "string" && ownedSgDir.length > 0 && fs.existsSync(ownedSgDir)
+        // C5/M5: ownership is proven by a BOOLEAN in the state; the target is
+        // RECOMPUTED here from `<home>` and must stay strictly inside the Rigel
+        // ast-grep dir. The persisted state never supplies the path, so an edited
+        // or corrupted install-state.json cannot redirect the removal outside it.
+        // Staged with versions/bin so a failed uninstall restores it byte-identically.
+        const expectedSgDir = astGrepUserRuntimeDir(paths.home)
+        const sgRoot = path.join(paths.home, ".omo", "runtime", "ast-grep")
+        const ownedSg = previousState?.astGrepOwned === true && under(canonicalize(expectedSgDir), canonicalize(sgRoot)) && fs.existsSync(expectedSgDir)
         if (ownedSg) {
-          const backup = `${ownedSgDir}.txn-${crypto.randomBytes(4).toString("hex")}`
-          fs.renameSync(ownedSgDir, backup)
-          staged.push({ abs: ownedSgDir, backup })
+          const backup = `${expectedSgDir}.txn-${crypto.randomBytes(4).toString("hex")}`
+          fs.renameSync(expectedSgDir, backup)
+          staged.push({ abs: expectedSgDir, backup })
         }
         txn.failAt("uninstall:after-versions")
         const skills = removeManagedSkills(paths.home)

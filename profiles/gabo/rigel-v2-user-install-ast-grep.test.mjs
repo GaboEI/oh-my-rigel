@@ -221,11 +221,58 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       const installed = runInstall(base, { RIGEL_V2_SG_PROVISION: "0" })
       expect(installed.result.status, installed.result.stderr || installed.result.stdout).toBe(0)
       const state = JSON.parse(fs.readFileSync(path.join(base, "state", "install-state.json"), "utf8"))
-      expect(state.astGrepOwnedDir ?? null).toBe(null)
+      expect(state.astGrepOwned ?? false).toBe(false)
 
       const ok = runUninstall(base)
       expect(ok.status, ok.stderr || ok.stdout).toBe(0)
       expect(fs.existsSync(userBinary)).toBe(true)
+    })
+  })
+
+  test("#when install-state names an sg path outside the Rigel dir #then uninstall never touches it", () => {
+    withBase((base) => {
+      const asset = fixtureAsset(base)
+      const installed = runInstall(base, { RIGEL_V2_SG_ASSET_FILE: asset.file, RIGEL_V2_SG_ASSET_SHA256: asset.sha256 })
+      expect(installed.result.status, installed.result.stderr || installed.result.stdout).toBe(0)
+
+      // A sentinel OUTSIDE the home that a tampered state must never redirect the
+      // uninstall onto: the path must come from the installer, never the state.
+      const outside = path.join(base, "outside-ast-grep")
+      fs.mkdirSync(outside, { recursive: true })
+      fs.writeFileSync(path.join(outside, "marker"), "keep me\n")
+      const statePath = path.join(base, "state", "install-state.json")
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"))
+      state.astGrepOwnedDir = outside
+      fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`)
+
+      const ok = runUninstall(base)
+      expect(ok.status, ok.stderr || ok.stdout).toBe(0)
+      expect(fs.readFileSync(path.join(outside, "marker"), "utf8")).toBe("keep me\n")
+      // The real, owned directory is still removed from the recomputed path.
+      expect(fs.existsSync(astGrepUserRuntimeDir(installed.home))).toBe(false)
+    })
+  })
+
+  test("#when install-state carries a traversal-like sg path #then uninstall stays inside the Rigel dir", () => {
+    withBase((base) => {
+      const asset = fixtureAsset(base)
+      const installed = runInstall(base, { RIGEL_V2_SG_ASSET_FILE: asset.file, RIGEL_V2_SG_ASSET_SHA256: asset.sha256 })
+      expect(installed.result.status, installed.result.stderr || installed.result.stdout).toBe(0)
+
+      const home = installed.home
+      const sentinel = path.join(home, ".omo", "runtime", "SENTINEL")
+      fs.mkdirSync(sentinel, { recursive: true })
+      fs.writeFileSync(path.join(sentinel, "marker"), "keep me\n")
+      const statePath = path.join(base, "state", "install-state.json")
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"))
+      // A raw traversal-like value that would escape the ast-grep dir if resolved.
+      state.astGrepOwnedDir = `${astGrepUserRuntimeDir(home)}/../../SENTINEL`
+      fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`)
+
+      const ok = runUninstall(base)
+      expect(ok.status, ok.stderr || ok.stdout).toBe(0)
+      expect(fs.readFileSync(path.join(sentinel, "marker"), "utf8")).toBe("keep me\n")
+      expect(fs.existsSync(astGrepUserRuntimeDir(home))).toBe(false)
     })
   })
 })
