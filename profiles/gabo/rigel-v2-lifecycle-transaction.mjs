@@ -100,6 +100,7 @@ export function beginLifecycleTransaction({ files }) {
   const snapshot = snapshotFiles(files)
   const createdDirs = []
   const replacedDirs = []
+  const snapshotDirs = []
   let settled = false
   return {
     failAt,
@@ -122,9 +123,30 @@ export function beginLifecycleTransaction({ files }) {
       fs.renameSync(dir, backup)
       replacedDirs.push({ dir, backup })
     },
+    /**
+     * Snapshot a directory that already exists so a mutation of its contents can
+     * be undone byte-identically. Unlike {@link trackReplacedDir} the live tree is
+     * NOT moved aside - the caller keeps using it during the transaction - so a
+     * copy is taken instead, and on rollback the current tree is removed and the
+     * copy is renamed back into place (preserving the copied bytes and modes). On
+     * commit the copy is discarded. A directory that does not exist is tracked as
+     * created, so a fresh install still removes it on rollback.
+     */
+    trackSnapshotDir(dir) {
+      if (!fs.existsSync(dir)) {
+        createdDirs.push(dir)
+        return
+      }
+      const backup = `${dir}.txn-snap-${crypto.randomBytes(6).toString("hex")}`
+      fs.cpSync(dir, backup, { recursive: true, force: true })
+      snapshotDirs.push({ dir, backup })
+    },
     commit() {
       settled = true
       for (const { backup } of replacedDirs) {
+        try { fs.rmSync(backup, { recursive: true, force: true }) } catch { /* best-effort */ }
+      }
+      for (const { backup } of snapshotDirs) {
         try { fs.rmSync(backup, { recursive: true, force: true }) } catch { /* best-effort */ }
       }
     },
@@ -136,6 +158,10 @@ export function beginLifecycleTransaction({ files }) {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
       }
       for (const { dir, backup } of [...replacedDirs].reverse()) {
+        try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+        try { fs.renameSync(backup, dir) } catch { /* best-effort */ }
+      }
+      for (const { dir, backup } of [...snapshotDirs].reverse()) {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
         try { fs.renameSync(backup, dir) } catch { /* best-effort */ }
       }

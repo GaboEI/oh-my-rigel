@@ -64,11 +64,12 @@ function makeBase() {
   return base
 }
 
-function fixtureAsset(base) {
-  const zip = storeZip(ZIP_ENTRY_NAME, SG_SCRIPT)
-  const file = path.join(base, "sg-asset.zip")
+function fixtureAsset(base, tag = "base") {
+  const scriptText = tag === "base" ? SG_SCRIPT : `#!/bin/sh\necho "ast-grep 0.43.0"\n# ${tag}\n`
+  const zip = storeZip(ZIP_ENTRY_NAME, scriptText)
+  const file = path.join(base, `sg-asset-${tag}.zip`)
   fs.writeFileSync(file, zip)
-  return { file, sha256: crypto.createHash("sha256").update(zip).digest("hex") }
+  return { file, scriptText, sha256: crypto.createHash("sha256").update(zip).digest("hex") }
 }
 
 function installEnv(base, extra = {}) {
@@ -152,6 +153,29 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       })
       expect(result.status).not.toBe(0)
       expect(fs.existsSync(astGrepUserRuntimeDir(home))).toBe(false)
+    })
+  })
+
+  test("#when a reinstall refreshes an existing sg and then fails #then the prior binary is restored byte-identically", () => {
+    withBase((base) => {
+      const first = fixtureAsset(base, "first")
+      const installed = runInstall(base, { RIGEL_V2_SG_ASSET_FILE: first.file, RIGEL_V2_SG_ASSET_SHA256: first.sha256 })
+      expect(installed.result.status, installed.result.stderr || installed.result.stdout).toBe(0)
+      const binary = path.join(astGrepUserRuntimeDir(installed.home), SG_BINARY_NAME)
+      const bytesA = fs.readFileSync(binary)
+      expect(bytesA.toString("utf8")).toBe(first.scriptText)
+
+      // A second install refreshes the same-version sg, then a later step fails:
+      // the transaction must restore the FIRST bytes byte-identically.
+      const second = fixtureAsset(base, "second")
+      const refreshed = runInstall(base, {
+        RIGEL_V2_SG_ASSET_FILE: second.file,
+        RIGEL_V2_SG_ASSET_SHA256: second.sha256,
+        RIGEL_V2_FAIL_AT: "provision:after-astgrep",
+      })
+      expect(refreshed.result.status).not.toBe(0)
+      expect(fs.readFileSync(binary).equals(bytesA)).toBe(true)
+      expect(fs.statSync(binary).mode & 0o111).not.toBe(0)
     })
   })
 })

@@ -496,11 +496,12 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
   txn?.trackCreatedDir(runtimeDir)
   txn?.trackReplacedDir(runtimeDir)
   const agentManifest = generateAgentManifest({ versionDir, home: paths.home, configFile: paths.configFile })
-  // U3: deliver the pinned ast-grep `sg` the newly delivered ast-grep skill
-  // consumes. The runtime dir is tracked BEFORE provisioning so a later failure
-  // in this transaction removes it byte-identically; provisioning itself is
+  // U3/C2: deliver the pinned ast-grep `sg` the newly delivered ast-grep skill
+  // consumes. The runtime dir is SNAPSHOTTED before provisioning: a fresh install
+  // removes it on rollback, and a reinstall/upgrade that refreshes an existing
+  // tree restores the prior bytes byte-identically. Provisioning itself is
   // best-effort and never fails an offline install.
-  txn?.trackCreatedDir(astGrepUserRuntimeDir(paths.home))
+  txn?.trackSnapshotDir(astGrepUserRuntimeDir(paths.home))
   provisionAstGrepSgBestEffort(paths.home)
   txn?.failAt("provision:after-astgrep")
   const result = materializeNativeRuntime({
