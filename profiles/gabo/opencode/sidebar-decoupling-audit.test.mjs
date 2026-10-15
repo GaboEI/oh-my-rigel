@@ -31,6 +31,10 @@ const PROTECTED_SURFACES = [
   "createBtwCliSurface",
 ]
 
+// The composed entry keeps the five protected surfaces and appends the read-only
+// visual panel as a sixth, order-preserving surface.
+const COMPOSED_SURFACES = [...PROTECTED_SURFACES, "createPanelSurface"]
+
 // Name-based on purpose: it must never match `rigel-v2-native.mjs`, whose
 // protected comment mentions `cli-sidebar` without naming a sidebar module.
 const RETIRED_MODULE = /^rigel-v2-.*sidebar.*\.mjs$/
@@ -83,8 +87,8 @@ describe("native sidebar decoupling audit", () => {
   })
 
   describe("#given the composed ./tui entry", () => {
-    test("#then it composes exactly the five protected surfaces in order", () => {
-      expect(composedSurfaceFactories(compositorSource)).toEqual(PROTECTED_SURFACES)
+    test("#then it composes exactly the five protected surfaces plus the read-only panel, in order", () => {
+      expect(composedSurfaceFactories(compositorSource)).toEqual(COMPOSED_SURFACES)
     })
   })
 })

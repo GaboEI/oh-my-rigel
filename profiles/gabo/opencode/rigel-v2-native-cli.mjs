@@ -12,6 +12,8 @@
  *   - `oh-my-rigel.legacy-plugin-notice` legacy plugin-name detection + toast; default-on.
  *   - `oh-my-rigel.native-edition-nudge` one-time native-edition nudge + /native dialog; default-on.
  *   - `oh-my-rigel.task-toast`          task progress/completion toasts; default-on.
+ *   - `oh-my-rigel.btw`                 the /btw side-session picker; default-on.
+ *   - `oh-my-rigel.panel`               the read-only sidebar panel; headless self-skip.
  *
  * A surface that throws during `setup` is logged and skipped; a surface that
  * returns a disposer has it run on plugin dispose in reverse order. A headless
@@ -24,6 +26,7 @@ import { createLegacyNoticeCliSurface } from "./rigel-v2-native-cli-legacy-notic
 import { createNudgeCliSurface } from "./rigel-v2-native-cli-nudge.mjs"
 import { createTaskToastCliSurface } from "./rigel-v2-native-cli-task-toast.mjs"
 import { createBtwCliSurface } from "./rigel-v2-native-cli-btw.mjs"
+import { createPanelSurface } from "./rigel-v2-panel-surface.mjs"
 
 export const CLI_PLUGIN_ID = "oh-my-rigel.cli"
 
@@ -46,6 +49,7 @@ export function createCompanionCliPlugin(overrides = {}) {
         createNudgeCliSurface(overrides.nativeEditionNudge ?? {}),
         createTaskToastCliSurface(overrides.taskToast ?? {}),
         createBtwCliSurface(overrides.btw ?? {}),
+        createPanelSurface(overrides.panel ?? {}),
       ]
       const disposers = []
       for (const surface of surfaces) {
