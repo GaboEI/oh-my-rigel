@@ -26,19 +26,32 @@ const TARGET_AGENTS = new Set([
   "atlas",
 ])
 
+// The V2 host names the shell tool `shell` (V1 named it `bash`); the live
+// surface uses `shell`, so that is the name counted here.
 const DELEGATABLE_WORK_TOOLS = new Set([
   "edit",
   "write",
-  "bash",
+  "shell",
   "read",
   "grep",
   "glob",
 ])
 
+// A tool whose use means another agent now owns the work. Beyond the named
+// delegation tools, the team interface delegates through exactly the actions
+// the lead uses to start and feed a team: create the team (team_create spawns
+// member sessions), send work (team_send_message) and create team tasks
+// (team_task_create). Read-only team queries (team_status, team_list,
+// team_task_list, team_task_get) and lifecycle actions (team_delete,
+// team_shutdown_request/approve/reject) do NOT delegate and are deliberately
+// absent. Authority: docs/guide/team-mode.md.
 const DELEGATION_TOOLS = new Set([
   "task",
   "call_omo_agent",
   "rigel_task",
+  "team_create",
+  "team_send_message",
+  "team_task_create",
 ])
 
 const BUILTIN_LOCATIONS = new Set(["plugin", "builtin"])
@@ -88,7 +101,14 @@ function formatSkillNames(skills, limit) {
   return shown.join(", ") + suffix
 }
 
-/** Byte-exact formatter ported from V1 `formatter.ts`. */
+/**
+ * Formatter ported from V1 `formatter.ts`. The V2 reminder is deliberately
+ * neutral: it names no tool and no single modality, so it cannot push a route
+ * that is unavailable, renamed, or only one of several. It reminds the
+ * orchestrator to reconsider delegation by category, specialist, or team
+ * (naming them only by intent) and defers to the orchestration tools and rules
+ * the agent already has.
+ */
 export function buildCategorySkillReminderMessage(availableSkills) {
   const skills = Array.isArray(availableSkills) ? availableSkills.filter((skill) => skill && typeof skill === "object") : []
   const builtinSkills = skills.filter((skill) => isBuiltinSkill(skill))
@@ -96,9 +116,6 @@ export function buildCategorySkillReminderMessage(availableSkills) {
 
   const builtinText = formatSkillNames(builtinSkills, SKILL_NAME_LIMIT)
   const customText = formatSkillNames(customSkills, SKILL_NAME_LIMIT)
-
-  const exampleSkillName = skillName(customSkills[0]) ?? skillName(builtinSkills[0])
-  const loadSkills = exampleSkillName ? `["${exampleSkillName}"]` : "[]"
 
   const lines = [
     "",
@@ -109,9 +126,7 @@ export function buildCategorySkillReminderMessage(availableSkills) {
     "",
     "> User-installed skills OVERRIDE built-in defaults. ALWAYS prefer YOUR SKILLS when domain matches.",
     "",
-    "```typescript",
-    `task(category=\"visual-engineering\", load_skills=${loadSkills}, run_in_background=true)`,
-    "```",
+    "You have performed several operations directly. Consider delegating through the modality that fits this task (category, specialist, or team, as appropriate), following the available orchestration tools and rules; continuing directly is also valid.",
     "",
   ]
 
