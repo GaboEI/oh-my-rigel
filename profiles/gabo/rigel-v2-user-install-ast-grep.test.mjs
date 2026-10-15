@@ -98,6 +98,17 @@ function runInstall(base, extra = {}) {
   return { result, home }
 }
 
+function runUninstall(base, extra = {}) {
+  const home = path.join(base, "home")
+  const configFile = path.join(base, "xdg", "config", "opencode", "opencode.json")
+  const stateRoot = path.join(base, "state")
+  return spawnSync(
+    "node",
+    [installerPath, "uninstall", "--home", home, "--config", configFile, "--state", stateRoot, "--json"],
+    { cwd: repoRoot, env: installEnv(base, extra), encoding: "utf8", timeout: 300_000 },
+  )
+}
+
 // The fixture cannot execute on a host whose platform differs from the forced
 // linux target (Windows has no `/bin/sh`); inject the probe there only. The
 // resolver is made hermetic: only the provisioned path, no PATH/real-home.
@@ -176,6 +187,45 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       expect(refreshed.result.status).not.toBe(0)
       expect(fs.readFileSync(binary).equals(bytesA)).toBe(true)
       expect(fs.statSync(binary).mode & 0o111).not.toBe(0)
+    })
+  })
+
+  test("#when this install provisioned sg #then uninstall removes it and a failed uninstall restores it", () => {
+    withBase((base) => {
+      const asset = fixtureAsset(base)
+      const installed = runInstall(base, { RIGEL_V2_SG_ASSET_FILE: asset.file, RIGEL_V2_SG_ASSET_SHA256: asset.sha256 })
+      expect(installed.result.status, installed.result.stderr || installed.result.stdout).toBe(0)
+      const sgDir = astGrepUserRuntimeDir(installed.home)
+      const binary = path.join(sgDir, SG_BINARY_NAME)
+      expect(fs.existsSync(binary)).toBe(true)
+      const bytes = fs.readFileSync(binary)
+
+      const failed = runUninstall(base, { RIGEL_V2_FAIL_AT: "uninstall:after-versions" })
+      expect(failed.status).not.toBe(0)
+      expect(fs.readFileSync(binary).equals(bytes)).toBe(true)
+
+      const ok = runUninstall(base)
+      expect(ok.status, ok.stderr || ok.stdout).toBe(0)
+      expect(fs.existsSync(sgDir)).toBe(false)
+    })
+  })
+
+  test("#when the ast-grep runtime already existed before install #then uninstall never claims or removes it", () => {
+    withBase((base) => {
+      const home = path.join(base, "home")
+      const sgDir = astGrepUserRuntimeDir(home)
+      fs.mkdirSync(sgDir, { recursive: true, mode: 0o700 })
+      const userBinary = path.join(sgDir, SG_BINARY_NAME)
+      fs.writeFileSync(userBinary, "user-owned sg\n", { mode: 0o755 })
+
+      const installed = runInstall(base, { RIGEL_V2_SG_PROVISION: "0" })
+      expect(installed.result.status, installed.result.stderr || installed.result.stdout).toBe(0)
+      const state = JSON.parse(fs.readFileSync(path.join(base, "state", "install-state.json"), "utf8"))
+      expect(state.astGrepOwnedDir ?? null).toBe(null)
+
+      const ok = runUninstall(base)
+      expect(ok.status, ok.stderr || ok.stdout).toBe(0)
+      expect(fs.existsSync(userBinary)).toBe(true)
     })
   })
 })

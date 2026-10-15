@@ -501,7 +501,9 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
   // removes it on rollback, and a reinstall/upgrade that refreshes an existing
   // tree restores the prior bytes byte-identically. Provisioning itself is
   // best-effort and never fails an offline install.
-  txn?.trackSnapshotDir(astGrepUserRuntimeDir(paths.home))
+  const astGrepDir = astGrepUserRuntimeDir(paths.home)
+  const astGrepExistedBefore = fs.existsSync(astGrepDir)
+  txn?.trackSnapshotDir(astGrepDir)
   provisionAstGrepSgBestEffort(paths.home)
   txn?.failAt("provision:after-astgrep")
   const result = materializeNativeRuntime({
@@ -554,6 +556,11 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
     versionDigests,
     migrationLog: previousState?.migrationLog ?? [],
     rollbackLog: previousState?.rollbackLog ?? [],
+    // C5/M5: only an install that CREATED the ast-grep runtime dir owns it, so
+    // uninstall removes it only when ownership is proven. A tree that already
+    // existed (for example a user's pre-Rigel sg) is never claimed, and
+    // ownership is carried across reinstall/upgrade.
+    astGrepOwnedDir: astGrepExistedBefore ? (previousState?.astGrepOwnedDir ?? null) : astGrepDir,
   }
   if (migrating && previousState) {
     base.migrationLog = [...base.migrationLog, { from: previousState.version, to: version, at: base.updatedAt }]
@@ -747,6 +754,16 @@ function main() {
             staged.push({ abs, backup })
           }
         }
+        // C5/M5: remove the ast-grep runtime dir ONLY when this install recorded
+        // ownership of it, so a user's pre-Rigel sg is never deleted. Staged with
+        // versions/bin so a failed uninstall restores it byte-identically.
+        const ownedSgDir = previousState?.astGrepOwnedDir
+        const ownedSg = typeof ownedSgDir === "string" && ownedSgDir.length > 0 && fs.existsSync(ownedSgDir)
+        if (ownedSg) {
+          const backup = `${ownedSgDir}.txn-${crypto.randomBytes(4).toString("hex")}`
+          fs.renameSync(ownedSgDir, backup)
+          staged.push({ abs: ownedSgDir, backup })
+        }
         txn.failAt("uninstall:after-versions")
         const skills = removeManagedSkills(paths.home)
         skillsRestore = skills.restore
@@ -756,7 +773,7 @@ function main() {
         for (const { backup } of staged) fs.rmSync(backup, { recursive: true, force: true })
         const remaining = fs.existsSync(paths.stateRoot) ? fs.readdirSync(paths.stateRoot).sort() : []
         const config = fs.existsSync(paths.configFile) ? readJson(paths.configFile) : {}
-        emit({ ok: true, command, removed: ["versions", "bin", "install-state.json"], removedSkills: skills.removed, preserved: remaining, remainingPluginEntries: Array.isArray(config.plugin) ? config.plugin : [] }, flags)
+        emit({ ok: true, command, removed: ["versions", "bin", "install-state.json", ...(ownedSg ? ["ast-grep"] : [])], removedSkills: skills.removed, preserved: remaining, remainingPluginEntries: Array.isArray(config.plugin) ? config.plugin : [] }, flags)
       } catch (error) {
         for (const { abs, backup } of [...staged].reverse()) {
           try {
