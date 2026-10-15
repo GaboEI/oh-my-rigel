@@ -2035,8 +2035,15 @@ test("native runtime builds the session HTTP authority with the monitor gate off
   const jsonResponse = (body, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
   const previousHome = process.env.HOME
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const previousConfigHome = process.env.XDG_CONFIG_HOME
   const previousFetch = globalThis.fetch
   process.env.HOME = home
+  // The service handoff resolves under `${XDG_STATE_HOME ?? ~/.local/state}` and
+  // `${XDG_CONFIG_HOME ?? ~/.config}`; clear any ambient XDG override so this test
+  // reads the sandbox HOME it just seeded, in CI and locally alike.
+  delete process.env.XDG_STATE_HOME
+  delete process.env.XDG_CONFIG_HOME
   globalThis.fetch = async (url) => {
     const href = String(url)
     if (href.endsWith("/api/info")) return jsonResponse({ version: "2.0.27", pid: process.pid, urls: [origin] })
@@ -2081,6 +2088,10 @@ test("native runtime builds the session HTTP authority with the monitor gate off
   } finally {
     globalThis.fetch = previousFetch
     process.env.HOME = previousHome
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previousConfigHome
     rmSync(sandbox, { recursive: true, force: true })
   }
 })

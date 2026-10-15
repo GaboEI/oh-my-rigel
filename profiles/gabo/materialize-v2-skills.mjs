@@ -6,8 +6,12 @@
  *
  * Existing user-owned entries are never overwritten.  Legacy OpenCode skills
  * are linked into the V2 surface when there is no collision; Rigel-provided
- * skills are linked from this checkout.  The manifest makes every managed
- * entry auditable and lets a future uninstall remove only Rigel-owned links.
+ * skills are linked from this checkout; the cross-harness shared pool is linked
+ * only for the skills `skillPolicy` authorizes (omoAdopt + omoAdapt +
+ * omoProgressive), so the OmO skills the profile confirms reach the live
+ * inventory while omoDisabled/unclassified pool skills stay out.  The manifest
+ * makes every managed entry auditable and lets a future uninstall remove only
+ * Rigel-owned links.
  */
 import os from "node:os"
 import fs from "node:fs"
@@ -17,10 +21,31 @@ import { fileURLToPath } from "node:url"
 const home = process.env.HOME || os.homedir()
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const rigelSkills = path.join(sourceRoot, "profiles/gabo/skills")
+const sharedSkills = path.join(sourceRoot, "packages/shared-skills/skills")
+const manifestFile = path.join(sourceRoot, "profiles/gabo/integration-manifest.json")
 const legacySkills = path.join(home, ".config/opencode/skills")
 const targetRoot = path.join(home, ".agents/skills")
 const stateDir = path.join(home, ".local/share/oh-my-rigel")
 const stateFile = path.join(stateDir, "skills-v2.json")
+
+/**
+ * The shared-pool skills `skillPolicy` authorizes, as a name set. `omoDisabled`
+ * and any unclassified pool skill are absent by construction, so linking the
+ * pool can never expose a deliberately-off browser surface.
+ */
+function authorizedSharedSkills() {
+  let policy
+  try {
+    policy = JSON.parse(fs.readFileSync(manifestFile, "utf8")).skillPolicy ?? {}
+  } catch {
+    policy = {}
+  }
+  const names = []
+  for (const key of ["omoAdopt", "omoAdapt", "omoProgressive"]) {
+    if (Array.isArray(policy[key])) names.push(...policy[key])
+  }
+  return new Set(names.filter((name) => typeof name === "string"))
+}
 
 function isSkill(directory) {
   return fs.existsSync(path.join(directory, "SKILL.md"))
@@ -77,6 +102,27 @@ for (const name of listSkills(rigelSkills)) {
   }
   link(source, target)
   managed.push({ name, source, kind: "rigel" })
+  linkedTargets.add(name)
+}
+
+// The cross-harness shared pool. Only the `skillPolicy`-authorized names are
+// linked; `browser` (unclassified) and `ultimate-browsing` (omoDisabled) are
+// absent from the authorized union and therefore never reach the live
+// inventory. A name already linked (legacy/rigel) or owned by the user wins.
+const authorized = authorizedSharedSkills()
+for (const name of listSkills(sharedSkills)) {
+  if (!authorized.has(name)) continue
+  if (linkedTargets.has(name)) continue
+  const source = path.join(sharedSkills, name)
+  const target = path.join(targetRoot, name)
+  if (entryExists(target)) {
+    if (pointsAt(target, source)) managed.push({ name, source, kind: "shared" })
+    else preserved.push(name)
+    continue
+  }
+  link(source, target)
+  managed.push({ name, source, kind: "shared" })
+  linkedTargets.add(name)
 }
 
 fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 })

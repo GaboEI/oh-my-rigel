@@ -129,7 +129,7 @@ export default {
     classification: "Adaptar",
     status: "Migrado",
     rationale:
-      "El aprovisionamiento del binario sg existe como comando V2 real: `rigel-v2 ast-grep` delega el install real en `@oh-my-opencode/utils` (`runAstGrepSkillInstall` + `astGrepRuntimeDir`) hacia `<home>/.omo`. Probado positivo (installer inyectado -> target bajo ~/.omo) y negativo (fallo -> exit 1 con la razón).",
+      "El aprovisionamiento del binario sg existe como comando V2 real: `rigel-v2 ast-grep` provee el binario fijado de `@oh-my-opencode/utils` (`provisionSgBinary` sobre `SG_PINNED_VERSION` + sha256, `astGrepRuntimeDir`) hacia `<home>/.omo`. Estrategia única: no se usa el `install.sh` sin checksum del skill. Probado positivo (installer inyectado -> target bajo ~/.omo) y negativo (fallo -> exit 1 con la razón).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (ast-grep); `profiles/gabo/cli/commands/ast-grep.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "install-codex": {

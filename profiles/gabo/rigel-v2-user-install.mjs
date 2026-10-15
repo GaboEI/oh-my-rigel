@@ -51,6 +51,7 @@ import {
   writeJsonAtomic,
   writeTextAtomic,
 } from "./rigel-v2-lifecycle-transaction.mjs"
+import { astGrepUserRuntimeDir } from "./rigel-v2-ast-grep-provision.mjs"
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const INSTALLER_PATH = fileURLToPath(import.meta.url)
@@ -370,6 +371,32 @@ function generateAgentManifest({ versionDir, home, configFile }) {
   return output
 }
 
+/**
+ * U3: provision the pinned ast-grep `sg` (0.43.0 + per-platform sha256) into
+ * `<home>/.omo/runtime/ast-grep/<slug>`, best-effort. Runs under Bun because the
+ * provisioning module imports `@oh-my-opencode/utils` lazily. A failed or
+ * offline download is logged and never fails the install; the caller tracks the
+ * runtime dir so a later failure removes it byte-identically. Opt out with
+ * `RIGEL_V2_SG_PROVISION=0` (kept hermetic by the offline installer test lane).
+ */
+function provisionAstGrepSgBestEffort(home) {
+  if (process.env.RIGEL_V2_SG_PROVISION === "0") return
+  try {
+    const result = spawnSync(resolveBunBin(), [path.join(sourceRoot, "profiles/gabo/rigel-v2-ast-grep-provision.mjs"), "--home", home, "--json"], {
+      cwd: sourceRoot,
+      env: { ...process.env, HOME: home, ...isolatedXdgEnv(home) },
+      encoding: "utf8",
+      timeout: 120_000,
+    })
+    if (result.error || result.status !== 0) {
+      const detail = result.error?.message ?? String(result.stderr || result.stdout || "").trim()
+      process.stderr.write(`rigel-v2: ast-grep sg provisioning skipped: ${detail}\n`)
+    }
+  } catch (error) {
+    process.stderr.write(`rigel-v2: ast-grep sg provisioning skipped: ${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
 /** The vendored engine's artifact root and the loader shim the host loads. */
 function goalEnginePaths(runtimeDir) {
   const artifactRoot = path.join(goalVendorTargetDir(runtimeDir), "node_modules", ...GOAL_VENDOR_ARTIFACT.name.split("/"))
@@ -469,6 +496,13 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
   txn?.trackCreatedDir(runtimeDir)
   txn?.trackReplacedDir(runtimeDir)
   const agentManifest = generateAgentManifest({ versionDir, home: paths.home, configFile: paths.configFile })
+  // U3: deliver the pinned ast-grep `sg` the newly delivered ast-grep skill
+  // consumes. The runtime dir is tracked BEFORE provisioning so a later failure
+  // in this transaction removes it byte-identically; provisioning itself is
+  // best-effort and never fails an offline install.
+  txn?.trackCreatedDir(astGrepUserRuntimeDir(paths.home))
+  provisionAstGrepSgBestEffort(paths.home)
+  txn?.failAt("provision:after-astgrep")
   const result = materializeNativeRuntime({
     sourceRoot,
     runtimeSourceDir: runtimeSource,

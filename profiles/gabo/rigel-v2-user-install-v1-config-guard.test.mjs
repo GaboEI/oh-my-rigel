@@ -58,7 +58,7 @@ function writeCleanConfig(configFile) {
 function runRoute(env) {
   return spawnSync("node", [installerPath, "install", "--version", "1", "--json"], {
     cwd: repoRoot,
-    env: { PATH: process.env.PATH, OMO_DISABLE_PROCESS_CLEANUP: "1", ...env },
+    env: { PATH: process.env.PATH, OMO_DISABLE_PROCESS_CLEANUP: "1", RIGEL_V2_SG_PROVISION: "0", ...env },
     encoding: "utf8",
     timeout: 240_000,
   })

@@ -13,6 +13,7 @@ import {
   registerSkillMcpServers,
   translateSkillMcpConfig,
 } from "./rigel-v2-native-skill-mcp.mjs"
+import { loadSkillsFromDir } from "./rigel-v2-native-skills.mjs"
 
 const temporaryRoots = []
 const runningServers = []
@@ -202,5 +203,44 @@ describe("#given the V2 native mcp surface", () => {
     expect(registered.registered).toEqual([{ name: "fresh", skill: "alpha" }])
     expect(servers.get("host-owned")).toEqual({ type: "remote", url: "http://host" })
     expect(servers.get("fresh")).toEqual({ type: "local", command: ["npx", "-y", "s"] })
+  })
+})
+
+describe("#given a skill that declares its embedded MCP by an on-disk mcp.json", () => {
+  test("#when discovered #then mcpConfig parses from mcp.json and skill_mcp dispatches the real tool", async () => {
+    // given a skill dir whose embedded MCP is declared by a sibling `mcp.json`
+    // (the parseSkillMcpConfig disk branch no existing test exercises), not by
+    // frontmatter and not by an injected mcpConfig object
+    const root = makeRoot()
+    const skillDir = path.join(root, "on-disk-mcp")
+    fs.mkdirSync(skillDir, { recursive: true })
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: on-disk-mcp\ndescription: on-disk mcp\n---\n\nBody.\n")
+    const serverPath = writeStdioServer()
+    fs.writeFileSync(path.join(skillDir, "mcp.json"), JSON.stringify({ mcpServers: { echo: stdioConfig(serverPath) } }))
+
+    const skills = loadSkillsFromDir({ skillsDir: root, scope: "project" })
+    const skill = skills.find((entry) => entry.name === "on-disk-mcp")
+    expect(skill).toBeDefined()
+    expect(Object.keys(skill.mcpConfig ?? {})).toEqual(["echo"])
+
+    // when the skill_mcp tool dispatches to that discovered server
+    const manager = createSkillMcpManager()
+    const tool = createSkillMcpToolDefinition({ manager, getSkills: async () => skills })
+    const output = await tool.execute({ mcp_name: "echo", tool_name: "echo", arguments: '{"value":7}' }, { sessionID: "ses_disk" })
+    expect(output).toContain("echo:")
+    expect(output).toContain("7")
+    await manager.disconnectAll()
+  })
+
+  test("#when a skill declares no embedded MCP #then mcpConfig is absent", () => {
+    const root = makeRoot()
+    const skillDir = path.join(root, "plain")
+    fs.mkdirSync(skillDir, { recursive: true })
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: plain\ndescription: plain\n---\n\nBody.\n")
+
+    const skills = loadSkillsFromDir({ skillsDir: root, scope: "project" })
+    const skill = skills.find((entry) => entry.name === "plain")
+    expect(skill).toBeDefined()
+    expect(skill.mcpConfig).toBeUndefined()
   })
 })

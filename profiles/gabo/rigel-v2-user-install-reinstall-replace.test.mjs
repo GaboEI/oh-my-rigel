@@ -56,6 +56,7 @@ function baseEnv(base, extra = {}) {
     XDG_STATE_HOME: path.join(base, "installer-xdg", "state"),
     XDG_CACHE_HOME: path.join(base, "installer-xdg", "cache"),
     OMO_DISABLE_PROCESS_CLEANUP: "1",
+    RIGEL_V2_SG_PROVISION: "0",
     ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
     ...extra,
   }
