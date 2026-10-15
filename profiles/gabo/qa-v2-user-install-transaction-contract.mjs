@@ -33,7 +33,7 @@ function sha(file) {
   try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") } catch { return null }
 }
 function run(args, { failAt } = {}) {
-  const env = { ...process.env }
+  const env = { ...process.env, RIGEL_V2_SG_PROVISION: "0" }
   if (failAt === undefined) delete env.RIGEL_V2_FAIL_AT
   else env.RIGEL_V2_FAIL_AT = failAt
   return spawnSync(process.execPath, [installer, ...args], { cwd: root, encoding: "utf8", timeout: 180_000, env })
@@ -83,7 +83,7 @@ try {
   }
 
   // ------------------------------------------------------- install boundaries
-  for (const boundary of ["install:after-runtime", "install:after-state"]) {
+  for (const boundary of ["install:after-runtime", "provision:after-astgrep", "install:after-state"]) {
     const before = snapshot()
     const result = run(installV1, { failAt: boundary })
     check(`${boundary}.refused`, result.status !== 0, `status=${result.status}`)
@@ -94,7 +94,7 @@ try {
   check("install.baseline.ok", run(installV1).status === 0)
 
   // ------------------------------------------------------- upgrade boundaries
-  for (const boundary of ["upgrade:after-runtime", "upgrade:after-state"]) {
+  for (const boundary of ["upgrade:after-runtime", "provision:after-astgrep", "upgrade:after-state"]) {
     const before = snapshot()
     const result = run(upgradeV2, { failAt: boundary })
     check(`${boundary}.refused`, result.status !== 0, `status=${result.status}`)

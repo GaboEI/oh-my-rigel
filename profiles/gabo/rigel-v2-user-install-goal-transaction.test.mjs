@@ -45,6 +45,7 @@ function runCommand(command, args, extraEnv = {}) {
     XDG_STATE_HOME: path.join(base, "xdg", "state"),
     XDG_CACHE_HOME: path.join(base, "xdg", "cache"),
     OMO_DISABLE_PROCESS_CLEANUP: "1",
+    RIGEL_V2_SG_PROVISION: "0",
     RIGEL_V2_GOAL_ADOPT_FROM: externalSource,
     ...extraEnv,
   }

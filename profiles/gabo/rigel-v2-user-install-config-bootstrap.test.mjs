@@ -55,6 +55,7 @@ function runRoute(home, configFile, stateRoot) {
       RIGEL_V2_CONFIG: configFile,
       RIGEL_V2_USER_ROOT: stateRoot,
       OMO_DISABLE_PROCESS_CLEANUP: "1",
+      RIGEL_V2_SG_PROVISION: "0",
     },
     encoding: "utf8",
     timeout: 240_000,

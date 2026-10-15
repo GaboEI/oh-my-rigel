@@ -34,7 +34,7 @@ function sha(file) {
   try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") } catch { return null }
 }
 function run(args, options = {}) {
-  return spawnSync(process.execPath, [installer, ...args], { cwd: root, encoding: "utf8", timeout: 180_000, ...options })
+  return spawnSync(process.execPath, [installer, ...args], { cwd: root, encoding: "utf8", timeout: 180_000, ...options, env: { ...process.env, RIGEL_V2_SG_PROVISION: "0" } })
 }
 function runJson(args, options = {}) {
   const result = run(args, options)

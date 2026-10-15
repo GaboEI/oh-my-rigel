@@ -51,6 +51,7 @@ import {
   writeJsonAtomic,
   writeTextAtomic,
 } from "./rigel-v2-lifecycle-transaction.mjs"
+import { astGrepUserRuntimeDir } from "./rigel-v2-ast-grep-provision.mjs"
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const INSTALLER_PATH = fileURLToPath(import.meta.url)
@@ -370,6 +371,78 @@ function generateAgentManifest({ versionDir, home, configFile }) {
   return output
 }
 
+/**
+ * U3: provision the pinned ast-grep `sg` (0.43.0 + per-platform sha256) into
+ * `<home>/.omo/runtime/ast-grep/<slug>`, best-effort. Runs under Bun because the
+ * provisioning module imports `@oh-my-opencode/utils` lazily. A failed or
+ * offline download is logged and never fails the install; the caller tracks the
+ * runtime dir so a later failure removes it byte-identically. Opt out with
+ * `RIGEL_V2_SG_PROVISION=0` (kept hermetic by the offline installer test lane).
+ */
+function provisionAstGrepSgBestEffort(home) {
+  if (process.env.RIGEL_V2_SG_PROVISION === "0") return
+  try {
+    const result = spawnSync(resolveBunBin(), [path.join(sourceRoot, "profiles/gabo/rigel-v2-ast-grep-provision.mjs"), "--home", home, "--json"], {
+      cwd: sourceRoot,
+      env: { ...process.env, HOME: home, ...isolatedXdgEnv(home) },
+      encoding: "utf8",
+      timeout: 120_000,
+    })
+    if (result.error || result.status !== 0) {
+      const detail = result.error?.message ?? String(result.stderr || result.stdout || "").trim()
+      process.stderr.write(`rigel-v2: ast-grep sg provisioning skipped: ${detail}\n`)
+    }
+  } catch (error) {
+    process.stderr.write(`rigel-v2: ast-grep sg provisioning skipped: ${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
+/**
+ * C4: snapshot `<home>/.agents/skills` before the skill materializer runs, so a
+ * failed install can undo exactly the link mutations it made. Records, per entry,
+ * whether it was a symlink and where it pointed; a non-symlink (a user directory
+ * or file) is recorded so the restore never touches it.
+ */
+function snapshotDiscoveryRoot(dir) {
+  const entries = new Map()
+  if (!fs.existsSync(dir)) return { existed: false, entries }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let target = null
+    try { target = entry.isSymbolicLink() ? fs.readlinkSync(path.join(dir, entry.name)) : null } catch { target = null }
+    entries.set(entry.name, { symlink: entry.isSymbolicLink(), target })
+  }
+  return { existed: true, entries }
+}
+
+/**
+ * C4: undo the materializer's link mutations. A name that appeared during the run
+ * is a Rigel-created link and is removed; a name whose symlink target changed is
+ * re-pointed to its prior target. Only symlinks are touched - a user directory or
+ * file, and a link that did not change, are never modified. If the discovery root
+ * did not exist before, an empty root is removed.
+ */
+function restoreDiscoveryRoot(dir, before) {
+  if (!fs.existsSync(dir)) return
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) continue
+    const target = path.join(dir, entry.name)
+    const prior = before.entries.get(entry.name)
+    if (prior === undefined) {
+      try { fs.rmSync(target, { force: true }) } catch { /* best-effort */ }
+      continue
+    }
+    let current = null
+    try { current = fs.readlinkSync(target) } catch { current = null }
+    if (prior.symlink && prior.target !== null && prior.target !== current) {
+      try { fs.rmSync(target, { force: true }) } catch { /* best-effort */ }
+      try { fs.symlinkSync(prior.target, target, "dir") } catch { /* best-effort */ }
+    }
+  }
+  if (!before.existed) {
+    try { fs.rmdirSync(dir) } catch { /* not empty: a user entry appeared; leave it */ }
+  }
+}
+
 /** The vendored engine's artifact root and the loader shim the host loads. */
 function goalEnginePaths(runtimeDir) {
   const artifactRoot = path.join(goalVendorTargetDir(runtimeDir), "node_modules", ...GOAL_VENDOR_ARTIFACT.name.split("/"))
@@ -468,7 +541,24 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
   // is discarded. A clean install (no prior runtime) tracks nothing here.
   txn?.trackCreatedDir(runtimeDir)
   txn?.trackReplacedDir(runtimeDir)
+  // C4: snapshot the skill discovery root BEFORE the materializer runs, so a
+  // failed install restores exactly the Rigel-owned links it created or
+  // re-pointed. Only symlinks whose entry changed are touched; user content is
+  // never removed.
+  const skillsDir = path.join(paths.home, ".agents", "skills")
+  const skillsBefore = snapshotDiscoveryRoot(skillsDir)
+  txn?.trackRestore(() => restoreDiscoveryRoot(skillsDir, skillsBefore))
   const agentManifest = generateAgentManifest({ versionDir, home: paths.home, configFile: paths.configFile })
+  // U3/C2: deliver the pinned ast-grep `sg` the newly delivered ast-grep skill
+  // consumes. The runtime dir is SNAPSHOTTED before provisioning: a fresh install
+  // removes it on rollback, and a reinstall/upgrade that refreshes an existing
+  // tree restores the prior bytes byte-identically. Provisioning itself is
+  // best-effort and never fails an offline install.
+  const astGrepDir = astGrepUserRuntimeDir(paths.home)
+  const astGrepExistedBefore = fs.existsSync(astGrepDir)
+  txn?.trackSnapshotDir(astGrepDir)
+  provisionAstGrepSgBestEffort(paths.home)
+  txn?.failAt("provision:after-astgrep")
   const result = materializeNativeRuntime({
     sourceRoot,
     runtimeSourceDir: runtimeSource,
@@ -519,6 +609,13 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
     versionDigests,
     migrationLog: previousState?.migrationLog ?? [],
     rollbackLog: previousState?.rollbackLog ?? [],
+    // C5/M5: a BOOLEAN ownership proof only - never a filesystem path. Uninstall
+    // recomputes the expected directory from `<home>` itself, so an edited or
+    // corrupted install-state.json can never redirect the removal outside the
+    // Rigel ast-grep dir. Only an install that CREATED the tree owns it; ownership
+    // is carried across reinstall/upgrade, and a tree that already existed (a
+    // user's pre-Rigel sg) is never claimed.
+    astGrepOwned: astGrepExistedBefore ? previousState?.astGrepOwned === true : true,
   }
   if (migrating && previousState) {
     base.migrationLog = [...base.migrationLog, { from: previousState.version, to: version, at: base.updatedAt }]
@@ -712,6 +809,19 @@ function main() {
             staged.push({ abs, backup })
           }
         }
+        // C5/M5: ownership is proven by a BOOLEAN in the state; the target is
+        // RECOMPUTED here from `<home>` and must stay strictly inside the Rigel
+        // ast-grep dir. The persisted state never supplies the path, so an edited
+        // or corrupted install-state.json cannot redirect the removal outside it.
+        // Staged with versions/bin so a failed uninstall restores it byte-identically.
+        const expectedSgDir = astGrepUserRuntimeDir(paths.home)
+        const sgRoot = path.join(paths.home, ".omo", "runtime", "ast-grep")
+        const ownedSg = previousState?.astGrepOwned === true && under(canonicalize(expectedSgDir), canonicalize(sgRoot)) && fs.existsSync(expectedSgDir)
+        if (ownedSg) {
+          const backup = `${expectedSgDir}.txn-${crypto.randomBytes(4).toString("hex")}`
+          fs.renameSync(expectedSgDir, backup)
+          staged.push({ abs: expectedSgDir, backup })
+        }
         txn.failAt("uninstall:after-versions")
         const skills = removeManagedSkills(paths.home)
         skillsRestore = skills.restore
@@ -721,7 +831,7 @@ function main() {
         for (const { backup } of staged) fs.rmSync(backup, { recursive: true, force: true })
         const remaining = fs.existsSync(paths.stateRoot) ? fs.readdirSync(paths.stateRoot).sort() : []
         const config = fs.existsSync(paths.configFile) ? readJson(paths.configFile) : {}
-        emit({ ok: true, command, removed: ["versions", "bin", "install-state.json"], removedSkills: skills.removed, preserved: remaining, remainingPluginEntries: Array.isArray(config.plugin) ? config.plugin : [] }, flags)
+        emit({ ok: true, command, removed: ["versions", "bin", "install-state.json", ...(ownedSg ? ["ast-grep"] : [])], removedSkills: skills.removed, preserved: remaining, remainingPluginEntries: Array.isArray(config.plugin) ? config.plugin : [] }, flags)
       } catch (error) {
         for (const { abs, backup } of [...staged].reverse()) {
           try {
