@@ -229,3 +229,28 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
     })
   })
 })
+
+describe("#given an install that fails after the skill materializer", () => {
+  test("#when it fails #then Rigel-created skill links are removed and user content is untouched", () => {
+    withBase((base) => {
+      const home = path.join(base, "home")
+      // A user-owned skill present before the install must survive the rollback.
+      const userDir = path.join(home, ".agents", "skills", "user-thing")
+      fs.mkdirSync(userDir, { recursive: true, mode: 0o700 })
+      fs.writeFileSync(path.join(userDir, "SKILL.md"), "user body\n")
+
+      const asset = fixtureAsset(base)
+      const { result } = runInstall(base, {
+        RIGEL_V2_SG_ASSET_FILE: asset.file,
+        RIGEL_V2_SG_ASSET_SHA256: asset.sha256,
+        RIGEL_V2_FAIL_AT: "provision:after-astgrep",
+      })
+      expect(result.status).not.toBe(0)
+
+      const skillsRoot = path.join(home, ".agents", "skills")
+      const remaining = fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot).sort() : []
+      expect(remaining).toEqual(["user-thing"])
+      expect(fs.readFileSync(path.join(userDir, "SKILL.md"), "utf8")).toBe("user body\n")
+    })
+  })
+})

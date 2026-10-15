@@ -101,6 +101,7 @@ export function beginLifecycleTransaction({ files }) {
   const createdDirs = []
   const replacedDirs = []
   const snapshotDirs = []
+  const restores = []
   let settled = false
   return {
     failAt,
@@ -141,6 +142,16 @@ export function beginLifecycleTransaction({ files }) {
       fs.cpSync(dir, backup, { recursive: true, force: true })
       snapshotDirs.push({ dir, backup })
     },
+    /**
+     * Register a best-effort compensating callback for a mutation this primitive
+     * cannot express as a file or a directory (for example the symlinks a skill
+     * materializer creates). The callbacks run in reverse (LIFO) on rollback,
+     * before the file and directory restoration, and never on commit. Each is
+     * wrapped so one failure cannot stop the rest.
+     */
+    trackRestore(fn) {
+      restores.push(fn)
+    },
     commit() {
       settled = true
       for (const { backup } of replacedDirs) {
@@ -153,6 +164,9 @@ export function beginLifecycleTransaction({ files }) {
     rollback() {
       if (settled) return
       settled = true
+      for (const restore of [...restores].reverse()) {
+        try { restore() } catch { /* best-effort */ }
+      }
       restoreFiles(snapshot)
       for (const dir of [...createdDirs].reverse()) {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }

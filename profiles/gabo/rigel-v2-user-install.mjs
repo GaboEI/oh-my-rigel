@@ -397,6 +397,52 @@ function provisionAstGrepSgBestEffort(home) {
   }
 }
 
+/**
+ * C4: snapshot `<home>/.agents/skills` before the skill materializer runs, so a
+ * failed install can undo exactly the link mutations it made. Records, per entry,
+ * whether it was a symlink and where it pointed; a non-symlink (a user directory
+ * or file) is recorded so the restore never touches it.
+ */
+function snapshotDiscoveryRoot(dir) {
+  const entries = new Map()
+  if (!fs.existsSync(dir)) return { existed: false, entries }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let target = null
+    try { target = entry.isSymbolicLink() ? fs.readlinkSync(path.join(dir, entry.name)) : null } catch { target = null }
+    entries.set(entry.name, { symlink: entry.isSymbolicLink(), target })
+  }
+  return { existed: true, entries }
+}
+
+/**
+ * C4: undo the materializer's link mutations. A name that appeared during the run
+ * is a Rigel-created link and is removed; a name whose symlink target changed is
+ * re-pointed to its prior target. Only symlinks are touched - a user directory or
+ * file, and a link that did not change, are never modified. If the discovery root
+ * did not exist before, an empty root is removed.
+ */
+function restoreDiscoveryRoot(dir, before) {
+  if (!fs.existsSync(dir)) return
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) continue
+    const target = path.join(dir, entry.name)
+    const prior = before.entries.get(entry.name)
+    if (prior === undefined) {
+      try { fs.rmSync(target, { force: true }) } catch { /* best-effort */ }
+      continue
+    }
+    let current = null
+    try { current = fs.readlinkSync(target) } catch { current = null }
+    if (prior.symlink && prior.target !== null && prior.target !== current) {
+      try { fs.rmSync(target, { force: true }) } catch { /* best-effort */ }
+      try { fs.symlinkSync(prior.target, target, "dir") } catch { /* best-effort */ }
+    }
+  }
+  if (!before.existed) {
+    try { fs.rmdirSync(dir) } catch { /* not empty: a user entry appeared; leave it */ }
+  }
+}
+
 /** The vendored engine's artifact root and the loader shim the host loads. */
 function goalEnginePaths(runtimeDir) {
   const artifactRoot = path.join(goalVendorTargetDir(runtimeDir), "node_modules", ...GOAL_VENDOR_ARTIFACT.name.split("/"))
@@ -495,6 +541,13 @@ function installVersion({ paths, version, runtimeSource, previousState, migratin
   // is discarded. A clean install (no prior runtime) tracks nothing here.
   txn?.trackCreatedDir(runtimeDir)
   txn?.trackReplacedDir(runtimeDir)
+  // C4: snapshot the skill discovery root BEFORE the materializer runs, so a
+  // failed install restores exactly the Rigel-owned links it created or
+  // re-pointed. Only symlinks whose entry changed are touched; user content is
+  // never removed.
+  const skillsDir = path.join(paths.home, ".agents", "skills")
+  const skillsBefore = snapshotDiscoveryRoot(skillsDir)
+  txn?.trackRestore(() => restoreDiscoveryRoot(skillsDir, skillsBefore))
   const agentManifest = generateAgentManifest({ versionDir, home: paths.home, configFile: paths.configFile })
   // U3/C2: deliver the pinned ast-grep `sg` the newly delivered ast-grep skill
   // consumes. The runtime dir is SNAPSHOTTED before provisioning: a fresh install
