@@ -14,15 +14,19 @@
  * points at a local release zip for a hermetic, network-free run; otherwise the
  * pinned GitHub asset is downloaded.
  *
- * Only `node:` top-level imports, so the node-run installer can import
- * `astGrepUserRuntimeDir` for its transaction tracking; `@oh-my-opencode/utils`
- * is imported lazily inside `provisionAstGrepSg`, which runs under Bun.
+ * Self-contained: the pinned provisioning strategy lives in the sibling
+ * `./rigel-v2-ast-grep-runtime.mjs` (a documented copy of the pieces this tree
+ * needs from `packages/utils`), so the shipped tree never resolves a bare
+ * `@oh-my-opencode/*` specifier. Only `node:` and relative imports, so the
+ * node-run installer can import `astGrepUserRuntimeDir` for its tracking.
  */
 import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+
+import { astGrepRuntimeDir, provisionSgBinary, runtimeSlug } from "./rigel-v2-ast-grep-runtime.mjs"
 
 // Mirror of the utils normalizers, kept in sync by the path-parity test.
 function normalizePlatform(platform) {
@@ -52,11 +56,10 @@ function localAssetFetch(assetFile) {
 /**
  * Provision `sg` into `<home>/.omo/runtime/ast-grep/<slug>`. Returns the target
  * dir and the binary path. Throws `SgProvisionError` on a checksum or platform
- * failure; the caller decides whether that is fatal. Must run under Bun, where
- * `@oh-my-opencode/utils` resolves.
+ * failure; the caller decides whether that is fatal. Self-contained: no runtime
+ * relies on the workspace `@oh-my-opencode/utils` resolving.
  */
 export async function provisionAstGrepSg({ home, platform, arch, assetFile, assetSha256, fetchImpl, releaseAssets, signal } = {}) {
-  const { astGrepRuntimeDir, provisionSgBinary, runtimeSlug } = await import("@oh-my-opencode/utils")
   const resolvedPlatform = platform ?? process.platform
   const resolvedArch = arch ?? process.arch
   const targetDir = astGrepRuntimeDir(path.join(home, ".omo"), resolvedPlatform, resolvedArch)

@@ -7,7 +7,7 @@
 // deliberately NOT used.
 import path from "node:path"
 
-import { astGrepRuntimeDir, provisionSgBinary } from "@oh-my-opencode/utils"
+import { astGrepRuntimeDir, provisionSgBinary } from "../../rigel-v2-ast-grep-runtime.mjs"
 
 import { fail, parseArgs, writeJson } from "../rigel-v2-cli-io.mjs"
 
