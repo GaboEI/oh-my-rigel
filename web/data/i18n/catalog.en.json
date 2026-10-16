@@ -458,10 +458,10 @@
     },
     "aviso-de-escritura-no-confirmada": {
       "nombre": "Unconfirmed write warning",
-      "que_es": "Warns if a write doesn't confirm its data.",
+      "que_es": "Declared surface to warn if a write doesn't confirm its data; not delivered in V2.",
       "modo_de_activacion": "Automatic",
-      "como_se_usa": "Automatic: the warning appears in the chat if a write is left unconfirmed.",
-      "cuando_sirve": "The plan is saved but the response left no record: you'll see it and the write can be repeated.",
+      "como_se_usa": "Not delivered: the warning is not emitted; the rule exists but no live producer triggers it, so in V2 you will not see this warning.",
+      "cuando_sirve": "Does not apply while there is no real emitter of unconfirmed writes.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
@@ -640,7 +640,7 @@
       "nombre": "Keywords that activate modes",
       "que_es": "One word in your message activates a working mode.",
       "modo_de_activacion": "Keyword",
-      "como_se_usa": "Keyword: type `ulw` (or `ultrawork`), `team`, or `hyperplan` in the message and the mode kicks in without a command. Setting: with `keyword_detector.disabled_keywords` you turn off the ones that get in your way.",
+      "como_se_usa": "Keyword: type `ulw` (or `ultrawork`), `team mode`, or `hyperplan` in the message and the mode kicks in without a command. The bare `team` alias does not activate team mode. Setting: with `keyword_detector.disabled_keywords` you turn off the ones that get in your way.",
       "cuando_sirve": "\"ulw review the pending pull requests\": everything runs in worker mode without further ceremony.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
@@ -710,10 +710,10 @@
     },
     "visualizacion-en-paneles": {
       "nombre": "Panel visualization",
-      "que_es": "Shows each agent in its own terminal panel.",
+      "que_es": "Distributes team members across panels of an existing tmux session.",
       "modo_de_activacion": "Setting",
-      "como_se_usa": "Setting: `team_mode.tmux_visualization: true` and the terminal organizer installed (for example, `tmux`); only inside team mode.",
-      "cuando_sirve": "With the team running, each member is visible in its own panel and you follow progress at a glance.",
+      "como_se_usa": "Setting: `team_mode.tmux_visualization: true`, the terminal organizer installed (for example, `tmux`), and the session launched INSIDE tmux (with `TMUX` and `TMUX_PANE` present); only inside team mode. On the service (daemon) topology it creates no panels: it records the degradation instead of failing.",
+      "cuando_sirve": "With the team running inside your own tmux session, each member is visible in its own panel and you follow progress at a glance.",
       "requisitos": "It activates inside team mode if you have a program that shows and arranges several terminals in one window.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
@@ -944,10 +944,10 @@
     },
     "vigilancia-de-agentes-inestables": {
       "nombre": "Monitoring of unstable agents",
-      "que_es": "Detects agents that aren't progressing and recovers or stops them.",
+      "que_es": "Reacts to a real agent failure and to a conversation left idle with background work pending.",
       "modo_de_activacion": "Automatic",
-      "como_se_usa": "Automatic: a stuck agent is interrupted or resumes on its own; you see it as healthy activity, not eternal silence.",
-      "cuando_sirve": "An agent enters a loop with no way out: it's stopped in time without burning your whole quota.",
+      "como_se_usa": "Automatic: on a real agent failure the system retries or switches agent, and if a conversation goes idle with a live background task you are notified instead of waiting in silence. It does NOT watch for a silently stuck agent.",
+      "cuando_sirve": "A background task is still running while the conversation waits: you are notified or it resumes instead of hanging.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },

@@ -205,13 +205,45 @@ function isPlanFilePath(filePath) {
   return normalized.includes(".omo/plans/") && normalized.endsWith(".md")
 }
 
-function appendResultText(result, text) {
-  if (typeof result.content === "string") {
-    result.content += text
+/**
+ * Read the tool-result text from whichever channel the real V2
+ * `tool.execute.after` event carries. The live form for a `write` is a plain
+ * `event.output` string; `event.result.content` (string or text-part array) and
+ * `event.result.output` are honored as fallbacks so the validator is not tied to
+ * one host shape.
+ */
+function readResultText(event) {
+  const content = event?.result?.content
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) return content.filter((part) => part?.type === "text").map((part) => part.text ?? "").join("")
+  if (typeof event?.result?.output === "string") return event.result.output
+  if (typeof event?.output === "string") return event.output
+  return ""
+}
+
+/** Whether the event exposes any mutable result channel to annotate. */
+function hasResultChannel(event) {
+  const content = event?.result?.content
+  return typeof content === "string" || Array.isArray(content) || typeof event?.result?.output === "string" || typeof event?.output === "string"
+}
+
+/** Append text to whichever mutable result channel the event exposes. */
+function appendResultText(event, text) {
+  const content = event?.result?.content
+  if (Array.isArray(content)) {
+    content.push({ type: "text", text })
     return true
   }
-  if (Array.isArray(result.content)) {
-    result.content.push({ type: "text", text })
+  if (typeof content === "string") {
+    event.result.content = content + text
+    return true
+  }
+  if (typeof event?.result?.output === "string") {
+    event.result.output += text
+    return true
+  }
+  if (typeof event?.output === "string") {
+    event.output += text
     return true
   }
   return false
@@ -239,11 +271,8 @@ export function createNativePlanFormatValidator({
       if (typeof filePath !== "string") return
       if (!isPlanFilePath(filePath)) return
 
-      const result = event?.result
-      if (!result || typeof result !== "object") return
-      const parts = Array.isArray(result.content) ? result.content : null
-      if (typeof result.content !== "string" && parts === null) return
-      const prior = parts === null ? result.content : parts.map((part) => (part && typeof part.text === "string" ? part.text : "")).join("")
+      if (!hasResultChannel(event)) return
+      const prior = readResultText(event)
       if (prior.includes("<plan-format-warning>")) return
 
       const resolved = path.resolve(root, filePath)
@@ -254,14 +283,14 @@ export function createNativePlanFormatValidator({
       if (effort !== null) {
         content = effort.content
         writeFile(resolved, content)
-        appendResultText(result, buildEffortWarning(effort))
+        appendResultText(event, buildEffortWarning(effort))
       }
 
       const stats = analyzeStructuredSections(content)
       if (!stats.recognized) return
       const parsedCount = readProgress(resolved).total
       if (!stats.hasEmptySection && !stats.hasMalformedRows) return
-      appendResultText(result, buildWarning(stats.rawCount, parsedCount, stats.hasEmptySection))
+      appendResultText(event, buildWarning(stats.rawCount, parsedCount, stats.hasEmptySection))
     },
   }
 }

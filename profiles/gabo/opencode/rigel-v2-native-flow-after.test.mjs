@@ -13,10 +13,6 @@ import { describe, expect, test } from "bun:test"
 import {
   afterRules,
   createDelegateTaskRetryRule,
-  createFsyncSkipStartRule,
-  createFsyncSkipWarningRule,
-  createFsyncSkipWarningState,
-  fsyncSkipBeforeRules,
 } from "./rigel-v2-native-flow-after.mjs"
 import {
   buildRetryGuidance as portedBuildRetryGuidance,
@@ -24,7 +20,6 @@ import {
 } from "./rigel-v2-delegate-retry-core.mjs"
 import { detectDelegateTaskError as v1DetectDelegateTaskError } from "../../../packages/delegate-core/src/retry-patterns.ts"
 import { buildRetryGuidance as v1BuildRetryGuidance } from "../../../packages/delegate-core/src/retry-guidance.ts"
-import { formatFsyncSkipWarning } from "./rigel-v2-flow-logic.mjs"
 
 // ---------------------------------------------------------------------------
 // 0. V1 differential parity for the ported detector + guidance
@@ -185,119 +180,7 @@ describe("#given the delegate-task-retry after rule", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2. fsync-skip-warning: before/after pairing on the stable call id
-// ---------------------------------------------------------------------------
-
-const SKIP = {
-  filePath: "/Users/x/OneDrive/a",
-  contextLabel: "atomicWrite:/Users/x/OneDrive/a",
-  errorCode: "EPERM",
-  message: "operation not permitted",
-  pathClassification: "onedrive",
-}
-
-describe("#given the fsync-skip-warning before/after pair", () => {
-  describe("#when a skip is recorded after the call start", () => {
-    test("#then the exact V1 warning block is appended to the result", () => {
-      // given
-      const state = createFsyncSkipWarningState()
-      const before = createFsyncSkipStartRule(state)
-      const after = createFsyncSkipWarningRule(state)
-      before.run({ id: "call-1", timestamp: 1000 })
-      state.recordSkip({ ...SKIP, timestamp: 1001 })
-      const event = { id: "call-1", timestamp: 1002, result: { content: [] } }
-      // when
-      const appended = after.run(event)
-      // then
-      const expected = `\n\n${formatFsyncSkipWarning([{ ...SKIP, timestamp: 1001 }])}`
-      expect(appended).toBe(true)
-      expect(event.result.content[0].text).toBe(expected)
-      expect(event.result.content[0].text).toContain("[fsync-skipped]")
-      expect(event.result.content[0].text).toContain("OneDrive")
-    })
-  })
-
-  describe("#when no skip was recorded", () => {
-    test("#then nothing is appended", () => {
-      // given
-      const state = createFsyncSkipWarningState()
-      const before = createFsyncSkipStartRule(state)
-      const after = createFsyncSkipWarningRule(state)
-      before.run({ id: "call-2", timestamp: 2000 })
-      const event = { id: "call-2", timestamp: 2001, result: { content: [] } }
-      // when
-      const appended = after.run(event)
-      // then
-      expect(appended).toBe(false)
-      expect(event.result.content).toHaveLength(0)
-    })
-  })
-
-  describe("#when the skip predates the call start", () => {
-    test("#then the watermark excludes it and nothing is appended", () => {
-      // given
-      const state = createFsyncSkipWarningState()
-      const before = createFsyncSkipStartRule(state)
-      const after = createFsyncSkipWarningRule(state)
-      before.run({ id: "call-3", timestamp: 3000 })
-      state.recordSkip({ ...SKIP, timestamp: 2500 })
-      const event = { id: "call-3", timestamp: 3001, result: { content: [] } }
-      // when
-      const appended = after.run(event)
-      // then
-      expect(appended).toBe(false)
-      expect(event.result.content).toHaveLength(0)
-    })
-  })
-
-  describe("#when the after event arrives without a recorded start", () => {
-    test("#then no window exists and nothing is appended even with a pending skip", () => {
-      // given
-      const state = createFsyncSkipWarningState()
-      const after = createFsyncSkipWarningRule(state)
-      state.recordSkip({ ...SKIP, timestamp: 4000 })
-      const event = { id: "call-4", timestamp: 4001, result: { content: [] } }
-      // when
-      const appended = after.run(event)
-      // then
-      expect(appended).toBe(false)
-      expect(event.result.content).toHaveLength(0)
-    })
-  })
-
-  describe("#when the same call id is drained twice", () => {
-    test("#then the drained skip is consumed and never double-reported", () => {
-      // given
-      const state = createFsyncSkipWarningState()
-      const before = createFsyncSkipStartRule(state)
-      const after = createFsyncSkipWarningRule(state)
-      before.run({ id: "call-5", timestamp: 5000 })
-      state.recordSkip({ ...SKIP, timestamp: 5001 })
-      const first = { id: "call-5", timestamp: 5002, result: { content: [] } }
-      const second = { id: "call-5", timestamp: 5003, result: { content: [] } }
-      // when
-      const firstAppended = after.run(first)
-      const secondAppended = after.run(second)
-      // then
-      expect(firstAppended).toBe(true)
-      expect(secondAppended).toBe(false)
-      expect(second.result.content).toHaveLength(0)
-    })
-  })
-
-  describe("#when the exported before rules are inspected", () => {
-    test("#then the fsync start recorder is present and named for the seam", () => {
-      // given / when / then
-      expect(Array.isArray(fsyncSkipBeforeRules)).toBe(true)
-      expect(fsyncSkipBeforeRules).toHaveLength(1)
-      expect(fsyncSkipBeforeRules[0].name).toBe("fsync-skip-warning:record-start")
-      expect(typeof fsyncSkipBeforeRules[0].run).toBe("function")
-    })
-  })
-})
-
-// ---------------------------------------------------------------------------
-// 3. read-image-resizer: NO-GO, explicitly not wired
+// 2. read-image-resizer: NO-GO, explicitly not wired
 // ---------------------------------------------------------------------------
 
 describe("#given the read-image-resizer T10 NO-GO verdict", () => {
@@ -309,7 +192,7 @@ describe("#given the read-image-resizer T10 NO-GO verdict", () => {
       // then
       expect(Array.isArray(afterRules)).toBe(true)
       expect(resizerNames).toEqual([])
-      expect(names).toEqual(["delegate-task-retry", "fsync-skip-warning"])
+      expect(names).toEqual(["delegate-task-retry"])
     })
   })
 })

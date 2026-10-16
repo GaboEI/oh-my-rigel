@@ -61,21 +61,20 @@ import { createBtwContextInjector, resolveBtwReceiptPath, writeBtwInjectionRecei
 import { createHashlineEditTool, createHashlineReadEnhancer } from "./rigel-v2-native-hashline.mjs"
 import { createNativeCategorySkillReminder } from "./rigel-v2-native-category-skill-reminder.mjs"
 import { createPersistentTerminalPort } from "./tools/terminal-driver.mjs"
-import { runOrderedRules } from "./rigel-v2-native-hook-chain.mjs"
+import { createBlockingRuleRunner, runOrderedRules } from "./rigel-v2-native-hook-chain.mjs"
 import { createSessionStateRegistry } from "./rigel-v2-native-session-state.mjs"
 import { createKeywordState } from "./rigel-v2-keyword-state.mjs"
 import { createBackgroundManager } from "./rigel-v2-background-manager.mjs"
 import { getStoppedSessionErrorInfo } from "./rigel-v2-background-stopped.mjs"
 import { writeStopMarker } from "./rigel-v2-background-marker.mjs"
 import { createFileBackgroundState, createStorageBackgroundState } from "./rigel-v2-background-state.mjs"
-// T17: single flow-rule import point. `createFlowRules` rebuilds the ordered
-// before/after/request collections over the runtime's ONE fsync tracker; the
-// state factories come from their binder modules.
+// Single flow-rule import point. `createFlowRules` rebuilds the ordered
+// before/after/request collections; the state factories come from their binder
+// modules.
 import { createFlowRules } from "./rigel-v2-native-flow-rules.mjs"
 import { createNativeCompactionContextHook, isCompactionSummaryRequest } from "./rigel-v2-native-compaction-context.mjs"
 import { createNativeCompactionTodoPreserver } from "./rigel-v2-native-compaction-todo-preserver.mjs"
 import { createNativePreemptiveCompaction, createNativeCompactionIncidentRegistry, readAssistantUsage, resolveNativeContextLimit, PREEMPTIVE_COMPACTION_THRESHOLD } from "./rigel-v2-native-preemptive-compaction.mjs"
-import { createFsyncSkipWarningState } from "./rigel-v2-native-flow-after.mjs"
 import { applyPromptAdmission, createStopContinuationState, resolveRequestShape, runRequestSteps } from "./rigel-v2-native-request-steps.mjs"
 import { validateAndRepairMessages } from "./rigel-v2-native-message-repair.mjs"
 import { createNativeAutoSlashCommandHook } from "./rigel-v2-auto-slash-command-bridge.mjs"
@@ -863,12 +862,7 @@ export default {
     const webFetchGuard = createNativeWebFetchRedirectGuard()
     const planFormatValidator = createNativePlanFormatValidator({ directory: location.directory })
     const prometheusMdOnly = createNativePrometheusMdOnly({ resolveAgent: sessionAgentResolver, directory: location.directory })
-    // T17: the flow pipelines (T13-T15 binders) share the one fsync tracker
-    // created once here and never per request or per session; it is the single
-    // tracker the before start rule records into and the after warning rule
-    // drains from. `createFlowRules` rebuilds the ordered collections over it.
-    const fsyncSkipState = createFsyncSkipWarningState()
-    const flowRules = createFlowRules({ fsyncSkipState, truncateAllToolOutputs: readNativeTruncateAllToolOutputs(manifest) })
+    const flowRules = createFlowRules({ truncateAllToolOutputs: readNativeTruncateAllToolOutputs(manifest) })
     // Team mode (Phase-4 Ola 6): when the materialized `team_mode` gate is on
     // and the V2 storage domain exists, the four native team event handlers
     // (idle wake hint, member status, member error, lead orphan) join the same
@@ -1088,14 +1082,10 @@ export default {
     sessionState.registerStore({ clear: (sessionID) => contextLimitRecovery.clear(sessionID) })
     sessionState.registerStore({ clear: (sessionID) => idleGate.clear(sessionID) })
     sessionState.registerStore({ clear: (sessionID) => idleContinuations.clear(sessionID) })
-    // T17: a deleted session releases its stop-continuation flag and any
-    // pending fsync window. The fsync tracker is one runtime-wide correlation
-    // map keyed by call id, so `clear()` drops the pending starts and skips
-    // with the session whose deletion is being fanned out.
+    // A deleted session releases its stop-continuation flag.
     sessionState.registerStore({
       clear: (sessionID) => {
         stopContinuationState.clear(sessionID)
-        fsyncSkipState.clear()
         // A deleted session drops both compaction snapshots too, matching
         // the V1 preserver's `session.idle` / `session.deleted` cleanup. The
         // preserver is created below; the closure reads it at dispose time.
@@ -1613,11 +1603,10 @@ export default {
     // Ordered rule chains for the two V2 tool hooks. Each built-in rule keeps
     // the exact position it had as an inline await, and the flow binders
     // (T13/T14) are appended after every built-in rule. The declared order is
-    // frozen in `rigel-v2-native-flow-rules.mjs`: guards then the fsync start
-    // rule on the before chain, and the delegate-retry then fsync warning rules
-    // on the after chain. `runOrderedRules` isolates a throwing rule: the
-    // failure is recorded and reported by `reportRuleFailure`, and every rule
-    // after it still runs.
+    // frozen in `rigel-v2-native-flow-rules.mjs`. `runOrderedRules` isolates a
+    // throwing rule: the failure is recorded and reported by
+    // `reportRuleFailure`, and every rule after it still runs; the blocking
+    // guards are then re-asserted at this hook boundary by `createBlockingRuleRunner`.
     const nativeAfterRules = [
       { name: "hashline-read-enhancer", run: (event) => hashline?.after(event) },
       { name: "tool-result-reminders", run: (event) => reminders.after(event) },
@@ -1648,10 +1637,18 @@ export default {
         return runOrderedRules(nativeAfterRules, input, { onError: (failure) => reportRuleFailure("execute.after", failure) })
       })
       : undefined
+    // Guards whose contract is to DENY an action (write-existing-file,
+    // notepad append-only) cannot be expressed only as a chain rule: the
+    // failure-isolating chain records a throwing rule and keeps going, so a
+    // block phrased as a rule throw would let the tool execute. The chain still
+    // runs every rule unchanged (its isolation is untouched); `createBlockingRuleRunner`
+    // re-asserts the blocking guard failure at THIS hook boundary, whose throw V2
+    // treats as a denial - the same seam `permissionWiring.before` uses.
+    const runBeforeRules = createBlockingRuleRunner()
     const writeGuardRegistration = typeof context?.tool?.hook === "function"
-      ? await context.tool.hook("execute.before", async (input) => {
-        return runOrderedRules(nativeBeforeRules, input, { onError: (failure) => reportRuleFailure("execute.before", failure) })
-      })
+      ? await context.tool.hook("execute.before", async (input) =>
+        runBeforeRules(nativeBeforeRules, input, { onError: (failure) => reportRuleFailure("execute.before", failure) }),
+      )
       : undefined
     const nonInteractiveRegistration = typeof context?.tool?.hook === "function"
       ? await context.tool.hook("execute.before", async (input) => nonInteractiveEnv.before(input))
@@ -2029,10 +2026,8 @@ export default {
       directoryInstructions.clearAll()
       categorySkillReminder.clearAll()
       keywordState.clearAll()
-      // T17: release both flow states. `clearAll` drops every stopped session
-      // and `clear()` empties the fsync tracker's start map and skip window.
+      // Release the flow state: `clearAll` drops every stopped session.
       stopContinuationState.clearAll()
-      fsyncSkipState.clear()
       // DEC-8: the registry owns every store registered at setup, so teardown
       // cannot miss one. Stores with `clearAll` are cleared once; clear-only
       // stores are cleared for every session the registry saw (via

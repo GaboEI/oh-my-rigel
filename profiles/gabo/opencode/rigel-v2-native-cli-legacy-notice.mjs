@@ -144,6 +144,40 @@ export function createLegacyNoticeCliSurface(overrides = {}) {
         overrides.receiptPath ?? resolveLegacyNoticeReceiptPath({ env: process.env, home: overrides.home ?? homedir() })
       let fired = false
 
+      // Report the rename notice for a legacy `oh-my-opencode` entry in the given
+      // in-memory config. Consumes the per-process slot only when a legacy entry is
+      // actually reported (the late path sets its once-guard separately first).
+      const notifyLegacyFromConfig = (config, at) => {
+        const result = detectLegacyPluginEntry(config)
+        if (!result.legacy) return false
+        const toast = {
+          title: LEGACY_NOTICE_TITLE,
+          message: LEGACY_NOTICE_MESSAGE,
+          variant: LEGACY_NOTICE_VARIANT,
+          duration: LEGACY_NOTICE_DURATION,
+        }
+        if (typeof toastSurface === "function") toastSurface(toast)
+        else toastSurface.show(toast)
+        writeReceipt(receiptPath, result.entries, now(), logger)
+        logger.log({ event: "legacy-notice", entries: result.entries, at })
+        fired = true
+        return true
+      }
+
+      // Early detection: when the surface loads with the in-memory config already
+      // available, warn BEFORE the `session.created` edge, so a legacy remnant is
+      // reported before it can influence startup. A miss here does NOT consume the
+      // once-guard, so the session.created path still fires when the config only
+      // becomes available later.
+      const earlyConfig = resolveConfig(context, overrides)
+      if (earlyConfig !== undefined) {
+        try {
+          notifyLegacyFromConfig(earlyConfig, "setup")
+        } catch (error) {
+          logger.log({ event: "legacy-notice-failed", error: error instanceof Error ? error.message : String(error) })
+        }
+      }
+
       const onSessionCreated = (event) => {
         try {
           if (fired) return
@@ -159,20 +193,7 @@ export function createLegacyNoticeCliSurface(overrides = {}) {
           // consumes the per-process slot.
           fired = true
 
-          const result = detectLegacyPluginEntry(resolveConfig(context, overrides))
-          if (!result.legacy) return
-
-          const toast = {
-            title: LEGACY_NOTICE_TITLE,
-            message: LEGACY_NOTICE_MESSAGE,
-            variant: LEGACY_NOTICE_VARIANT,
-            duration: LEGACY_NOTICE_DURATION,
-          }
-          if (typeof toastSurface === "function") toastSurface(toast)
-          else toastSurface.show(toast)
-
-          writeReceipt(receiptPath, result.entries, now(), logger)
-          logger.log({ event: "legacy-notice", entries: result.entries })
+          notifyLegacyFromConfig(resolveConfig(context, overrides), "session.created")
         } catch (error) {
           logger.log({ event: "legacy-notice-failed", error: error instanceof Error ? error.message : String(error) })
         }

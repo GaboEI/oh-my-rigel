@@ -74,6 +74,7 @@ describe("Rigel V2 keyword core: detect gating", () => {
     { name: "team-mode", text: "team-mode", expected: ["team"] },
     { name: "team_mode", text: "team_mode", expected: ["team"] },
     { name: "teammode", text: "teammode", expected: ["team"] },
+    { name: "bare team is not a keyword", text: "team esto es una prueba de palabra clave", expected: [] },
     { name: "team double space is not team mode", text: "team  mode", expected: [] },
     { name: "hyperplan", text: "hyperplan this", expected: ["hyperplan"] },
     { name: "hpp", text: "hpp", expected: ["hyperplan"] },

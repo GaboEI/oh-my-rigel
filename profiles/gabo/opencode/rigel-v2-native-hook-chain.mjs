@@ -69,3 +69,30 @@ export async function runOrderedRules(rules, input, options = {}) {
   }
   return { failures, executed }
 }
+
+/**
+ * Rule names whose contract is to DENY an action. `runOrderedRules` isolates a
+ * throwing rule and keeps going, which is correct for annotating rules but
+ * wrong for a guard: a block phrased as a rule throw would be recorded and
+ * ignored, letting the tool run. `createBlockingBeforeRunner` runs the chain
+ * exactly as before and then RE-ASSERTS a blocking failure at the hook
+ * boundary, whose throw V2 treats as a denial (the same seam the permission
+ * gate uses). The chain's own isolation is unchanged.
+ */
+export const BLOCKING_RULE_NAMES = new Set(["write-existing-file-guard", "notepad-write-guard"])
+
+/**
+ * Build the `tool.execute.before` handler that runs `rules` through the
+ * isolating chain and re-throws the first blocking failure. A non-blocking rule
+ * that throws is still isolated (the handler resolves), so the general
+ * isolation contract is preserved.
+ */
+export function createBlockingRuleRunner({ blockingNames = BLOCKING_RULE_NAMES } = {}) {
+  const names = blockingNames instanceof Set ? blockingNames : new Set(blockingNames)
+  return async (rules, input, options = {}) => {
+    const outcome = await runOrderedRules(rules, input, options)
+    const blocked = outcome.failures.find((failure) => names.has(failure.name))
+    if (blocked) throw blocked.error
+    return outcome
+  }
+}

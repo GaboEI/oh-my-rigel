@@ -17,15 +17,16 @@
  *
  * before (after the runtime's prometheus-md-only, write-existing-file-guard,
  * comment-checker and webfetch-redirect-guard rules):
- *   1. notepad-write-guard            (throws; isolated by `runOrderedRules`)
+ *   1. notepad-write-guard            (throws; re-asserted by the blocking runner)
  *   2. question-label-truncator
  *   3. sisyphus-junior-notepad
- *   4. fsync-skip-warning:record-start
+ *   4. bash-file-read-guard
  *
  * after (after the runtime's hashline/reminders/category-skill/recovery/rules/
  * comment-checker/plan-format/webfetch result transforms):
  *   1. delegate-task-retry
- *   2. fsync-skip-warning
+ *   2. empty-task-response-detector
+ *   3. tool-output-truncator
  *
  * request (inside the single `session.hook("http.request")` pipeline, before
  * the keyword/roster seam reads the body):
@@ -36,22 +37,12 @@
  * background manager is driven imperatively by the runtime's existing event
  * loop, and the keyword/compaction state is fed by that same loop, so the array
  * stays a frozen empty extension point rather than a second subscription.
- *
- * The fsync start rule and the fsync after rule MUST share one tracker, or the
- * after rule cannot drain the skips recorded past that call's start. The
- * default exports below bind the binder's own module tracker; the runtime calls
- * `createFlowRules({ fsyncSkipState })` once in setup so its single tracker is
- * the one cleared on `session.deleted` and on dispose.
  */
 
 import { beforeRules as flowGuardBeforeRules } from "./rigel-v2-native-flow-guards.mjs"
 import {
   afterRules as flowAfterResultRules,
   createDelegateTaskRetryRule,
-  createFsyncSkipStartRule,
-  createFsyncSkipWarningRule,
-  createFsyncSkipWarningState,
-  fsyncSkipBeforeRules,
 } from "./rigel-v2-native-flow-after.mjs"
 import { requestSteps as nativeRequestSteps } from "./rigel-v2-native-request-steps.mjs"
 import {
@@ -61,17 +52,14 @@ import {
 } from "./rigel-v2-native-tool-guards.mjs"
 
 /**
- * Build the four ordered collections over ONE fsync tracker. When no tracker is
- * injected a fresh one is created, so tests and the runtime each hold an
- * isolated instance instead of sharing process state.
+ * Build the four ordered collections. The declared order matches the module
+ * exports below; the runtime calls this once in setup.
  */
-export function createFlowRules({ fsyncSkipState, truncateAllToolOutputs = false, taskToolName } = {}) {
-  const tracker = fsyncSkipState ?? createFsyncSkipWarningState()
+export function createFlowRules({ truncateAllToolOutputs = false, taskToolName } = {}) {
   return Object.freeze({
-    beforeRules: Object.freeze([...flowGuardBeforeRules, createBashFileReadGuardRule(), createFsyncSkipStartRule(tracker)]),
+    beforeRules: Object.freeze([...flowGuardBeforeRules, createBashFileReadGuardRule()]),
     afterRules: Object.freeze([
       createDelegateTaskRetryRule(),
-      createFsyncSkipWarningRule(tracker),
       createEmptyTaskResponseRule({ taskToolName }),
       createToolOutputTruncatorRule({ truncateAll: truncateAllToolOutputs }),
     ]),
@@ -81,7 +69,7 @@ export function createFlowRules({ fsyncSkipState, truncateAllToolOutputs = false
 }
 
 /** `tool.execute.before` rules, appended after the built-in write guards. */
-export const beforeRules = Object.freeze([...flowGuardBeforeRules, createBashFileReadGuardRule(), ...fsyncSkipBeforeRules])
+export const beforeRules = Object.freeze([...flowGuardBeforeRules, createBashFileReadGuardRule()])
 
 /** `tool.execute.after` rules, appended after the built-in result transforms. */
 export const afterRules = Object.freeze([...flowAfterResultRules, createEmptyTaskResponseRule(), createToolOutputTruncatorRule()])
