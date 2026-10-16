@@ -11,24 +11,19 @@ import { describe, expect, test } from "bun:test"
 
 import {
   MAX_LABEL_LENGTH,
-  MAX_PATH_LINES,
   NOTEPAD_DIRECTIVE,
   SYSTEM_DIRECTIVE_PREFIX,
   TODOWRITE_DESCRIPTION,
   INTERRUPTED_TOOL_ERROR,
-  classifyFsyncPath,
   decideDelegateRetry,
   decideJuniorNotepadInjection,
   decideNotepadWriteBlock,
   decideQuestionLabelTruncation,
   delegateErrorText,
-  describeFsyncClassification,
-  formatFsyncSkipWarning,
   isNotepadPath,
   isTerminalToolStatus,
   normalizeNotepadPath,
   notepadBlockMessage,
-  pairFsyncSkips,
   repairToolParts,
   resolveNotepadFilePath,
   settleToolPart,
@@ -38,8 +33,6 @@ import {
 
 import { NOTEPAD_DIRECTIVE as V1_NOTEPAD_DIRECTIVE } from "../../../packages/omo-opencode/src/hooks/sisyphus-junior-notepad/constants.ts"
 import { TODOWRITE_DESCRIPTION as V1_TODOWRITE_DESCRIPTION } from "../../../packages/omo-opencode/src/hooks/todo-description-override/description.ts"
-import { formatFsyncSkipWarning as v1FormatFsyncSkipWarning } from "../../../packages/omo-opencode/src/shared/fsync-skip-warning-formatter.ts"
-import { classifyPathEnvironment as v1ClassifyPathEnvironment, describePathClassification as v1DescribePathClassification } from "../../../packages/utils/src/classify-path-environment.ts"
 import { detectDelegateTaskError } from "../../../packages/delegate-core/src/retry-patterns.ts"
 import { buildRetryGuidance } from "../../../packages/delegate-core/src/retry-guidance.ts"
 
@@ -369,154 +362,6 @@ describe("#given the tool-pair repair", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// 6. fsync-skip classification + warning block
-// ---------------------------------------------------------------------------
-
-describe("#given the fsync-skip classifier", () => {
-  describe("#when the path names a known sync environment", () => {
-    test("#then onedrive, icloud, network-drive and desktop-sync classify", () => {
-      // given / when / then
-      expect(classifyFsyncPath("/home/u/OneDrive/file.txt")).toBe("onedrive")
-      expect(classifyFsyncPath("/home/u/OneDrive - Contoso/file.txt")).toBe("onedrive")
-      expect(classifyFsyncPath("/Users/u/Library/Mobile Documents/com~apple~CloudDocs/x")).toBe("icloud")
-      expect(classifyFsyncPath("/Volumes/share/x")).toBe("network-drive")
-      expect(classifyFsyncPath("/Users/u/Desktop/x")).toBe("desktop-sync")
-    })
-
-    test("#then a home-relative Desktop path classifies when homeDir is supplied", () => {
-      // given / when / then
-      expect(classifyFsyncPath("/home/u/Desktop/x", "/home/u")).toBe("desktop-sync")
-      expect(classifyFsyncPath("/home/u/Documents/x", "/home/u")).toBe("desktop-sync")
-    })
-  })
-
-  describe("#when the path is not a known environment", () => {
-    test("#then it classifies as unknown", () => {
-      // given / when / then
-      expect(classifyFsyncPath("/tmp/x")).toBe("unknown")
-      expect(classifyFsyncPath("")).toBe("unknown")
-    })
-
-    test("#then the descriptions match the V1 owner", () => {
-      // given / when / then
-      for (const classification of ["icloud", "onedrive", "desktop-sync", "network-drive", "unknown"]) {
-        expect(describeFsyncClassification(classification)).toBe(v1DescribePathClassification(classification))
-      }
-    })
-  })
-
-  describe("#when the classifier is compared to the V1 owner", () => {
-    test("#then the same paths classify identically", () => {
-      // given
-      const paths = [
-        "/home/u/OneDrive/file.txt",
-        "/Users/u/Library/Mobile Documents/x",
-        "/Volumes/share/x",
-        "/Users/u/Desktop/x",
-        "/tmp/x",
-      ]
-      // when / then
-      for (const path of paths) {
-        expect(classifyFsyncPath(path)).toBe(v1ClassifyPathEnvironment(path))
-      }
-    })
-  })
-})
-
-describe("#given the fsync-skip warning block", () => {
-  function entry(filePath, classification, errorCode = "EINVAL") {
-    return { filePath, contextLabel: "c", errorCode, message: "m", pathClassification: classification, timestamp: 1 }
-  }
-
-  describe("#when there are entries", () => {
-    test("#then the block is byte-identical to the V1 owner", () => {
-      // given
-      const entries = [
-        entry("/a/OneDrive/x", "onedrive"),
-        entry("/b/OneDrive/y", "onedrive"),
-        entry("/c/OneDrive/z", "onedrive"),
-        entry("/d/OneDrive/w", "onedrive"),
-        entry("/e/OneDrive/v", "onedrive"),
-        entry("/f/OneDrive/u", "onedrive"),
-      ]
-      // when
-      const ours = formatFsyncSkipWarning(entries)
-      const v1 = v1FormatFsyncSkipWarning(entries)
-      // then
-      expect(ours).toBe(v1)
-      expect(ours).toContain("... and 1 more")
-      expect(ours).toContain("Detected environment: OneDrive")
-    })
-
-    test("#then the unknown classification omits the environment line", () => {
-      // given
-      const entries = [entry("/tmp/x", "unknown")]
-      // when
-      const block = formatFsyncSkipWarning(entries)
-      // then
-      expect(block).toBe(v1FormatFsyncSkipWarning(entries))
-      expect(block).not.toContain("Detected environment:")
-      expect(block).toContain("does not support fsync")
-    })
-
-    test("#then MAX_PATH_LINES caps the shown paths", () => {
-      // given
-      const entries = Array.from({ length: 8 }, (_, i) => entry(`/a/OneDrive/${i}`, "onedrive"))
-      // when
-      const block = formatFsyncSkipWarning(entries)
-      // then
-      expect(MAX_PATH_LINES).toBe(5)
-      expect(block).toContain("... and 3 more")
-    })
-  })
-
-  describe("#when there are no entries", () => {
-    test("#then the block is empty", () => {
-      // given / when / then
-      expect(formatFsyncSkipWarning([])).toBe("")
-      expect(formatFsyncSkipWarning(null)).toBe("")
-    })
-  })
-})
-
-describe("#given the fsync before/after pairing", () => {
-  describe("#when the call ids match", () => {
-    test("#then only entries after the before timestamp are returned", () => {
-      // given
-      const before = { id: "call_1", timestamp: 100 }
-      const after = { id: "call_1", timestamp: 200 }
-      const entries = [
-        { filePath: "old", timestamp: 50 },
-        { filePath: "new", timestamp: 150 },
-      ]
-      // when
-      const paired = pairFsyncSkips(before, after, entries)
-      // then
-      expect(paired.map((e) => e.filePath)).toEqual(["new"])
-    })
-  })
-
-  describe("#when the call ids differ", () => {
-    test("#then no entries are paired", () => {
-      // given
-      const before = { id: "call_1", timestamp: 100 }
-      const after = { id: "call_2", timestamp: 200 }
-      // when / then
-      expect(pairFsyncSkips(before, after, [{ filePath: "x", timestamp: 150 }])).toEqual([])
-    })
-
-    test("#then a missing id is not paired", () => {
-      // given / when / then
-      expect(pairFsyncSkips({ timestamp: 1 }, { timestamp: 2 }, [])).toEqual([])
-    })
-  })
-})
-
-// ---------------------------------------------------------------------------
-// 7. Delegate-retry glue
-// ---------------------------------------------------------------------------
-
 describe("#given the delegate-retry glue", () => {
   describe("#when the event is not an error", () => {
     test("#then no action is taken on a success event", () => {
@@ -579,6 +424,34 @@ describe("#given the delegate-retry glue", () => {
       // given / when / then
       expect(delegateErrorText({ status: "error", error: { message: "boom" } })).toBe("boom")
       expect(delegateErrorText({ status: "error", result: { error: "boom2" } })).toBe("boom2")
+    })
+  })
+})
+
+// P2a corrections: the real V2 failure/event forms the live probes pinned.
+describe("#given the P2a flow-logic corrections", () => {
+  describe("#when the real delegation failure form carries result.error with empty content", () => {
+    test("#then it is treated as an error without a top-level status", () => {
+      // given / when / then
+      expect(delegateErrorText({ tool: "rigel_task", result: { error: "provider.no-route", content: [] } })).toContain("provider.no-route")
+      expect(decideDelegateRetry({ result: { error: { message: "boom" }, content: [] } }).action).toBe("announce")
+    })
+  })
+
+  describe("#when a delegation succeeded", () => {
+    test("#then neither a completed status nor a text result yields guidance", () => {
+      // given / when / then
+      expect(delegateErrorText({ status: "completed", result: { content: [{ type: "text", text: "ok" }] } })).toBe("")
+      expect(decideDelegateRetry({ status: "completed", result: { content: [{ type: "text", text: "ok" }] } }).action).toBe("none")
+    })
+  })
+
+  describe("#when the V2 question tool is called", () => {
+    test("#then its long labels are truncated like the V1 question tool", () => {
+      // given / when / then
+      const truncated = decideQuestionLabelTruncation("question", { questions: [{ options: [{ label: "z".repeat(31) }] }] })
+      expect(truncated.questions[0].options[0].label.length).toBe(30)
+      expect(decideQuestionLabelTruncation("bash", { questions: [] })).toBeNull()
     })
   })
 })

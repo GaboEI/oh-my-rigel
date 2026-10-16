@@ -202,23 +202,65 @@ describe("a legacy entry produces the rename toast and a durable receipt", () =>
   })
 })
 
-describe("only root sessions are considered", () => {
-  test("#given a child session #when session.created fires #then nothing is shown and the guard stays open", () => {
+describe("a legacy entry is reported as early as setup (row 61)", () => {
+  test("#given a legacy entry present when the surface loads #then the toast and receipt fire before any session.created", () => {
     // given
-    const fake = fakeContext({ sessions: { ses_child: { id: "ses_child", parentID: "ses_root" } } })
+    const fake = fakeContext()
+    // when the surface is set up with the in-memory config already carrying the legacy entry
     createLegacyNoticeCliSurface(deps({ config: { plugin: ["oh-my-opencode"] } })).setup(fake.api)
-    const handler = fake.handler("session.created")
+    // then the notice is produced without waiting for a session event
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0].title).toBe(LEGACY_NOTICE_TITLE)
+    expect(existsSync(receiptPath)).toBe(true)
+    expect(readReceipt().entries).toEqual(["oh-my-opencode"])
+  })
 
-    // when
-    handler(sessionCreated("ses_child"))
+  test("#given no legacy at setup #when the config later gains one #then the late session.created path still fires", () => {
+    // given: a miss at setup must NOT consume the once-guard
+    const config = { plugin: ["oh-my-openagent"] }
+    const fake = fakeContext()
+    createLegacyNoticeCliSurface(deps({ config })).setup(fake.api)
+    expect(fake.toasts).toHaveLength(0)
+
+    // when the config later carries the legacy entry and a root session starts
+    config.plugin = ["oh-my-opencode"]
+    fake.handler("session.created")(sessionCreated())
+
+    // then the late path reports it
+    expect(fake.toasts).toHaveLength(1)
+  })
+
+  test("#given a canonical entry at setup #then nothing fires early or late", () => {
+    // given / when
+    const fake = fakeContext()
+    createLegacyNoticeCliSurface(deps({ config: { plugin: ["oh-my-openagent"] } })).setup(fake.api)
+    fake.handler("session.created")(sessionCreated())
 
     // then
+    expect(fake.toasts).toHaveLength(0)
+    expect(existsSync(receiptPath)).toBe(false)
+  })
+})
+
+describe("only root sessions are considered", () => {
+  test("#given a legacy entry appearing after setup #when session.created fires #then the notice waits for a root session", () => {
+    // given: no legacy at setup (the early path misses), legacy present when sessions start
+    const config = { plugin: ["oh-my-openagent"] }
+    const fake = fakeContext({ sessions: { ses_child: { id: "ses_child", parentID: "ses_root" } } })
+    createLegacyNoticeCliSurface(deps({ config })).setup(fake.api)
+    const handler = fake.handler("session.created")
+    config.plugin = ["oh-my-opencode"]
+
+    // when a child session fires
+    handler(sessionCreated("ses_child"))
+
+    // then nothing is shown and the guard stays open
     expect(fake.toasts).toHaveLength(0)
 
     // when a root session later fires, the guard was not consumed
     handler(sessionCreated("ses_root"))
 
-    // then
+    // then the notice is produced
     expect(fake.toasts).toHaveLength(1)
   })
 })

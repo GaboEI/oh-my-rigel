@@ -5,11 +5,11 @@
     "sourceStatus": "APROBADO (2026-10-08)",
     "totalFunctions": 107,
     "totalAreas": 14,
-    "stateTotals": {
-      "activada": 77,
-      "desactivada": 14,
-      "condicionada": 16
-    }
+  "stateTotals": {
+    "activada": 76,
+    "desactivada": 15,
+    "condicionada": 16
+  }
   },
   "areas": [
     {
@@ -2146,12 +2146,12 @@
       "nombre": "Aviso de escritura no confirmada",
       "area": "D",
       "areaSlug": "herramientas-de-trabajo-y-edicion",
-      "estado": "activada",
-      "v2": "migrada",
-      "que_es": "Avisa si una escritura no confirma sus datos.",
-      "como_se_activa": "Automático.",
-      "como_se_usa": "Automático — el aviso aparece en el chat si una escritura queda sin confirmar.",
-      "cuando_sirve": "Se guarda el plan y la respuesta no dejó constancia: lo verás y se puede repetir la escritura.",
+      "estado": "desactivada",
+      "v2": "no_migrada",
+      "que_es": "Superficie declarada para avisar si una escritura no confirma sus datos; no entregada en V2.",
+      "como_se_activa": "No se activa: no tiene emisor vivo.",
+      "como_se_usa": "No entregada — el aviso no se emite: la regla existe pero ningún productor vivo la dispara, así que en V2 no verás este aviso.",
+      "cuando_sirve": "No aplica mientras no exista un emisor real de escrituras no confirmadas.",
       "url": "/catalogo/aviso-de-escritura-no-confirmada/",
       "modo_de_activacion": "Automático",
       "requisitos": {
@@ -2166,9 +2166,9 @@
       },
       "ejemplos": {
         "procedencia": "derivado",
-        "valor": [
-          "Se guarda el plan y la respuesta no dejó constancia: lo verás y se puede repetir la escritura."
-        ],
+  "valor": [
+   "No aplica mientras no exista un emisor real de escrituras no confirmadas."
+  ],
         "fuente": "catálogo: columna «Cuándo te sirve»"
       },
       "comandos": {
@@ -2182,8 +2182,10 @@
         "fuente": "Catalogo_Funciones_OMR_V2.md (sección «Alcance y límites»)"
       },
       "cambios_relevantes": {
-        "procedencia": "no_consta",
-        "razon": "El catálogo clasifica la función como migrada (comportamiento conservado) pero no describe un cambio concreto.",
+        "procedencia": "derivado",
+        "valor": [
+          "No expuesto todavía: la superficie no se expone como activa porque no tiene productor vivo."
+        ],
         "fuente": "catálogo: columna «Cómo está en V2»"
       }
     },
@@ -3086,7 +3088,7 @@
       "v2": "migrada",
       "que_es": "Con una palabra en tu mensaje se activa un modo de trabajo.",
       "como_se_activa": "Puedes desactivar palabras concretas.",
-      "como_se_usa": "Palabra clave — escribe `ulw` (o `ultrawork`), `team` o `hyperplan` dentro del mensaje y el modo entra sin comando. Ajuste — con `keyword_detector.disabled_keywords` apagas las que te estorben.",
+      "como_se_usa": "Palabra clave — escribe `ulw` (o `ultrawork`), `team mode` o `hyperplan` dentro del mensaje y el modo entra sin comando. El alias suelto `team` no activa el modo equipo. Ajuste — con `keyword_detector.disabled_keywords` apagas las que te estorben.",
       "cuando_sirve": "«ulw revisa los pull requests pendientes»: todo va en modo trabajador sin más ceremonias.",
       "url": "/catalogo/palabras-clave-que-activan-modos/",
       "modo_de_activacion": "Palabra clave",
@@ -3456,10 +3458,10 @@
       "areaSlug": "equipos-y-espacios-de-trabajo-aislados",
       "estado": "desactivada",
       "v2": "reescrita",
-      "que_es": "Muestra a cada agente en su propio panel de terminal.",
-      "como_se_activa": "Se activa dentro del modo equipo si tienes un programa que permite mostrar y organizar varias terminales en una misma ventana.",
-      "como_se_usa": "Ajuste — `team_mode.tmux_visualization: true` y el organizador de terminales instalado (por ejemplo, `tmux`); solo dentro del modo equipo.",
-      "cuando_sirve": "Con el equipo corriendo, cada miembro se ve en su panel y sigues el avance a simple vista.",
+      "que_es": "Reparte a los miembros del equipo en paneles de una sesión tmux que ya existe.",
+      "como_se_activa": "Se activa dentro del modo equipo si tienes un programa que permite mostrar y organizar varias terminales en una misma ventana y la sesión corre dentro de él.",
+      "como_se_usa": "Ajuste — `team_mode.tmux_visualization: true`, el organizador de terminales instalado (por ejemplo, `tmux`) y la sesión lanzada DENTRO de tmux (con `TMUX` y `TMUX_PANE` presentes); solo dentro del modo equipo. En la topología de servicio (demonio) no crea paneles: lo deja anotado como degradación, sin fallar.",
+      "cuando_sirve": "Con el equipo corriendo dentro de tu propia sesión tmux, ves a cada miembro en su panel y sigues el avance a simple vista.",
       "url": "/catalogo/visualizacion-en-paneles/",
       "modo_de_activacion": "Ajuste",
       "requisitos": {
@@ -4680,10 +4682,10 @@
       "areaSlug": "recuperacion-ante-fallos-respaldo-de-modelos-y-permisos",
       "estado": "activada",
       "v2": "migrada",
-      "que_es": "Detecta agentes que no avanzan y los recupera o los detiene.",
+      "que_es": "Reacciona ante un fallo real de un agente y ante una conversación que queda inactiva con trabajo de fondo pendiente.",
       "como_se_activa": "Automático.",
-      "como_se_usa": "Automático — un agente atascado se interrumpe o se reanuda solo; lo ves como actividad saneada, no como silencio eterno.",
-      "cuando_sirve": "Un agente entra en un bucle sin salida: se para a tiempo sin quemar tu cuota entera.",
+      "como_se_usa": "Automático — ante un fallo real del agente el sistema reintenta o cambia de agente, y si una conversación queda inactiva con una tarea de fondo viva te avisa en vez de dejarte esperando en silencio. NO vigila un agente silenciosamente atascado.",
+      "cuando_sirve": "Una tarea de fondo sigue en marcha y la conversación espera: se te avisa o se retoma en vez de quedarse colgada.",
       "url": "/catalogo/vigilancia-de-agentes-inestables/",
       "modo_de_activacion": "Automático",
       "requisitos": {
@@ -4698,9 +4700,9 @@
       },
       "ejemplos": {
         "procedencia": "derivado",
-        "valor": [
-          "Un agente entra en un bucle sin salida: se para a tiempo sin quemar tu cuota entera."
-        ],
+  "valor": [
+   "Una tarea de fondo sigue en marcha y la conversación espera: se te avisa o se retoma en vez de quedarse colgada."
+  ],
         "fuente": "catálogo: columna «Cuándo te sirve»"
       },
       "comandos": {

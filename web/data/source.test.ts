@@ -124,11 +124,11 @@ describe("#given the migrated catalog #when coverage is checked #then it is exac
     for (const area of catalog.areas) expect([area.id, area.count]).toEqual([area.id, EXPECTED_PER_AREA[area.id]])
   })
 
-  test("#given the state totals #when recomputed from functions #then they match the approved summary (77/14/16)", () => {
+  test("#given the state totals #when recomputed from functions #then they match the approved summary (76/15/16)", () => {
     // given / when / then
     const totals: Record<string, number> = { activada: 0, desactivada: 0, condicionada: 0 }
     for (const f of catalog.functions) totals[f.estado] += 1
-    expect(totals).toEqual({ activada: 77, desactivada: 14, condicionada: 16 })
+    expect(totals).toEqual({ activada: 76, desactivada: 15, condicionada: 16 })
     expect(catalog.catalog.stateTotals).toEqual(totals)
   })
 

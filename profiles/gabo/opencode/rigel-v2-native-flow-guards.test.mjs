@@ -110,6 +110,15 @@ describe("#given the question label truncator binder", () => {
       // then
       expect(event.input.questions[0].options[0].label.length).toBe(30)
     })
+
+    test("#then the real V2 `question` tool name is truncated the same way", () => {
+      // given: the V2 runtime registers the question surface as `question`
+      const event = beforeEvent("question", { questions: [{ options: [{ label: "q".repeat(31) }] }] })
+      // when
+      questionLabelTruncator.run(event)
+      // then
+      expect(event.input.questions[0].options[0].label.length).toBe(30)
+    })
   })
 
   describe("#when truncation does not apply", () => {

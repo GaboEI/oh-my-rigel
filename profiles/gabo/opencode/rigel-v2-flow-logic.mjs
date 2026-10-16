@@ -12,8 +12,6 @@
  *   packages/omo-opencode/src/hooks/sisyphus-junior-notepad/{hook,constants}.ts
  *   packages/omo-opencode/src/hooks/todo-description-override/description.ts
  *   packages/omo-opencode/src/hooks/tool-pair-validator/tool-result-repair.ts
- *   packages/omo-opencode/src/shared/fsync-skip-warning-formatter.ts
- *   packages/utils/src/classify-path-environment.ts
  *   packages/delegate-core/src/retry-{patterns,guidance}.ts
  *
  * The native V2 runtime cannot import TypeScript from `packages/`, so the logic
@@ -137,15 +135,23 @@ export function truncateQuestionLabels(args) {
 }
 
 /**
+ * Names the question tool is registered under. V1 matched `askuserquestion` /
+ * `ask_user_question`; the V2 runtime registers the same surface as `question`
+ * (verified live), so the truncation must match all three or the guard is a
+ * silent no-op on the real tool.
+ */
+export const QUESTION_TOOL_NAMES = new Set(["askuserquestion", "ask_user_question", "question"])
+
+/**
  * Decide whether a tool call is a question tool whose labels must be truncated.
- * V1 matches `askuserquestion` / `ask_user_question` (case-insensitive) and
- * requires `args.questions` to be an array. Returns the truncated args, or
+ * Matches `askuserquestion` / `ask_user_question` / `question` (case-insensitive)
+ * and requires `args.questions` to be an array. Returns the truncated args, or
  * `null` when no truncation applies.
  */
 export function decideQuestionLabelTruncation(tool, args) {
   if (typeof tool !== "string") return null
   const toolName = tool.toLowerCase()
-  if (toolName !== "askuserquestion" && toolName !== "ask_user_question") return null
+  if (!QUESTION_TOOL_NAMES.has(toolName)) return null
   if (!args || typeof args !== "object" || !Array.isArray(args.questions)) return null
   return truncateQuestionLabels(args)
 }
@@ -322,148 +328,7 @@ export function repairToolParts(message) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. fsync-skip classification + warning block
-// ---------------------------------------------------------------------------
-
-/** V1 `MAX_PATH_LINES` (fsync-skip-warning-formatter.ts). */
-export const MAX_PATH_LINES = 5
-
-/**
- * Classify a path into the V1 `PathClassification` set. Mirrors
- * `packages/utils/src/classify-path-environment.ts` without `homedir()`: the
- * caller passes `homeDir` so the function stays pure. When `homeDir` is absent
- * the home-relative Desktop/Documents check is skipped.
- */
-export function classifyFsyncPath(absolutePath, homeDir) {
-  if (typeof absolutePath !== "string" || absolutePath.length === 0) return "unknown"
-  const normalizedPath = absolutePath.replaceAll("\\", "/")
-
-  const segments = normalizedPath.split("/")
-  if (segments.some((segment) => {
-    const lower = segment.toLowerCase()
-    return lower === "onedrive" || lower.startsWith("onedrive - ")
-  })) {
-    return "onedrive"
-  }
-
-  if (normalizedPath.includes("/Library/Mobile Documents/")) return "icloud"
-
-  if (isUnderPath(normalizedPath, "/Volumes")) return "network-drive"
-
-  if (
-    normalizedPath.startsWith("/Users/")
-    && (normalizedPath.includes("/Desktop/") || normalizedPath.endsWith("/Desktop")
-      || normalizedPath.includes("/Documents/") || normalizedPath.endsWith("/Documents"))
-  ) {
-    return "desktop-sync"
-  }
-
-  if (typeof homeDir === "string" && homeDir.length > 0) {
-    const normalizedHome = homeDir.replaceAll("\\", "/")
-    const desktopPath = `${normalizedHome}/Desktop`
-    const documentsPath = `${normalizedHome}/Documents`
-    if (isUnderPath(normalizedPath, desktopPath) || isUnderPath(normalizedPath, documentsPath)) {
-      return "desktop-sync"
-    }
-  }
-
-  return "unknown"
-}
-
-function isUnderPath(normalizedPath, normalizedParentPath) {
-  return normalizedPath === normalizedParentPath || normalizedPath.startsWith(`${normalizedParentPath}/`)
-}
-
-/** Human description for a classification (V1 `describePathClassification`). */
-export function describeFsyncClassification(pathClassification) {
-  switch (pathClassification) {
-    case "icloud":
-      return "iCloud Drive"
-    case "onedrive":
-      return "OneDrive"
-    case "desktop-sync":
-      return "Desktop sync (macOS)"
-    case "network-drive":
-      return "Network drive"
-    case "unknown":
-      return "filesystem that does not support fsync"
-    default:
-      return "filesystem that does not support fsync"
-  }
-}
-
-function selectMostCommonClassification(entries) {
-  const counts = new Map()
-  for (const entry of entries) {
-    const current = counts.get(entry.pathClassification) ?? 0
-    counts.set(entry.pathClassification, current + 1)
-  }
-  let selected = "unknown"
-  let selectedCount = -1
-  for (const [classification, count] of counts.entries()) {
-    if (count > selectedCount) {
-      selected = classification
-      selectedCount = count
-    }
-  }
-  return selected
-}
-
-/**
- * Format the exact V1 fsync-skip warning block. Returns "" for no entries.
- * Byte-identical to `formatFsyncSkipWarning` in
- * `packages/omo-opencode/src/shared/fsync-skip-warning-formatter.ts`.
- */
-export function formatFsyncSkipWarning(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) return ""
-
-  const selectedClassification = selectMostCommonClassification(entries)
-  const selectedDescription = describeFsyncClassification(selectedClassification)
-  const shownEntries = entries.slice(0, MAX_PATH_LINES)
-  const hiddenCount = Math.max(entries.length - shownEntries.length, 0)
-  const pathLines = shownEntries.map((entry) => `  - ${entry.filePath} (code: ${entry.errorCode})`)
-  if (hiddenCount > 0) {
-    pathLines.push(`  ... and ${hiddenCount} more`)
-  }
-
-  const environmentLines = selectedClassification === "unknown"
-    ? []
-    : [`Detected environment: ${selectedDescription}`]
-
-  const durabilityLine = selectedClassification === "unknown"
-    ? "  - Crash durability is best-effort because this filesystem does not support fsync."
-    : "  - Crash durability is best-effort on this filesystem (this is normal for iCloud, OneDrive, network drives, antivirus-locked paths)."
-
-  return [
-    "---",
-    `[fsync-skipped] ${entries.length} write(s) bypassed fsync because the underlying filesystem rejected the syscall.`,
-    "",
-    ...environmentLines,
-    "Affected paths:",
-    ...pathLines,
-    "",
-    "What this means:",
-    "  - The write+rename succeeded — the file is on disk, atomicity is preserved.",
-    durabilityLine,
-    "  - No action required. Operation completed successfully.",
-  ].join("\n")
-}
-
-/**
- * Pair a before/after tool event by the stable call id (T1: `event.id` is
- * stable and equal across before/after). Returns the entries recorded after the
- * before-event's timestamp, or an empty list when the ids do not match.
- */
-export function pairFsyncSkips(beforeEvent, afterEvent, entries) {
-  if (!isRecord(beforeEvent) || !isRecord(afterEvent)) return []
-  if (beforeEvent.id === undefined || beforeEvent.id !== afterEvent.id) return []
-  if (!Array.isArray(entries)) return []
-  const startTimestamp = typeof beforeEvent.timestamp === "number" ? beforeEvent.timestamp : 0
-  return entries.filter((entry) => typeof entry?.timestamp === "number" && entry.timestamp > startTimestamp)
-}
-
-// ---------------------------------------------------------------------------
-// 7. Delegate-retry glue (T3 verdict: operate on the error channel only)
+// 6. Delegate-retry glue (T3 verdict: operate on the error channel only)
 // ---------------------------------------------------------------------------
 
 /**
@@ -474,12 +339,23 @@ export function pairFsyncSkips(beforeEvent, afterEvent, entries) {
  */
 export function delegateErrorText(event) {
   if (!isRecord(event)) return ""
-  if (event.status !== "error") return ""
+  const resultError = event.result?.error
+  const resultErrorText =
+    typeof resultError === "string"
+      ? resultError
+      : isRecord(resultError) && typeof resultError.message === "string"
+        ? resultError.message
+        : ""
+  // Trigger on the explicit error status OR the real V2 failure form pinned live:
+  // `event.result.error` carried with an empty content array and NO top-level
+  // `status: "error"`. A successful delegation carries neither signal, so it can
+  // never produce guidance.
+  if (event.status !== "error" && resultErrorText.length === 0) return ""
   const parts = [
     typeof event.error === "string" ? event.error : "",
     isRecord(event.error) && typeof event.error.message === "string" ? event.error.message : "",
-    typeof event.result?.error === "string" ? event.result.error : "",
-    isRecord(event.result?.error) && typeof event.result.error.message === "string" ? event.result.error.message : "",
+    resultErrorText,
+    typeof event.result?.output === "string" ? event.result.output : "",
     typeof event.output === "string" ? event.output : "",
   ]
   return parts.filter(Boolean).join("\n")

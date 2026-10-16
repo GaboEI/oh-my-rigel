@@ -868,7 +868,6 @@ test("native runtime registers its ordered tool hook chain and disposes every re
       "plan-format-validator",
       "webfetch-redirect-guard",
       "delegate-task-retry",
-      "fsync-skip-warning",
       "empty-task-response-detector",
       "tool-output-truncator",
     ])
@@ -895,7 +894,6 @@ test("native runtime registers its ordered tool hook chain and disposes every re
       "question-label-truncator",
       "sisyphus-junior-notepad",
       "bash-file-read-guard",
-      "fsync-skip-warning:record-start",
     ])
     expect(beforeReport.failures).toEqual([])
 
@@ -949,30 +947,26 @@ test("native runtime wires per-turn think reasoning into the model-visible conte
   }
 })
 
-test("native runtime isolates a throwing execute.before rule and keeps the chain running", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "rigel-native-hook-isolation-"))
-  const existing = join(workspace, "existing.txt")
-  writeFileSync(existing, "already here\n")
+test("native runtime runs the composed execute.before chain in order for an allowed write", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "rigel-native-hook-chain-"))
   try {
     const { context, registrations } = recordingHookContext(workspace)
     const dispose = await plugin.setup(context)
     const beforeChain = registrations.filter((registration) => registration.name === "execute.before")
 
-    // The second rule, the write-existing-file guard, throws for a write to an
-    // existing file. The chain must resolve anyway, record the failure, and
-    // still run the comment-checker and webfetch rules declared after it, plus
-    // every T13/T14 flow rule appended at the end.
+    // A write to a NEW, non-notepad path trips no guard, so every rule runs to
+    // completion in the declared order and the chain reports no failure.
     const report = await beforeChain[0].handler({
       tool: "write",
-      sessionID: "ses_guard",
-      id: "call_guard",
-      input: { filePath: existing, content: "// a comment\nconst value = 1\n" },
+      sessionID: "ses_ok",
+      id: "call_ok",
+      input: { filePath: join(workspace, "new.txt"), content: "const value = 1\n" },
     })
 
-    expect(report.failures.map((failure) => failure.name)).toEqual(["write-existing-file-guard"])
-    expect(report.failures[0].error).toBeInstanceOf(Error)
+    expect(report.failures).toEqual([])
     expect(report.executed).toEqual([
       "prometheus-md-only",
+      "write-existing-file-guard",
       "comment-checker",
       "webfetch-redirect-guard",
       "mcp-prefix-strip",
@@ -982,7 +976,6 @@ test("native runtime isolates a throwing execute.before rule and keeps the chain
       "question-label-truncator",
       "sisyphus-junior-notepad",
       "bash-file-read-guard",
-      "fsync-skip-warning:record-start",
     ])
 
     await dispose()
@@ -991,38 +984,47 @@ test("native runtime isolates a throwing execute.before rule and keeps the chain
   }
 })
 
-test("native runtime isolates a throwing flow rule and keeps the composed before chain running", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "rigel-native-flow-isolation-"))
+test("native runtime blocks a write to an existing unread file at the execute.before boundary", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "rigel-native-write-block-"))
+  const existing = join(workspace, "existing.txt")
+  writeFileSync(existing, "already here\n")
   try {
     const { context, registrations } = recordingHookContext(workspace)
     const dispose = await plugin.setup(context)
     const beforeChain = registrations.filter((registration) => registration.name === "execute.before")
 
-    // notepad-write-guard is the first T13 flow rule and throws for a write
-    // into a notepad root. The four native rules before it already completed,
-    // and every flow rule declared after it must still run.
-    const report = await beforeChain[0].handler({
+    // Row 30 FIX: the write-existing-file guard's denial must reach the hook
+    // boundary (a real denial seam). Previously the chain swallowed it and the
+    // write ran; now the boundary rejects before the executor.
+    await expect(beforeChain[0].handler({
+      tool: "write",
+      sessionID: "ses_guard",
+      id: "call_guard",
+      input: { filePath: existing, content: "// a comment\nconst value = 1\n" },
+    })).rejects.toThrow("File already exists")
+
+    await dispose()
+  } finally {
+    rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+test("native runtime blocks an append-only notepad write at the execute.before boundary", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "rigel-native-notepad-block-"))
+  try {
+    const { context, registrations } = recordingHookContext(workspace)
+    const dispose = await plugin.setup(context)
+    const beforeChain = registrations.filter((registration) => registration.name === "execute.before")
+
+    // Row 32 FIX: the notepad append-only guard denial must reach the hook
+    // boundary instead of being recorded and ignored.
+    await expect(beforeChain[0].handler({
       tool: "write",
       sessionID: "ses_flow",
       id: "call_flow",
       input: { filePath: join(workspace, ".omo", "notepads", "plan.md"), content: "notes\n" },
-    })
+    })).rejects.toThrow("append-only")
 
-    expect(report.failures.map((failure) => failure.name)).toEqual(["notepad-write-guard"])
-    expect(report.failures[0].error).toBeInstanceOf(Error)
-    expect(report.executed).toEqual([
-      "prometheus-md-only",
-      "write-existing-file-guard",
-      "comment-checker",
-      "webfetch-redirect-guard",
-      "mcp-prefix-strip",
-      "bash-null-byte-strip",
-      "background-sleep-block",
-      "question-label-truncator",
-      "sisyphus-junior-notepad",
-      "bash-file-read-guard",
-      "fsync-skip-warning:record-start",
-    ])
     await dispose()
   } finally {
     rmSync(workspace, { recursive: true, force: true })

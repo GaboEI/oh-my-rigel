@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
-import { runOrderedRules } from "./rigel-v2-native-hook-chain.mjs"
+import { createBlockingRuleRunner, runOrderedRules } from "./rigel-v2-native-hook-chain.mjs"
 import { runMutation } from "./test-support/mutation-harness.mjs"
 import { loadV1Oracle, V1_ORACLE_IDS } from "./test-support/v1-oracle.mjs"
 
@@ -99,6 +99,50 @@ describe("Rigel native V2 ordered hook chain", () => {
   })
 })
 
+describe("Rigel native V2 blocking-guard re-assertion", () => {
+  // Rows 30/32: a guard whose contract is to DENY (write-existing-file,
+  // notepad append-only) must actually block. Phrased as a plain chain rule its
+  // throw is isolated and swallowed; `createBlockingRuleRunner` re-asserts the
+  // block at the hook boundary while the chain keeps its isolation.
+  test("#given a blocking rule that throws #when the runner runs #then the hook rejects with the guard error", async () => {
+    // given
+    const block = new Error("File already exists. Use edit tool instead.")
+    const rules = [
+      { name: "annotate", run: () => {} },
+      { name: "write-existing-file-guard", run: () => { throw block } },
+      { name: "after-guard", run: () => {} },
+    ]
+
+    // when / then
+    await expect(createBlockingRuleRunner()(rules, { tool: "write" })).rejects.toBe(block)
+  })
+
+  test("#given only non-blocking failures #when the runner runs #then it resolves and the chain isolation is preserved", async () => {
+    // given
+    const rules = [
+      { name: "annotate", run: () => {} },
+      { name: "some-annotator", run: () => { throw new Error("annotator exploded") } },
+      { name: "after-annotator", run: () => {} },
+    ]
+
+    // when
+    const outcome = await createBlockingRuleRunner()(rules, { tool: "read" })
+
+    // then: an unknown/annotating failure is still isolated, never re-thrown
+    expect(outcome.failures.map((failure) => failure.name)).toEqual(["some-annotator"])
+    expect(outcome.executed).toEqual(["annotate", "after-annotator"])
+  })
+
+  test("#given a blocking rule under a custom name #when the runner is configured with it #then that name blocks", async () => {
+    // given
+    const block = new Error("blocked")
+    const runner = createBlockingRuleRunner({ blockingNames: new Set(["my-guard"]) })
+
+    // when / then
+    await expect(runner([{ name: "my-guard", run: () => { throw block } }], null)).rejects.toBe(block)
+  })
+})
+
 describe("Rigel native V2 named-RED mutation harness", () => {
   test("#given a file and a named contract #when runMutation applies a mutation #then the contract goes RED and the file is restored byte-identically", async () => {
     const dir = tempDir()
@@ -153,6 +197,42 @@ describe("Rigel native V2 named-RED mutation harness", () => {
     expect(receipt.contract).toBe("ordered chain records the thrown Error on an isolated failure")
     expect(receipt.red).toBe(true)
     expect(receipt.redError).toContain("isolated failure to carry the thrown Error")
+    expect(receipt.beforeHash).toBe(receipt.afterHash)
+    const restoredHash = createHash("sha256").update(fs.readFileSync(target)).digest("hex")
+    expect(restoredHash).toBe(sourceHash)
+    const trackedHash = createHash("sha256").update(fs.readFileSync(HOOK_CHAIN_SOURCE)).digest("hex")
+    expect(trackedHash).toBe(sourceHash)
+  })
+
+  test("#given the real hook chain #when the blocking re-assertion is mutated away #then the block contract turns RED and the source is byte-identical", async () => {
+    const dir = tempDir()
+    const target = path.join(dir, "hook-chain.mjs")
+    fs.copyFileSync(HOOK_CHAIN_SOURCE, target)
+    const sourceHash = createHash("sha256").update(fs.readFileSync(target)).digest("hex")
+
+    const receipt = await runMutation({
+      file: target,
+      mutate: (source) => source.replace("if (blocked) throw blocked.error", "if (blocked) return outcome"),
+      contract: {
+        name: "a blocking guard failure is re-asserted at the hook boundary",
+        run: async ({ load }) => {
+          const module = await load()
+          let rejected = false
+          try {
+            await module.createBlockingRuleRunner()(
+              [{ name: "write-existing-file-guard", run: () => { throw new Error("block") } }],
+              null,
+            )
+          } catch {
+            rejected = true
+          }
+          if (!rejected) throw new Error("expected the blocking guard failure to reject the hook")
+        },
+      },
+    })
+
+    expect(receipt.red).toBe(true)
+    expect(receipt.redError).toContain("expected the blocking guard failure to reject")
     expect(receipt.beforeHash).toBe(receipt.afterHash)
     const restoredHash = createHash("sha256").update(fs.readFileSync(target)).digest("hex")
     expect(restoredHash).toBe(sourceHash)

@@ -165,6 +165,45 @@ describe("Rigel native V2 plan-format validator", () => {
     expect(again.content).toHaveLength(1)
   })
 
+  test("reads and annotates the real event.output channel", async () => {
+    // given a malformed plan and the live after-event shape: a plain event.output string
+    const root = scratch()
+    writePlan(root, "output.md", MALFORMED_PLAN)
+    const validator = createNativePlanFormatValidator({ directory: root })
+    const event = { tool: "write", input: { filePath: ".omo/plans/output.md" }, output: "Wrote file successfully." }
+    // when the write result is processed
+    await validator.after(event)
+    // then the warning is appended onto event.output
+    expect(event.output).toContain("<plan-format-warning>")
+  })
+
+  test("normalizes a duration effort on the real event.output channel", async () => {
+    // given a plan whose effort is a duration, read through event.output
+    const root = scratch()
+    const content = VALID_PLAN.replace("**Effort:** Medium", "**Effort:** 200 hours")
+    const file = writePlan(root, "output-duration.md", content)
+    const validator = createNativePlanFormatValidator({ directory: root })
+    const event = { tool: "write", input: { filePath: ".omo/plans/output-duration.md" }, output: "saved" }
+    // when processed
+    await validator.after(event)
+    // then the file was rewritten and the warning landed on event.output
+    expect(fs.readFileSync(file, "utf-8")).toContain("**Effort:** XL")
+    expect(event.output).toContain("<plan-format-warning>")
+  })
+
+  test("is a no-op when no result channel carries text", async () => {
+    // given a malformed plan but an event with no output/result channel at all
+    const root = scratch()
+    writePlan(root, "nochannel.md", MALFORMED_PLAN)
+    const validator = createNativePlanFormatValidator({ directory: root })
+    const event = { tool: "write", input: { filePath: ".omo/plans/nochannel.md" } }
+    // when processed
+    await validator.after(event)
+    // then nothing is annotated
+    expect(event.output).toBeUndefined()
+    expect(event.result).toBeUndefined()
+  })
+
   test("ignores tools other than write/edit", async () => {
     // given a read tool event on a plan
     const root = scratch()
