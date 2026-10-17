@@ -92,6 +92,28 @@ describe("#given the real rigel_task taskResult shapes", () => {
   })
 })
 
+describe("#given a foreground child that returned no text", () => {
+  describe("#when taskResult shapes the completed delegation", () => {
+    test("#then it exposes the empty-child signal the after-hook detector needs", () => {
+      // given / when: the wrapper keeps a non-empty lifecycle text, so the
+      // detector cannot infer emptiness from `content`; the signal is metadata.
+      const empty = foregroundChild("")
+      // then
+      expect(empty.metadata.childEmpty).toBe(true)
+      expect(empty.content).toContain("(The child returned no text.)")
+    })
+
+    test("#then a child with text and a background spawn are not flagged empty", () => {
+      // given / when
+      const withText = foregroundChild("Found 3 files matching the pattern.")
+      const spawned = backgroundChild()
+      // then
+      expect(withText.metadata.childEmpty).toBe(false)
+      expect(spawned.metadata.childEmpty).toBe(false)
+    })
+  })
+})
+
 describe("#given the real V2 coordinator rejection thrown from rigel_task.execute", () => {
   describe("#when the thrown message is fed to the detector as the tool error", () => {
     test("#then it is not detectable, with or without an [ERROR] prefix", () => {

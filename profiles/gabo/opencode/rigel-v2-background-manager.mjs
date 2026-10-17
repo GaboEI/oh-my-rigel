@@ -195,6 +195,10 @@ function currentModelOf(record) {
  *  - `abortSignal` optional signal; aborting it disposes the manager.
  *  - `now`         optional `() => string` timestamp seam.
  *  - `idFactory`   optional `() => string` task-id seam.
+ *  - `resolveParentDirectory` optional `async (parentSessionID) => string|undefined`
+ *                  seam used ONLY for a restored legacy state that predates
+ *                  `parentDirectory`. An unresolved parent is left unknown and its
+ *                  continuation marker is suppressed (fail closed for isolation).
  */
 export function createBackgroundManager({
   directory,
@@ -209,6 +213,7 @@ export function createBackgroundManager({
   now,
   idFactory,
   stateStore,
+  resolveParentDirectory,
 } = {}) {
   const report = typeof onError === "function" ? onError : defaultReport
   const makeId = typeof idFactory === "function" ? idFactory : () => `bg_${randomUUID()}`
@@ -237,7 +242,7 @@ export function createBackgroundManager({
   function writeState(parentSessionID) {
     const entry = opEntry(parentSessionID)
     const generation = ++entry.generation
-    const snapshot = { tasks: snapshotTasks(parentSessionID), wakes: snapshotWakes(parentSessionID) }
+    const snapshot = { tasks: snapshotTasks(parentSessionID), wakes: snapshotWakes(parentSessionID), parentDirectory: directoryFor(parentSessionID) }
     return enqueueOp(parentSessionID, async () => {
       if (generation <= entry.clearedAt) return
       await store.write(parentSessionID, snapshot)
@@ -254,6 +259,11 @@ export function createBackgroundManager({
   }
   const tasks = new Map()
   const bySession = new Map()
+  // The project directory of each tracked parent, so a continuation marker is
+  // written (and cleared) inside the parent's OWN project rather than the
+  // plugin's static location. Persisted in the durable state so a restart can
+  // restore it before the marker is refreshed.
+  const parentDirectories = new Map()
   const queue = createBackgroundQueue(config)
   let disposed = false
   // During `restore`, snapshot writes must wait until every parent's state is in
@@ -271,6 +281,54 @@ export function createBackgroundManager({
       if (record.parentSessionID === parentSessionID) matched.push(record)
     }
     return matched
+  }
+
+  /**
+   * The directory a parent's continuation marker belongs in, or `undefined` when
+   * it is not known. A restored parent whose durable state predates
+   * `parentDirectory` has no directory until a trusted resolver supplies one; the
+   * manager NEVER assumes its own static location for such a parent, because that
+   * is exactly the cross-project leak this guard closes.
+   */
+  function directoryFor(parentSessionID) {
+    const own = parentDirectories.get(parentSessionID)
+    return typeof own === "string" && own.length > 0 ? own : undefined
+  }
+
+  /**
+   * Remember a parent's own project directory once it is KNOWN (first writer
+   * wins). A missing or empty value is never guessed: an unknown parent stays
+   * unknown, so its marker is suppressed (fail closed for isolation) rather than
+   * written into whichever project happens to be active.
+   */
+  function setParentDirectory(parentSessionID, value) {
+    if (parentDirectories.has(parentSessionID)) return
+    if (typeof value !== "string" || value.length === 0) return
+    parentDirectories.set(parentSessionID, value)
+  }
+
+  /** True when the parent's own project IS this plugin instance's directory. */
+  function isOwnProject(parentSessionID) {
+    const own = directoryFor(parentSessionID)
+    return typeof own === "string" && own.length > 0 && own === directory
+  }
+
+  /**
+   * Resolve a legacy parent's real project directory through the injected
+   * `resolveParentDirectory` seam (the runtime wires `context.session.get`, the
+   * same seam the conditional tools use). Any failure or empty answer leaves the
+   * parent UNKNOWN (fail closed): no marker is written, but `restore` still
+   * reconciles the durable state.
+   */
+  async function resolveUnknownParentDirectory(parentSessionID) {
+    if (typeof resolveParentDirectory !== "function") return undefined
+    try {
+      const resolved = await resolveParentDirectory(parentSessionID)
+      return typeof resolved === "string" && resolved.length > 0 ? resolved : undefined
+    } catch (error) {
+      report(error, { sessionID: parentSessionID, phase: "resolve-parent-directory" })
+      return undefined
+    }
   }
 
   function snapshotTasks(parentSessionID) {
@@ -302,7 +360,7 @@ export function createBackgroundManager({
   }
 
   /** Persist the durable state and refresh the continuation marker. */
-  function persist(parentSessionID) {
+  function persist(parentSessionID, { marker = true } = {}) {
     if (typeof parentSessionID !== "string" || parentSessionID.length === 0) return
     // Marker refresh is cheap and always safe; the state file waits for restore
     // to finish so it never records a half-restored parent.
@@ -311,19 +369,27 @@ export function createBackgroundManager({
     } else {
       writeState(parentSessionID)
     }
-    refreshMarker(parentSessionID)
+    // `restore` passes `marker: false` for a parent whose project is not this
+    // plugin instance's directory, so loading one project never materializes a
+    // foreign project's continuation marker. The durable state is written either
+    // way.
+    if (marker) refreshMarker(parentSessionID)
   }
 
   /** Rewrite the parent's continuation marker from the live task table. */
   function refreshMarker(parentSessionID) {
     if (typeof parentSessionID !== "string" || parentSessionID.length === 0) return
+    const target = directoryFor(parentSessionID)
+    // Unknown project: fail closed. Writing into the manager's static location
+    // would materialize a foreign project's marker in the active project.
+    if (typeof target !== "string" || target.length === 0) return
     let activeTaskCount = 0
     let hasUndeliveredParentWake = false
     for (const record of tasksOf(parentSessionID)) {
       if (record.status === "running" || record.status === "queued" || record.status === "starting" || record.status === "cancelling") activeTaskCount += 1
       if (record.pendingWake) hasUndeliveredParentWake = true
     }
-    writeBackgroundMarker({ directory, parentSessionID, activeTaskCount, hasUndeliveredParentWake }, now)
+    writeBackgroundMarker({ directory: target, parentSessionID, activeTaskCount, hasUndeliveredParentWake }, now)
   }
 
   function bindSession(taskId, sessionID, childModel) {
@@ -453,6 +519,12 @@ export function createBackgroundManager({
     if (typeof parentSessionID !== "string" || parentSessionID.length === 0) {
       return { admitted: false, queued: false, taskId: null, reason: "no-parent" }
     }
+    // The caller resolves the parent's OWN project directory (the runtime wires
+    // `context.session.get`). A missing/undefined value means UNRESOLVED: the
+    // parent stays unknown, so its continuation marker is suppressed until it can
+    // be resolved. NEVER assume this instance's static location for a parent we
+    // could not place: that would write a foreign marker into the active project.
+    setParentDirectory(parentSessionID, descriptor.parentDirectory)
     const taskId = typeof descriptor.taskId === "string" && descriptor.taskId.length > 0 ? descriptor.taskId : makeId()
     const existing = tasks.get(taskId)
     if (existing) {
@@ -722,7 +794,7 @@ export function createBackgroundManager({
     tasks.delete(taskId)
     bySession.delete(sessionID)
     pump.remove(sessionID)
-    clearBackgroundMarker(directory, sessionID)
+    clearBackgroundMarker(directoryFor(record.parentSessionID), sessionID)
     persist(record.parentSessionID)
     return true
   }
@@ -760,7 +832,7 @@ export function createBackgroundManager({
       tasks.delete(record.taskId)
       removed += 1
     }
-    clearBackgroundMarker(directory, parentSessionID)
+    clearBackgroundMarker(directoryFor(parentSessionID), parentSessionID)
     clearState(parentSessionID)
     return removed
   }
@@ -770,14 +842,14 @@ export function createBackgroundManager({
     const parents = new Set()
     for (const record of tasks.values()) {
       if (typeof record.parentSessionID === "string" && record.parentSessionID) parents.add(record.parentSessionID)
-      clearBackgroundMarker(directory, record.sessionID)
+      clearBackgroundMarker(directoryFor(record.parentSessionID), record.sessionID)
     }
     tasks.clear()
     bySession.clear()
     queue.clear()
     pump.clear()
     for (const parentSessionID of parents) {
-      clearBackgroundMarker(directory, parentSessionID)
+      clearBackgroundMarker(directoryFor(parentSessionID), parentSessionID)
       clearState(parentSessionID)
     }
   }
@@ -795,10 +867,11 @@ export function createBackgroundManager({
     pump.dispose()
   }
 
-  function recordFromState(task, parentSessionID) {
+  function recordFromState(task, parentSessionID, parentDirectory) {
     return {
       taskId: task.taskId,
       parentSessionID,
+      parentDirectory,
       route: task.route ?? "subagent",
       agent: task.agent,
       category: task.category ? { name: task.category } : undefined,
@@ -832,6 +905,10 @@ export function createBackgroundManager({
     if (typeof parentSessionID !== "string" || parentSessionID.length === 0) {
       return { admitted: false, queued: false, taskId: null, reason: "no-parent" }
     }
+    // A restored descriptor supplies the durable (or resolved) directory; a
+    // retry re-admission reuses the parent's already-known directory. Never fall
+    // back to the active directory here.
+    setParentDirectory(parentSessionID, descriptor.parentDirectory)
     const taskId = typeof descriptor.taskId === "string" && descriptor.taskId.length > 0 ? descriptor.taskId : makeId()
     if (tasks.has(taskId)) return { admitted: false, queued: tasks.get(taskId).status === "queued", taskId, reason: "already-tracked" }
     const modelKey = typeof descriptor.modelKey === "string" ? descriptor.modelKey : ""
@@ -885,9 +962,19 @@ export function createBackgroundManager({
         const state = await store.read(parentSessionID)
         if (!state) continue
         summary.parents += 1
+        // The store is plugin-id-scoped (global across projects): know each
+        // parent's own project directory so its marker is written and cleared
+        // there, never in the directory of whichever project loads first. A
+        // legacy state (written before `parentDirectory` existed) carries no
+        // project, so ask the trusted resolver; when it cannot answer the parent
+        // stays UNKNOWN and its marker is suppressed (fail closed). The durable
+        // state is reconciled either way.
+        const storedDirectory = typeof state.parentDirectory === "string" && state.parentDirectory.length > 0 ? state.parentDirectory : undefined
+        const resolvedDirectory = storedDirectory ?? await resolveUnknownParentDirectory(parentSessionID)
+        setParentDirectory(parentSessionID, resolvedDirectory)
         for (const task of state.tasks) {
           if (task.status === "running" && typeof task.sessionID === "string") {
-            const record = recordFromState(task, parentSessionID)
+            const record = recordFromState(task, parentSessionID, parentDirectories.get(parentSessionID))
             record.status = "running"
             record.slotHeld = true
             record.sessionID = task.sessionID
@@ -898,7 +985,7 @@ export function createBackgroundManager({
           } else if (task.status === "starting") {
             const found = typeof findStartedChild === "function" ? await findStartedChild(task) : undefined
             if (found && typeof found.sessionID === "string") {
-              const record = recordFromState(task, parentSessionID)
+              const record = recordFromState(task, parentSessionID, parentDirectories.get(parentSessionID))
               record.status = "running"
               record.slotHeld = true
               record.sessionID = found.sessionID
@@ -907,11 +994,11 @@ export function createBackgroundManager({
               queue.enqueue(record.modelKey, record.taskId)
               summary.bound += 1
             } else {
-              requeue(recordFromState(task, parentSessionID))
+              requeue(recordFromState(task, parentSessionID, parentDirectories.get(parentSessionID)))
               summary.starting += 1
             }
           } else if (task.status === "queued") {
-            requeue(recordFromState(task, parentSessionID))
+            requeue(recordFromState(task, parentSessionID, parentDirectories.get(parentSessionID)))
             summary.queued += 1
           }
         }
@@ -925,7 +1012,11 @@ export function createBackgroundManager({
           pump.enqueue({ sessionID: record.sessionID, taskId: record.taskId, status: record.resultStatus, child: { parentSessionID: record.parentSessionID, agent: record.agent, ...(record.resultCause ? { error: record.resultCause } : {}) } })
           summary.wakes += 1
         }
-        persist(parentSessionID)
+        // Materialize the marker only when this parent's own project IS this
+        // plugin instance's directory. A foreign parent (or one whose project is
+        // still unknown) materializes no marker here; the durable state is always
+        // written.
+        persist(parentSessionID, { marker: isOwnProject(parentSessionID) })
       }
     } finally {
       restoring = false

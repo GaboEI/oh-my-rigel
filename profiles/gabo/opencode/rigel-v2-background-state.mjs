@@ -12,11 +12,16 @@
  *   {
  *     schema: 1,
  *     parentSessionID,
+ *     parentDirectory,
  *     updatedAt,
  *     tasks: [{ taskId, status, route, agent, category, subagentType, model, key,
  *               limit, sessionID, prompt, loadSkills, createdAt }],
  *     wakes: [{ taskId, sessionID, status, agent }]
  *   }
+ *
+ * `parentDirectory` is the parent session's own project directory, so a restart
+ * refreshes the continuation marker in that project instead of the plugin
+ * instance's static location.
  *
  * `prompt` is persisted only while a descriptor has NOT started (queued /
  * starting); once a child owns the work its session carries it, so the prompt is
@@ -54,6 +59,9 @@ export function writeBackgroundState(directory, parentSessionID, state, now) {
   const payload = {
     schema: 1,
     parentSessionID,
+    // The parent's own project directory, so a restart writes and clears its
+    // continuation marker inside that project rather than the plugin location.
+    parentDirectory: typeof state?.parentDirectory === "string" && state.parentDirectory.length > 0 ? state.parentDirectory : undefined,
     updatedAt: timestamp,
     tasks: Array.isArray(state?.tasks) ? state.tasks : [],
     wakes: Array.isArray(state?.wakes) ? state.wakes : [],
@@ -85,6 +93,7 @@ export function readBackgroundState(directory, parentSessionID) {
     return {
       schema: parsed.schema ?? 0,
       parentSessionID: typeof parsed.parentSessionID === "string" ? parsed.parentSessionID : parentSessionID,
+      parentDirectory: typeof parsed.parentDirectory === "string" ? parsed.parentDirectory : undefined,
       updatedAt: parsed.updatedAt,
       tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
       wakes: Array.isArray(parsed.wakes) ? parsed.wakes : [],
@@ -162,6 +171,7 @@ export function createStorageBackgroundState({ storage, now } = {}) {
         await storage.set(keyFor(parentSessionID), {
           schema: 1,
           parentSessionID,
+          parentDirectory: typeof state?.parentDirectory === "string" && state.parentDirectory.length > 0 ? state.parentDirectory : undefined,
           updatedAt: typeof now === "function" ? now() : new Date().toISOString(),
           tasks: Array.isArray(state?.tasks) ? state.tasks : [],
           wakes: Array.isArray(state?.wakes) ? state.wakes : [],

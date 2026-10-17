@@ -132,7 +132,11 @@ export function createEmptyTaskResponseRule({ taskToolName } = {}) {
       const tool = String(event?.tool ?? "").toLowerCase()
       if (tool !== "task" && tool !== delegationName) return false
       if (event?.status === "error") return false
-      if (resultText(event).trim() !== "") return false
+      // `taskResult` wraps a foreground empty child in a non-empty lifecycle
+      // text, so the emptiness must be read from the metadata signal as well as
+      // from a literally empty result text.
+      const empty = event?.result?.metadata?.childEmpty === true || resultText(event).trim() === ""
+      if (!empty) return false
       return setResultText(event, EMPTY_TASK_RESPONSE_WARNING)
     },
   }

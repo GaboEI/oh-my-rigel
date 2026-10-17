@@ -36,6 +36,42 @@ function hookOutput(stdout) {
 }
 
 export function createNativeClaudeCodeHooks({ context, collector, directory = context?.location?.directory } = {}) {
+  /**
+   * True when `sessionID` belongs to this plugin instance's project directory.
+   *
+   * The V2 event subscription is global, so `session.created`/`session.idle`
+   * arrive for sessions of OTHER projects. `handleEvent` must not run this
+   * project's `.claude/settings.json` SessionStart/Stop hooks for them.
+   *
+   * Membership is PROVEN through `context.session.get` (never `event.projectPath`,
+   * which is not guaranteed). Compatibility is kept ONLY when the seam does not
+   * exist at all (a host that offers no way to answer keeps firing its own hooks).
+   * When the seam EXISTS but the lookup throws or yields no directory, that is NOT
+   * proof of membership and the dispatch fails CLOSED (returns false), because a
+   * global bus would otherwise run foreign hooks. The failure is reported without
+   * disrupting the event stream.
+   */
+  async function belongsToDirectory(sessionID) {
+    if (typeof context?.session?.get !== "function") return true
+    if (typeof sessionID !== "string" || sessionID.length === 0) {
+      console.error("[oh-my-rigel] Claude Code hook session scope unknown (no session id); skipping lifecycle dispatch")
+      return false
+    }
+    let resolved
+    try {
+      const info = await context.session.get({ sessionID })
+      resolved = info?.data?.location?.directory ?? info?.location?.directory ?? info?.directory
+    } catch (error) {
+      console.error(`[oh-my-rigel] Claude Code hook session scope unresolved; skipping lifecycle dispatch: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+    if (typeof resolved !== "string" || resolved.length === 0) {
+      console.error("[oh-my-rigel] Claude Code hook session scope unresolved (no directory); skipping lifecycle dispatch")
+      return false
+    }
+    return resolved === directory
+  }
+
   async function dispatch(eventName, event, subject = "") {
     const [config, pluginConfig] = await Promise.all([
       loadNativeClaudeCodeHooksConfig({ directory }),
@@ -88,8 +124,12 @@ export function createNativeClaudeCodeHooks({ context, collector, directory = co
       }
     },
     async handleEvent(event) {
-      if (event?.type === "session.created") await dispatch("SessionStart", event)
-      if (event?.type === "session.idle") await dispatch("Stop", event)
+      // Only the lifecycle edges of THIS project's sessions may drive the
+      // file-based Claude Code hooks; the event stream itself is global.
+      if (event?.type !== "session.created" && event?.type !== "session.idle") return
+      if (!(await belongsToDirectory(event?.sessionID))) return
+      if (event.type === "session.created") await dispatch("SessionStart", event)
+      if (event.type === "session.idle") await dispatch("Stop", event)
     },
     dispatch,
   }

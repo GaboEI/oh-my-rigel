@@ -90,7 +90,7 @@ function createEventFeed() {
   }
 }
 
-function backgroundContext(feed, directory, { onPrompt, backgroundTask } = {}) {
+function backgroundContext(feed, directory, { onPrompt, backgroundTask, sessionGet } = {}) {
   let childCounter = 0
   const captured = { definition: undefined }
   const calls = { create: 0, prompt: 0, childPrompts: 0, interrupted: [] }
@@ -107,6 +107,10 @@ function backgroundContext(feed, directory, { onPrompt, backgroundTask } = {}) {
       hook: async (name, handler) => { if (name === "http.request") feed.requestHook = handler; return { dispose() {} } },
       create: async () => { calls.create += 1; return { data: { id: `ses_child_${++childCounter}` } } },
       context: async () => [{ type: "assistant", content: [{ type: "text", text: "EVIDENCE" }] }],
+      // The documented seam the runtime resolves the calling session's own
+      // project with; a test may override it (throw / unresolved) to prove the
+      // admission path never falls back to the manager's static directory.
+      get: sessionGet ?? (async () => ({ data: { location: { directory } } })),
       prompt: async (input) => {
         calls.prompt += 1
         if (typeof input?.sessionID === "string" && input.sessionID.startsWith("ses_child")) calls.childPrompts += 1
@@ -391,8 +395,8 @@ describe("#given the on-disk continuation marker", () => {
       startChild: async (descriptor, onSession) => { onSession(`ses_${descriptor.taskId}`); return { sessionID: `ses_${descriptor.taskId}` } },
       runHandoff: async () => {},
     })
-    manager.admit({ taskId: "t1", parentSessionID: "parent", agent: { name: "x" }, prompt: "a", modelKey: "m" })
-    manager.admit({ taskId: "t2", parentSessionID: "parent", agent: { name: "x" }, prompt: "b", modelKey: "m" })
+    manager.admit({ taskId: "t1", parentSessionID: "parent", parentDirectory: directory, agent: { name: "x" }, prompt: "a", modelKey: "m" })
+    manager.admit({ taskId: "t2", parentSessionID: "parent", parentDirectory: directory, agent: { name: "x" }, prompt: "b", modelKey: "m" })
     expect(readBackgroundMarker(directory, "parent")).toMatchObject({ state: "active", reason: "2 background task(s) active" })
 
     // when both complete
@@ -581,6 +585,220 @@ describe("#given a clean plugin dispose and a new instance", () => {
     await manager.dispose()
     const state = await createFileBackgroundState(directory).read("p")
     expect(state.tasks.some((task) => task.taskId === "t1")).toBe(true)
+  })
+})
+
+describe("#given a global (plugin-id-scoped) background store shared across projects", () => {
+  function createSharedStore() {
+    const state = {}
+    return {
+      async write(parent, snapshot) { state[parent] = snapshot; return true },
+      async read(parent) { return state[parent] ?? null },
+      async list() { return Object.keys(state) },
+      async clear(parent) { delete state[parent] },
+      // Test-only: seed a durable state exactly as a legacy file would read back
+      // (used to reproduce the pre-`parentDirectory` shape).
+      __seed(parent, legacyState) { state[parent] = legacyState },
+    }
+  }
+
+  test("#when a project loads and restores #then only its own parent markers are materialized", async () => {
+    // given: two project directories and ONE global store, exactly like the
+    // `ctx.storage` domain the runtime injects (scoped to the plugin id, not the
+    // project). A continuation marker is a per-project file, so a foreign
+    // parent's marker must never be written into the active project.
+    const dirA = createTestDirectory()
+    const dirB = createTestDirectory()
+    const store = createSharedStore()
+    const spawn = (started) => async (descriptor, onSession) => { started.push(descriptor.taskId); onSession(`ses_${descriptor.taskId}`); return { sessionID: `ses_${descriptor.taskId}` } }
+    const managerA = createBackgroundManager({
+      directory: dirA, stateStore: store, config: { defaultConcurrency: 4 },
+      startChild: spawn([]), runHandoff: async () => {},
+    })
+    const readyA = managerA.admit({ taskId: "tA", parentSessionID: "pA", parentDirectory: dirA, agent: { name: "x" }, prompt: "a", modelKey: "m" })
+    await readyA.ready
+    await managerA.dispose()
+    const managerB1 = createBackgroundManager({
+      directory: dirB, stateStore: store, config: { defaultConcurrency: 4 },
+      startChild: spawn([]), runHandoff: async () => {},
+    })
+    const readyB = managerB1.admit({ taskId: "tB", parentSessionID: "pB", parentDirectory: dirB, agent: { name: "x" }, prompt: "b", modelKey: "m" })
+    await readyB.ready
+    await managerB1.dispose()
+
+    // when: a fresh load of project B restores the shared store
+    const managerB2 = createBackgroundManager({
+      directory: dirB, stateStore: store, config: { defaultConcurrency: 4 },
+      startChild: spawn([]), runHandoff: async () => {},
+    })
+    await managerB2.restore()
+    await managerB2.dispose()
+
+    // then: project B's own parent marker is materialized; project A's is not
+    expect(readBackgroundMarker(dirB, "pB")).not.toBeNull()
+    expect(readBackgroundMarker(dirB, "pA")).toBeNull()
+  })
+
+  test("#when a parent is tracked with its own project directory #then its marker lands there, not in the manager directory", async () => {
+    // given: the manager's static location and the calling session's own project
+    // differ (the global event/tool surface can serve several projects)
+    const managerDir = createTestDirectory()
+    const parentDir = createTestDirectory()
+    const manager = createBackgroundManager({
+      directory: managerDir, stateStore: createSharedStore(), config: { defaultConcurrency: 4 },
+      startChild: async (_descriptor, onSession) => { onSession("ses_x"); return { sessionID: "ses_x" } }, runHandoff: async () => {},
+    })
+    // when
+    const admitted = manager.admit({ taskId: "t1", parentSessionID: "p", parentDirectory: parentDir, agent: { name: "x" }, prompt: "a", modelKey: "m" })
+    await admitted.ready
+    await manager.dispose()
+    // then
+    expect(readBackgroundMarker(parentDir, "p")).not.toBeNull()
+    expect(readBackgroundMarker(managerDir, "p")).toBeNull()
+  })
+
+  // A durable state written BEFORE `parentDirectory` existed carries no project.
+  // The manager must never attribute its own active directory to such a parent:
+  // that is the exact leak (54 markers in the plugin dir, 13 copied into a fresh
+  // scratch project) the re-audit flagged.
+  function seedLegacyState(store, parentSessionID, taskId, sessionID) {
+    store.__seed(parentSessionID, {
+      schema: 1,
+      parentSessionID,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      // NOTE: no `parentDirectory` key at all (the legacy shape).
+      tasks: [{ taskId, status: "running", route: "subagent", agent: { name: "x" }, model: "m", key: "legacy", limit: 1, sessionID, createdAt: "2026-01-01T00:00:00.000Z" }],
+      wakes: [],
+    })
+  }
+
+  test("#when a legacy state (no parentDirectory) is restored with a resolver #then only the parent whose real project == the active project gets a marker", async () => {
+    // given: two legacy parents in a shared store, one of project A and one of
+    // project B; the resolver is the trusted seam (`context.session.get`).
+    const dirA = createTestDirectory()
+    const dirB = createTestDirectory()
+    const store = createSharedStore()
+    seedLegacyState(store, "pA", "tA", "ses_tA")
+    seedLegacyState(store, "pB", "tB", "ses_tB")
+    const resolved = { pA: dirA, pB: dirB }
+    const managerB = createBackgroundManager({
+      directory: dirB, stateStore: store, config: { defaultConcurrency: 4 },
+      startChild: async () => ({ sessionID: "ses_unused" }), runHandoff: async () => {},
+      resolveParentDirectory: async (parentSessionID) => resolved[parentSessionID],
+    })
+
+    // when: project B loads and restores
+    await managerB.restore()
+    await managerB.dispose()
+
+    // then: B's own parent marker is materialized; A's is NOT written into B (nor
+    // into A from B's load), and the durable state is preserved for both
+    expect(readBackgroundMarker(dirB, "pB")).not.toBeNull()
+    expect(readBackgroundMarker(dirB, "pA")).toBeNull()
+    expect(readBackgroundMarker(dirA, "pA")).toBeNull()
+    const stateA = await store.read("pA")
+    expect(stateA.tasks.some((task) => task.taskId === "tA")).toBe(true)
+    // the resolved directory is persisted so a later load needs no resolver
+    expect(stateA.parentDirectory).toBe(dirA)
+  })
+
+  test("#when a legacy state cannot be resolved #then the durable state survives but NO marker is written (fail closed)", async () => {
+    // given: a legacy parent the resolver cannot place (no directory source)
+    const activeDir = createTestDirectory()
+    const store = createSharedStore()
+    seedLegacyState(store, "pX", "tX", "ses_tX")
+    const manager = createBackgroundManager({
+      directory: activeDir, stateStore: store, config: { defaultConcurrency: 4 },
+      startChild: async () => ({ sessionID: "ses_unused" }), runHandoff: async () => {},
+      // resolver present but unable to place the parent
+      resolveParentDirectory: async () => undefined,
+    })
+
+    // when
+    await manager.restore()
+    await manager.dispose()
+
+    // then: no marker lands in the active project, and the task state is intact
+    expect(readBackgroundMarker(activeDir, "pX")).toBeNull()
+    const state = await store.read("pX")
+    expect(state.tasks.some((task) => task.taskId === "tX")).toBe(true)
+    expect(state.parentDirectory).toBeUndefined()
+  })
+
+  test("#when clearParent runs for a parent whose directory is unknown #then no foreign project marker is deleted", async () => {
+    // given: a real marker sits in a foreign project, and pX restores unknown
+    const activeDir = createTestDirectory()
+    const foreignDir = createTestDirectory()
+    writeBackgroundMarker({ directory: foreignDir, parentSessionID: "pX", activeTaskCount: 1, hasUndeliveredParentWake: false })
+    const store = createSharedStore()
+    seedLegacyState(store, "pX", "tX", "ses_tX")
+    const manager = createBackgroundManager({
+      directory: activeDir, stateStore: store, config: { defaultConcurrency: 4 },
+      startChild: async () => ({ sessionID: "ses_unused" }), runHandoff: async () => {},
+      resolveParentDirectory: async () => undefined,
+    })
+    await manager.restore()
+
+    // when: the parent is deleted while its project is still unknown
+    manager.clearParent("pX")
+
+    // then: the foreign marker is untouched (unknown project => never guess a
+    // directory to delete), and nothing was removed from the active project
+    expect(readBackgroundMarker(foreignDir, "pX")).not.toBeNull()
+    expect(readBackgroundMarker(activeDir, "pX")).toBeNull()
+    await manager.dispose()
+  })
+})
+
+describe("#given a new admission whose parent directory cannot be resolved", () => {
+  test("#when the descriptor carries no parentDirectory #then the task runs, the state is durable and NO marker is written", async () => {
+    // given: the runtime could not resolve the calling session's own directory,
+    // so it hands `admit` no `parentDirectory`. The manager must NEVER substitute
+    // its own static location (that is the cross-project marker leak).
+    const directory = createTestDirectory()
+    const started = []
+    const manager = createBackgroundManager({
+      directory, stateStore: createFileBackgroundState(directory), config: { defaultConcurrency: 4 },
+      startChild: async (descriptor, onSession) => { started.push(descriptor.taskId); onSession(`ses_${descriptor.taskId}`); return { sessionID: `ses_${descriptor.taskId}` } },
+      runHandoff: async () => {},
+    })
+    // when
+    const decision = manager.admit({ taskId: "t1", parentSessionID: "p", agent: { name: "x" }, prompt: "a", modelKey: "m" })
+    await decision.ready
+    await manager.dispose()
+    // then: functional task + durable state, but no marker in the active directory
+    expect(decision.admitted).toBe(true)
+    expect(started).toEqual(["t1"])
+    const state = await createFileBackgroundState(directory).read("p")
+    expect(state.tasks.some((task) => task.taskId === "t1")).toBe(true)
+    expect(state.parentDirectory).toBeUndefined()
+    expect(readBackgroundMarker(directory, "p")).toBeNull()
+  })
+
+  test("#when the resolution seam throws or yields an empty response #then the real tool path admits the task with no marker", async () => {
+    const variants = [
+      ["throws", async () => { throw new Error("seam-failure") }],
+      ["empty", async () => ({ data: {} })],
+    ]
+    for (const [label, sessionGet] of variants) {
+      // given
+      const directory = createTestDirectory()
+      const feed = createEventFeed()
+      const { context, captured } = backgroundContext(feed, directory, { sessionGet })
+      const dispose = await plugin.setup(context)
+      try {
+        // when: the real rigel_task background admission runs
+        const result = await captured.definition.execute({ subagent_type: "explore", prompt: "a", run_in_background: true }, { sessionID: "ses_parent" })
+        // then: the task is functional (has a child session) and its state is
+        // durable, but no marker is written into the active project
+        expect([label, typeof result?.metadata?.sessionID]).toEqual([label, "string"])
+        const state = await createFileBackgroundState(directory).read("ses_parent")
+        expect([label, state !== null && state.tasks.length]).toEqual([label, 1])
+        expect([label, readBackgroundMarker(directory, "ses_parent")]).toEqual([label, null])
+      } finally {
+        await dispose()
+      }
+    }
   })
 })
 
