@@ -262,12 +262,17 @@ export function taskResult({ sessionID, agent, background, result, taskId }) {
     ? "The subagent is working in the background."
     : "The subagent has been started."
   const idSuffix = typeof taskId === "string" && taskId ? ` taskId: ${taskId};` : ""
+  // A foreground child that returned no text still needs a non-empty lifecycle
+  // wrapper for the model. The wrapper hides the emptiness from a text-only
+  // reader, so the signal travels in metadata for the `execute.after` detector;
+  // a background spawn is never an empty-response case.
+  const childEmpty = !background && !result
   const returned = background
     ? `${lifecycle}${idSuffix} sessionID: ${sessionID}; agent: ${agent}.`
     : `The subagent completed. sessionID: ${sessionID}; agent: ${agent}.\n\n<rigel-native-child-result>\n${result || "(The child returned no text.)"}\n</rigel-native-child-result>`
   return {
     content: returned,
-    metadata: { sessionID, agent, background, ...(typeof taskId === "string" && taskId ? { taskId } : {}) },
+    metadata: { sessionID, agent, background, childEmpty, ...(typeof taskId === "string" && taskId ? { taskId } : {}) },
   }
 }
 

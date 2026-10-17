@@ -476,10 +476,10 @@
     },
     "recuperacion-de-argumentos-mal-formados": {
       "nombre": "Malformed argument recovery",
-      "que_es": "The base system already normalizes arguments before running.",
+      "que_es": "The base system fixes some malformed arguments (text encoding an object, an array, a number or a boolean) before running; validation rejects the ones with an incompatible type.",
       "modo_de_activacion": "Automatic",
-      "como_se_usa": "Automatic: the host system does it; you just notice fewer absurd failures.",
-      "cuando_sirve": "The agent wrote a crooked parameter: it gets normalized and the tool runs without drama.",
+      "como_se_usa": "Automatic: the host system applies it when it receives the call; it needs no action from you.",
+      "cuando_sirve": "The agent wrote a parameter as text when it should be another type: it gets normalized and the tool runs; an incompatible type is rejected by validation with a clear error.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
@@ -620,10 +620,10 @@
     },
     "compatibilidad-con-claude-code": {
       "nombre": "Claude Code compatibility",
-      "que_es": "Reuses agents, commands, connections, and automations from Claude Code.",
+      "que_es": "Reuses the MCP connections and the automations (hooks) defined for Claude Code.",
       "modo_de_activacion": "Requirement with condition",
       "como_se_usa": "Conditional requirement: it only works if that configuration already exists in your project or team; there's nothing to migrate by hand.",
-      "cuando_sirve": "Your team already has agents and commands defined for another environment: here they keep working the same way.",
+      "cuando_sirve": "Your team already has MCP connections and automations (hooks) defined for Claude Code: here they are reused.",
       "requisitos": "It activates if that configuration exists in your project or team.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },

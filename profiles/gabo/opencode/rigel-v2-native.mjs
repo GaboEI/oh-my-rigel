@@ -402,6 +402,25 @@ function hasInProcessSessionEnumeration(context) {
     .some((domain) => typeof domain?.list === "function")
 }
 
+// Resolve the calling session's OWN project directory. The V2 event/tool surface
+// can serve several projects while `context.location.directory` is the plugin
+// instance's static location, so a background child's continuation marker must be
+// anchored to the session that requested it. `context.session.get` is the
+// documented seam (the same one the conditional tools use); an unavailable,
+// unresolved, or empty answer leaves the parent UNKNOWN (the plugin location is
+// never assumed as a fallback), so no cross-project marker is written.
+async function resolveCallingSessionDirectory(context, sessionID) {
+  if (typeof sessionID !== "string" || sessionID.length === 0) return undefined
+  if (typeof context?.session?.get !== "function") return undefined
+  try {
+    const info = await context.session.get({ sessionID })
+    const directory = info?.data?.location?.directory ?? info?.location?.directory ?? info?.directory
+    return typeof directory === "string" && directory.length > 0 ? directory : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export default {
   id: "oh-my-rigel",
   setup: async (context) => {
@@ -941,6 +960,10 @@ export default {
       stateStore: context?.storage && typeof context.storage.get === "function"
         ? createStorageBackgroundState({ storage: context.storage })
         : createFileBackgroundState(location.directory),
+      // A restored legacy parent state (written before `parentDirectory` existed)
+      // has no project of its own; resolve it from the session rather than ever
+      // assuming this instance's location. An unresolved parent gets no marker.
+      resolveParentDirectory: (parentSessionID) => resolveCallingSessionDirectory(context, parentSessionID),
       // Admission-before-spawn: the manager decides whether a request may spend a
       // concurrency slot and only then calls this to create/prompt the child. A
       // queued request is never created; it starts here when a slot frees.
@@ -1449,6 +1472,9 @@ export default {
           const prompt = await applyRequestedSkills(input.prompt, requestedSkills, { resolveSkill: resolveSkillForChild })
           const isBackground = input.run_in_background === true
           const parentSessionID = toolContext?.sessionID
+          // Anchor a background child's continuation marker to the calling
+          // session's own project, not the plugin instance's static location.
+          const parentDirectory = isBackground ? await resolveCallingSessionDirectory(context, parentSessionID) : undefined
           if (input.task_id) {
             if (!isBackground) {
               const resumed = await resumeDelegatedSessionFromClients({ clients, sessionID: input.task_id, prompt, background: false })
@@ -1456,6 +1482,7 @@ export default {
             }
             const decision = backgroundManager.admit({
               parentSessionID,
+              parentDirectory,
               route: "resume",
               resumeSessionID: input.task_id,
               agent: { name: "resumed" },
@@ -1508,6 +1535,7 @@ export default {
           // executable descriptor and starts NOTHING until a slot frees.
           const decision = backgroundManager.admit({
             parentSessionID,
+            parentDirectory,
             route: category ? "category" : "subagent",
             agent,
             category,

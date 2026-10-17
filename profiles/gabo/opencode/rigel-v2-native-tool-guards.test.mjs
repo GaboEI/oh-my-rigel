@@ -12,6 +12,7 @@ import {
   resultText,
   truncateToTokenLimit,
 } from "./rigel-v2-native-tool-guards.mjs"
+import { taskResult } from "./rigel-v2-native-core.mjs"
 
 const estimateTokens = (text) => Math.ceil(text.length / 4)
 
@@ -72,6 +73,19 @@ describe("empty-task-response-detector (after)", () => {
   test("the V1 task name with an empty string result is also caught", () => {
     const event = { tool: "task", status: "completed", result: { content: "" } }
     expect(rule.run(event)).toBe(true)
+    expect(event.result.content).toBe(EMPTY_TASK_RESPONSE_WARNING)
+  })
+
+  test("the real rigel_task result for a foreground empty child reaches the warning", () => {
+    // given: the exact object the runtime hands the host for a foreground child
+    // that returned no text, produced by the real `taskResult` (not a hand-built
+    // shape). The lifecycle wrapper makes `content` non-empty, so a text-only
+    // detector can never fire; the empty-child signal must travel in metadata.
+    const event = { tool: "rigel_task", status: "completed", result: taskResult({ sessionID: "ses_child", agent: "explore", background: false, result: undefined }) }
+    // when
+    const applied = rule.run(event)
+    // then
+    expect(applied).toBe(true)
     expect(event.result.content).toBe(EMPTY_TASK_RESPONSE_WARNING)
   })
 

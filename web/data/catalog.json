@@ -2242,10 +2242,10 @@
       "areaSlug": "herramientas-de-trabajo-y-edicion",
       "estado": "activada",
       "v2": "sustituida",
-      "que_es": "El sistema base ya normaliza los argumentos antes de ejecutar.",
+      "que_es": "El sistema base corrige algunos argumentos mal formados (texto que codifica un objeto, un array, un número o un booleano) antes de ejecutar; los de tipo incompatible los rechaza la validación.",
       "como_se_activa": "Automático; no requiere ajuste.",
-      "como_se_usa": "Automático — lo hace el sistema anfitrión; solo notas menos fallos absurdos.",
-      "cuando_sirve": "El agente escribió un parámetro torcido: se normaliza y la herramienta se ejecuta sin drama.",
+      "como_se_usa": "Automático: lo aplica el sistema anfitrión al recibir la llamada; no requiere ninguna acción de tu parte.",
+      "cuando_sirve": "El agente escribió un parámetro como texto cuando debía ser otro tipo: se normaliza y la herramienta se ejecuta; si el tipo es incompatible, la validación la rechaza con un error claro.",
       "url": "/catalogo/recuperacion-de-argumentos-mal-formados/",
       "modo_de_activacion": "Automático",
       "requisitos": {
@@ -2261,7 +2261,7 @@
       "ejemplos": {
         "procedencia": "derivado",
         "valor": [
-          "El agente escribió un parámetro torcido: se normaliza y la herramienta se ejecuta sin drama."
+          "El agente escribió un parámetro como texto cuando debía ser otro tipo: se normaliza y la herramienta se ejecuta; si el tipo es incompatible, la validación la rechaza con un error claro."
         ],
         "fuente": "catálogo: columna «Cuándo te sirve»"
       },
@@ -2278,7 +2278,7 @@
       "cambios_relevantes": {
         "procedencia": "derivado",
         "valor": [
-          "Sustituida por una función base: ahora lo resuelve el propio sistema anfitrión."
+          "Sustituida por una función base del anfitrión: normaliza la dirección texto a tipo; la dirección tipo a texto incompatible la rechaza la validación."
         ],
         "fuente": "catálogo: columna «Cómo está en V2» y celdas de uso"
       }
@@ -2986,10 +2986,10 @@
       "areaSlug": "reglas-guias-especializadas-y-ordenes",
       "estado": "condicionada",
       "v2": "migrada",
-      "que_es": "Reutiliza agentes, comandos, conexiones y automatizaciones de Claude Code.",
+      "que_es": "Reutiliza las conexiones MCP y las automatizaciones (hooks) definidas para Claude Code.",
       "como_se_activa": "Se activa si existe esa configuración en tu proyecto o equipo.",
       "como_se_usa": "Requisito con condición — solo funciona si esa configuración ya existe en tu proyecto o equipo; no hay nada que migrar a mano.",
-      "cuando_sirve": "Tu equipo ya tiene agentes y comandos definidos para otro entorno: aquí siguen funcionando igual.",
+      "cuando_sirve": "Tu equipo ya tiene conexiones MCP y automatizaciones (hooks) definidas para Claude Code: aquí se reutilizan.",
       "url": "/catalogo/compatibilidad-con-claude-code/",
       "modo_de_activacion": "Requisito con condición",
       "requisitos": {
@@ -3005,7 +3005,7 @@
       "ejemplos": {
         "procedencia": "derivado",
         "valor": [
-          "Tu equipo ya tiene agentes y comandos definidos para otro entorno: aquí siguen funcionando igual."
+          "Tu equipo ya tiene conexiones MCP y automatizaciones (hooks) definidas para Claude Code: aquí se reutilizan."
         ],
         "fuente": "catálogo: columna «Cuándo te sirve»"
       },
