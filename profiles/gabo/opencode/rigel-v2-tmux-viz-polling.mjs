@@ -5,8 +5,8 @@
  * Contract reproduced exactly:
  * - 2s background interval, re-entrancy guarded.
  * - Focused-pane activation: a placeholder pane is respawned with the real
- *   `opencode attach` command when it becomes the active pane, or within the
- *   5s auto-activate grace after creation.
+ *   session command (`--server`/`--session`/directory) when it becomes the
+ *   active pane, or within the 5s auto-activate grace after creation.
  * - Stability close: an `idle` session older than 10s with 3 consecutive
  *   unchanged activity polls and a confirming recheck is closed.
  * - Missing grace 30s, hard timeout 60min for never-activated panes.
@@ -37,6 +37,7 @@ export function createTmuxVizPolling({
   runner,
   serverUrl,
   directory,
+  attachEnv = [],
   fetchSessionStatus,
   cmux = false,
   logger = console.error,
@@ -57,7 +58,7 @@ export function createTmuxVizPolling({
 
   async function respawnAsAttach(tracked, now) {
     const attachCommand = buildAttachCommand({ serverUrl, sessionID: tracked.sessionID, directory })
-    const args = buildReplaceArgs({ paneId: tracked.paneId, placeholderCommand: attachCommand, authEnv: [] })
+    const args = buildReplaceArgs({ paneId: tracked.paneId, placeholderCommand: attachCommand, authEnv: attachEnv })
     const result = await runner.run(args)
     if (result.exitCode !== 0) {
       logger(`[oh-my-rigel] tmux-viz: attach respawn failed for ${tracked.sessionID}: ${result.stderr.trim().slice(0, 200)}`)

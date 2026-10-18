@@ -96,7 +96,12 @@ import { registerClaudeCodeMcps } from "./rigel-v2-claude-code-mcp.mjs"
 import { registerNativeBuiltinMcps, resolveOpenCodeConfigDir } from "./rigel-v2-native-builtin-mcps.mjs"
 import { createNativeToolBeforeRules } from "./rigel-v2-native-tool-before.mjs"
 import { createTmuxVizManager } from "./rigel-v2-tmux-viz-manager.mjs"
-import { readNativeTmuxVisualization } from "./rigel-v2-native-config.mjs"
+import { resolveNativeTmuxVisualization } from "./rigel-v2-native-config.mjs"
+import { discoverCallerPane, findExecutableOnPath } from "./rigel-v2-tmux-viz-env.mjs"
+import { createTmuxVizProjectRegistry, resolveChildProjectDirectory, resolveChildSessionInfo } from "./rigel-v2-tmux-viz-projects.mjs"
+import { createTmuxVizRunner } from "./rigel-v2-tmux-viz-runner.mjs"
+import { buildAttachAuthEnv } from "./rigel-v2-tmux-viz-layout.mjs"
+import { resolveServiceTarget } from "./rigel-v2-service-target.mjs"
 // Todo-continuation enforcer. The state port owns the per-session
 // progress/stagnation/cooldown bookkeeping, the gate is the pure decision
 // predicate, and the prompt module builds the V1 continuation directive whose
@@ -414,7 +419,10 @@ async function resolveCallingSessionDirectory(context, sessionID) {
   if (typeof context?.session?.get !== "function") return undefined
   try {
     const info = await context.session.get({ sessionID })
-    const directory = info?.data?.location?.directory ?? info?.location?.directory ?? info?.directory
+    // The V2 `Session` object carries `directory` at the TOP level; `data.*`
+    // covers a seam that wraps it in an SDK-like envelope. `location.directory`
+    // is kept last for older hosts.
+    const directory = info?.directory ?? info?.data?.directory ?? info?.location?.directory ?? info?.data?.location?.directory
     return typeof directory === "string" && directory.length > 0 ? directory : undefined
   } catch {
     return undefined
@@ -919,30 +927,83 @@ export default {
       ? createNativeTeamStatusInjector({ storage: context.storage })
       : undefined
     // tmux visualization (rewritten feature, gated on team_mode.tmux_visualization):
-    // one agent pane per delegated session. Degraded environments (no tmux,
-    // not inside tmux) are logged once and the manager stays inert.
-    let tmuxVizManager
-    if (nativeGates.team_mode === true && readNativeTmuxVisualization(manifest)) {
-      tmuxVizManager = createTmuxVizManager({
-        config: context?.config?.team_mode ?? {},
-        env: context?.options?.tmuxVizEnv ?? process.env,
-        serverUrl: typeof context?.serverUrl === "string" ? context.serverUrl : undefined,
-        directory: location.directory,
-        fetchSessionStatus: async () => {
-          if (typeof context?.session?.status !== "function") return null
-          const response = await context.session.status()
-          const rows = response?.data ?? response
-          const map = new Map()
-          for (const row of Array.isArray(rows) ? rows : []) {
-            if (row?.sessionID) map.set(row.sessionID, row.status ?? row.type)
-          }
-          return map
-        },
-      })
-      if (!tmuxVizManager.enabled) {
-        console.error(`[oh-my-rigel] tmux-viz degraded: ${tmuxVizManager.degradedReason}`)
-      }
+    // one agent pane per delegated session, ONE MANAGER PER PROJECT.
+    //
+    // The gate is resolved PER PROJECT DIRECTORY, never once per instance. A
+    // single V2 plugin instance can serve several projects while
+    // `context.location.directory` is that instance's STATIC location (see
+    // `resolveCallingSessionDirectory`), so a setup-time value froze every
+    // project in the daemon to whichever project the instance was created for.
+    const tmuxVizEnv = context?.options?.tmuxVizEnv ?? process.env
+    const tmuxVizRealpath = (candidate) => {
+      try { return fs.realpathSync(candidate) } catch { return candidate }
     }
+    const tmuxVizDiscoveryRunner = (() => {
+      const tmuxPath = findExecutableOnPath({ command: "tmux", env: tmuxVizEnv })
+      return tmuxPath ? createTmuxVizRunner({ tmuxPath }) : null
+    })()
+    // The V2 plugin API carries no server URL: fall back to the daemon's own
+    // registration. The credential reaches a pane through its environment only,
+    // never through a command line.
+    const tmuxVizServiceTarget = resolveServiceTarget({ env: tmuxVizEnv })
+    const tmuxVizServerUrl = typeof context?.serverUrl === "string" && context.serverUrl
+      ? context.serverUrl
+      : tmuxVizServiceTarget?.url
+    const tmuxVizAttachEnv = buildAttachAuthEnv({ password: tmuxVizServiceTarget?.password })
+    const tmuxVizProjects = createTmuxVizProjectRegistry({
+      manifest,
+      env: tmuxVizEnv,
+      teamModeEnabled: nativeGates.team_mode === true,
+      resolveGate: ({ manifest: gateManifest, directory, env: gateEnv }) =>
+        resolveNativeTmuxVisualization({ manifest: gateManifest, directory, env: gateEnv }),
+      discoverPane: async (directory) => {
+        if (!tmuxVizDiscoveryRunner) {
+          // No tmux binary: the inherited pane is the only signal available.
+          return typeof tmuxVizEnv?.TMUX_PANE === "string" && tmuxVizEnv.TMUX_PANE
+            ? { paneId: tmuxVizEnv.TMUX_PANE, reason: null }
+            : { paneId: null, reason: "tmux binary not found on PATH" }
+        }
+        // Discovery is AUTHORITATIVE. In the official topology this plugin runs in
+        // the `opencode serve --service` daemon, which INHERITS `TMUX`/`TMUX_PANE`
+        // from whichever TUI happened to spawn it: that pane can belong to another
+        // project, so trusting it would place one project's member pane inside a
+        // sibling project's tmux session. Ask the tmux server which pane is the
+        // caller of THIS project instead: exactly one unambiguous OpenCode TUI
+        // pane, otherwise degrade instead of guessing.
+        return discoverCallerPane({
+          directory,
+          run: (args) => tmuxVizDiscoveryRunner.run(args),
+          realpath: tmuxVizRealpath,
+        })
+      },
+      createManager: ({ directory, discoveredPaneId, discoveryReason }) =>
+        createTmuxVizManager({
+          config: context?.config?.team_mode ?? {},
+          env: tmuxVizEnv,
+          serverUrl: tmuxVizServerUrl,
+          directory,
+          discoveredPaneId,
+          discoveryReason,
+          attachEnv: tmuxVizAttachEnv,
+          fetchSessionStatus: async () => {
+            // The V2 host may expose the status aggregate on `session` or on the
+            // `v2` domain; neither is guaranteed. Returning null means "no status
+            // seam", which the manager treats as unobservable (never as ready).
+            const domain = typeof context?.session?.status === "function"
+              ? context.session
+              : (typeof context?.v2?.session?.status === "function" ? context.v2.session : null)
+            if (!domain) return null
+            const response = await domain.status()
+            const rows = response?.data ?? response
+            const map = new Map()
+            for (const row of Array.isArray(rows) ? rows : []) {
+              if (row?.sessionID) map.set(row.sessionID, row.status ?? row.type)
+            }
+            return map
+          },
+        }),
+      normalizeDirectory: tmuxVizRealpath,
+    })
     const abortBackgroundHandoffs = new AbortController()
     // The background manager owns the tracked background children, the FIFO
     // admission queue (T2 key/limit), the retry classifier, the on-disk
@@ -1365,9 +1426,24 @@ export default {
               if (typeof handler === "function") await handler(event)
             }
             // tmux visualization: pane activity, child-session spawn and cleanup.
-            tmuxVizManager?.onEvent(event)
-            if (event.type === "session.created") await tmuxVizManager?.onSessionCreated(event)
-            if (event.type === "session.deleted" && typeof sessionID === "string") await tmuxVizManager?.onSessionDeleted({ sessionID })
+            // Activity and close are broadcast: every manager ignores sessions it
+            // does not track. A spawn resolves the CHILD's OWN project from the
+            // payload the host actually emits (`properties.info.directory`, the
+            // top-level `Session.directory`) and routes only to that project's
+            // manager; an unresolvable project fails closed instead of inheriting
+            // this instance's static location.
+            const tmuxVizManagers = tmuxVizProjects.all()
+            for (const manager of tmuxVizManagers) manager.onEvent(event)
+            if (event.type === "session.created") {
+              const childSession = resolveChildSessionInfo(event)
+              const projectDirectory = childSession?.directory
+                ?? await resolveCallingSessionDirectory(context, childSession?.id)
+              const projectManager = projectDirectory ? await tmuxVizProjects.ensure(projectDirectory) : null
+              if (projectManager) await projectManager.onSessionCreated(event, childSession)
+            }
+            if (event.type === "session.deleted" && typeof sessionID === "string") {
+              await Promise.all(tmuxVizManagers.map((manager) => manager.onSessionDeleted({ sessionID })))
+            }
             if (typeof sessionID !== "string" || !backgroundManager.has(sessionID)) continue
             if (event.type === "session.execution.failed") {
               // Upstream 8e705a122: classify the child failure before finalizing.
@@ -2077,7 +2153,7 @@ export default {
       await modelsCommandRegistration?.dispose?.()
       autoSlashCommand.clear()
       disposeClaudeCodeHooks()
-      await Promise.all([registration?.dispose?.(), directoryReadRegistration?.dispose?.(), remindersRegistration?.dispose?.(), writeGuardRegistration?.dispose?.(), nonInteractiveRegistration?.dispose?.(), permissionRegistration?.dispose?.(), autoSlashCommandRegistration?.dispose?.(), contextRegistration?.dispose?.(), modelRequestRegistration?.dispose?.(), compactionContextRegistration?.dispose?.(), imageRequestRegistration?.dispose?.(), skillRegistry?.dispose?.(), skillMcpRegistration?.dispose?.(), builtinMcpRegistration?.dispose?.(), claudeMcpRegistration?.dispose?.(), eventSubscription, tmuxVizManager?.cleanup?.()])
+      await Promise.all([registration?.dispose?.(), directoryReadRegistration?.dispose?.(), remindersRegistration?.dispose?.(), writeGuardRegistration?.dispose?.(), nonInteractiveRegistration?.dispose?.(), permissionRegistration?.dispose?.(), autoSlashCommandRegistration?.dispose?.(), contextRegistration?.dispose?.(), modelRequestRegistration?.dispose?.(), compactionContextRegistration?.dispose?.(), imageRequestRegistration?.dispose?.(), skillRegistry?.dispose?.(), skillMcpRegistration?.dispose?.(), builtinMcpRegistration?.dispose?.(), claudeMcpRegistration?.dispose?.(), eventSubscription, tmuxVizProjects.cleanup()])
     }
   },
 }

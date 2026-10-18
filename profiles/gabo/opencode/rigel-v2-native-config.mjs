@@ -1057,6 +1057,53 @@ export function readNativeTmuxVisualization(manifest) {
   return manifest?.metadata?.global?.tmuxVisualization === true
 }
 
+/**
+ * Resolve `team_mode.tmux_visualization` from the LIVE user+project chain.
+ *
+ * Three states, mirroring `readLiveAgentOverridesSource`:
+ * - `declared`: a layer declared the key; the merged view is authoritative and
+ *   the project layer wins, per the documented precedence.
+ * - `undeclared`: no layer declared it. The caller keeps whatever the
+ *   install-time manifest materialized, so no value is invented here.
+ * - `error`: the chain could not be resolved at all; the caller fails closed.
+ */
+export function readLiveTmuxVisualizationSource(options = {}) {
+  try {
+    const view = resolveNativePluginConfig(options)
+    const teamMode = view?.team_mode
+    if (!isPlainObject(teamMode) || !Object.prototype.hasOwnProperty.call(teamMode, "tmux_visualization")) {
+      return { state: "undeclared" }
+    }
+    return { state: "declared", value: teamMode.tmux_visualization === true }
+  } catch (error) {
+    return { state: "error", reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Resolve the tmux-visualization gate at RUNTIME.
+ *
+ * The manifest value is materialized at INSTALL time from the install-time user
+ * layer, so it can never see a public project layer: a project declaring
+ * `[opencode].team_mode.tmux_visualization = true` stayed dark no matter what
+ * it asked for. The live chain is therefore authoritative once it declares the
+ * key, while an undeclared key keeps the materialized manifest value, so an
+ * already-enabled install is never disabled and no default changes. `true` is
+ * never synthesized.
+ *
+ * An ERROR reading the live chain is NOT "undeclared": it must FAIL CLOSED. A
+ * fallback to the install-time manifest here would re-enable the gate from a
+ * value the runtime could not confirm: if the manifest baked the gate ON and
+ * the project chain became unreadable, the error would silently turn the
+ * feature back on. Only a truly UNDECLARED key may consult the manifest.
+ */
+export function resolveNativeTmuxVisualization({ manifest, ...options } = {}) {
+  const live = readLiveTmuxVisualizationSource(options)
+  if (live.state === "declared") return live.value === true
+  if (live.state === "error") return false
+  return readNativeTmuxVisualization(manifest)
+}
+
 export function readNativeMcpPolicy(manifest) {
   const raw = manifest?.metadata?.global?.mcp
   const source = isPlainObject(raw) ? raw : {}

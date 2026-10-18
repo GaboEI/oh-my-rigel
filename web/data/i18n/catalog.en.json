@@ -712,7 +712,7 @@
       "nombre": "Panel visualization",
       "que_es": "Distributes team members across panels of an existing tmux session.",
       "modo_de_activacion": "Setting",
-      "como_se_usa": "Setting: `team_mode.tmux_visualization: true`, the terminal organizer installed (for example, `tmux`), and the session launched INSIDE tmux (with `TMUX` and `TMUX_PANE` present); only inside team mode. On the service (daemon) topology it creates no panels: it records the degradation instead of failing.",
+      "como_se_usa": "Setting: `team_mode.tmux_visualization: true`, resolved PER PROJECT from the live config chain (a project-layer declaration wins over the install-time value, so two projects served by the same daemon each honour their own), plus the terminal organizer installed (for example, `tmux`); only inside team mode. Each member is opened with the real V2 CLI interface (`opencode --server <url> --session <id> <directory>`) and the credential travels in the pane environment, never on the command line. On the service (daemon) topology the calling pane is discovered from the tmux server itself: EXACTLY one live pane in the project running the OpenCode TUI is required; with zero candidates or more than one it records the degradation and creates no panels instead of failing.",
       "cuando_sirve": "With the team running inside your own tmux session, each member is visible in its own panel and you follow progress at a glance.",
       "requisitos": "It activates inside team mode if you have a program that shows and arranges several terminals in one window.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
