@@ -112,9 +112,19 @@ Add `"worktreePath": "../wt-scout"` to a member entry. Path is filesystem-relati
 
 ## tmux visualization (optional)
 
-Set `tmux_visualization: true`. Requires running inside a tmux session and tmux on PATH. Failures are isolated - a missing tmux never blocks team creation.
+Set `tmux_visualization: true`. Requires `tmux` on PATH. Failures are isolated - a missing tmux never blocks team creation.
 
-When enabled, each member gets a dedicated tmux pane attached to that member's session via `opencode attach`. The pane runs the full interactive opencode TUI for the member so you can watch streaming output in real time. Panes start in each member worktree when configured, otherwise `process.cwd()`.
+The setting is resolved **per project**, from the live user+project config chain, so a project-layer declaration wins over the install-time value: a project can switch the feature on or off without reinstalling, and two projects served by the same daemon each honour their own value. An undeclared key keeps whatever the install declared; a value is never synthesized.
+
+When enabled, each member gets a dedicated tmux pane running that member's session through the real V2 CLI interface:
+
+```
+opencode --server <url> --session <session-id> <directory>
+```
+
+The pane runs the full interactive OpenCode TUI for the member, so you can watch streaming output in real time. Panes start in each member worktree when configured, otherwise in the project directory. The server credential is handed to the pane through its environment (`OPENCODE_PASSWORD`), never on a command line.
+
+In the service (daemon) topology the plugin is not running inside a pane, so it has no inherited `TMUX_PANE` and must discover the calling pane from the tmux server itself. Discovery is deliberately unambiguous: a candidate must be a live pane whose current directory is that project and whose process is exactly the OpenCode TUI. **Exactly one** candidate is required. Zero candidates, or more than one, records the degradation and creates no pane - it never picks one arbitrarily. Panes this feature created carry a durable mark, so they are never mistaken for the caller after a daemon restart.
 
 `team_delete` closes the panes and tears down the team layout. Per-member shutdown closes just that pane and rebalances the remaining layout.
 

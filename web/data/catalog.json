@@ -3460,7 +3460,7 @@
       "v2": "reescrita",
       "que_es": "Reparte a los miembros del equipo en paneles de una sesión tmux que ya existe.",
       "como_se_activa": "Se activa dentro del modo equipo si tienes un programa que permite mostrar y organizar varias terminales en una misma ventana y la sesión corre dentro de él.",
-      "como_se_usa": "Ajuste — `team_mode.tmux_visualization: true`, el organizador de terminales instalado (por ejemplo, `tmux`) y la sesión lanzada DENTRO de tmux (con `TMUX` y `TMUX_PANE` presentes); solo dentro del modo equipo. En la topología de servicio (demonio) no crea paneles: lo deja anotado como degradación, sin fallar.",
+      "como_se_usa": "Ajuste — `team_mode.tmux_visualization: true`, resuelto POR PROYECTO desde la cadena de configuración viva (la capa de proyecto manda sobre el valor de instalación, así que dos proyectos del mismo demonio respetan cada uno el suyo), y el organizador de terminales instalado (por ejemplo, `tmux`); solo dentro del modo equipo. Cada miembro se abre con la interfaz CLI V2 real (`opencode --server <url> --session <id> <directorio>`) y la credencial viaja en el entorno del panel, nunca en la línea de comandos. En la topología de servicio (demonio) el panel llamante se descubre desde el propio servidor tmux: exige EXACTAMENTE un panel vivo del proyecto que ejecute la TUI de OpenCode; con cero candidatos o más de uno anota la degradación y no crea paneles, sin fallar.",
       "cuando_sirve": "Con el equipo corriendo dentro de tu propia sesión tmux, ves a cada miembro en su panel y sigues el avance a simple vista.",
       "url": "/catalogo/visualizacion-en-paneles/",
       "modo_de_activacion": "Ajuste",

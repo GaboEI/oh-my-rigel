@@ -110,17 +110,68 @@ export function decideSpawnActions({ windowState, layout = "main-vertical", main
 // Command builders (exact V1 argv shapes)
 // ---------------------------------------------------------------------------
 
-export function buildPlaceholderCommand(description) {
-  const text = `OMO subagent pane ready: ${String(description ?? "").slice(0, 20)}\\nFocus this pane to attach.`
-  return `/bin/sh -c 'printf "${text}\\n"; while :; do sleep 86400; done'`
+// Pane user option marking a pane this feature owns. Shared with caller-pane
+// discovery, which must never mistake a member pane for the caller.
+export const OMO_SUBAGENT_PANE_OPTION = "@omo_subagent"
+
+function quoteShellToken(value) {
+  return `'${String(value ?? "").replace(/'/g, "'\\''")}'`
 }
 
-export function buildAttachCommand({ shell = "/bin/sh", serverUrl, sessionID, directory }) {
-  return `${shell} -c "opencode attach ${serverUrl} --session ${sessionID} --dir ${directory}"`
+export function buildPlaceholderCommand(description) {
+  const text = `OMO subagent pane ready: ${String(description ?? "").slice(0, 20)}`
+  const script = `printf '%s\\n%s\\n' ${quoteShellToken(text)} ${quoteShellToken("Focus this pane to attach.")}; while :; do sleep 86400; done`
+  return `/bin/sh -c ${quoteShellToken(script)}`
+}
+
+/**
+ * Turn a placeholder pane into the tracked session's TUI.
+ *
+ * OpenCode V2 exposes no `attach` subcommand and no `--dir` flag; the interface
+ * it does expose is `--server <url>`, `--session <id>` plus a positional
+ * directory. Passing the obsolete form left every member pane as a dead
+ * placeholder, so this must use the real flags.
+ *
+ * The credential is deliberately absent: it travels in the pane environment
+ * (see `buildAttachAuthEnv`), so it can never leak through a command line, a
+ * process listing, or a logged error. `serverUrl` is optional; when it is
+ * unknown the session is still targeted and the CLI resolves the running
+ * server itself.
+ */
+export function buildAttachCommand({ serverUrl, sessionID, directory, opencodePath = "opencode" }) {
+  const argv = [opencodePath]
+  if (typeof serverUrl === "string" && serverUrl) argv.push("--server", serverUrl)
+  if (typeof sessionID === "string" && sessionID) argv.push("--session", sessionID)
+  if (typeof directory === "string" && directory) argv.push(directory)
+  return argv.map(quoteShellToken).join(" ")
+}
+
+/**
+ * `respawn-pane`/`split-window` `-e` arguments that put the server credential
+ * into the pane environment instead of the pane's command line.
+ */
+export function buildAttachAuthEnv({ password, username } = {}) {
+  const args = []
+  if (typeof username === "string" && username) args.push("-e", `OPENCODE_SERVER_USERNAME=${username}`)
+  if (typeof password === "string" && password) args.push("-e", `OPENCODE_PASSWORD=${password}`)
+  return args
 }
 
 export function buildTitleArgs(paneId, description) {
   return ["select-pane", "-t", paneId, "-T", `omo-subagent-${String(description ?? "").slice(0, 20)}`]
+}
+
+/**
+ * Durable ownership marker for a pane this feature created.
+ *
+ * The pane title is not reliable: a TUI running inside the pane overwrites it
+ * with its own terminal title, which would make leftover member panes look like
+ * fresh callers to `discoverCallerPane` and turn every later discovery
+ * ambiguous. A tmux user option on the pane survives that, so caller discovery
+ * can always tell our own panes apart.
+ */
+export function buildPaneMarkerArgs(paneId) {
+  return ["set-option", "-p", "-t", paneId, OMO_SUBAGENT_PANE_OPTION, "1"]
 }
 
 export function buildSpawnArgs({ direction, targetPaneId, placeholderCommand, authEnv = [] }) {
