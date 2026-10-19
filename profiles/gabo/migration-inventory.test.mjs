@@ -69,7 +69,9 @@ const EXPECTED_STATUS_ROWS = [
   ["native-edition-nudge", "Migrado"],
   ["native-edition-nudge", "Migrado"],
   ["btw-side", "Migrado"],
-  ["opengateway-provider", "Migrado"],
+  // PR #43 late review: OpenGateway has no V2 catalog or parity test, so the row
+  // closes as a proven incompatibility instead of a builtin equivalence.
+  ["opengateway-provider", "Incompatible (con evidencia)"],
   ["task-toast-manager", "Migrado"],
   // The 2026-10-14 sidebar retirement withdrew the native V2 port; the
   // from-scratch rewrite then passed its live gates (S6 candidate + S7
@@ -81,9 +83,10 @@ const EXPECTED_STATUS_ROWS = [
   ["get-local-version", "Migrado"],
 ]
 
-// Terminal statuses: a closed row renders one of these. Anything else is an
-// open row and must be named in OPEN_GAPS_T25.
-const TERMINAL_STATUSES = new Set(["Migrado", "Equivale a builtin V2", "unwired upstream"])
+// Terminal statuses: a closed row renders one of these. `Incompatible (con
+// evidencia)` is terminal by definition: the row carries proof that the
+// capability is not reproduced, so it is a closed disposition, not open debt.
+const TERMINAL_STATUSES = new Set(["Migrado", "Equivale a builtin V2", "Incompatible (con evidencia)", "unwired upstream"])
 
 // T25 open-debt register. A non-terminal row is only allowed if it is named
 // here, so a regeneration can never introduce a NEW silent pending/partial row.
@@ -151,6 +154,16 @@ describe("migration inventory ledger", () => {
         .filter((row) => !ALLOWED_STATUSES.has(row.status))
         .map((row) => `${row.name}: ${row.status}`)
       expect(invalid).toEqual([])
+    })
+
+    // PR #43 late review: the capability has no V2 catalog and no parity test,
+    // so a builtin-equivalence claim here would be false. This control fails if
+    // a regeneration reintroduces that claim.
+    test("#then OpenGateway is not claimed as a builtin equivalent", () => {
+      const openGateway = rows.filter((row) => row.name === "opengateway-provider")
+      expect(openGateway).toHaveLength(1)
+      expect(openGateway[0].classification).not.toBe("Equivale a builtin V2")
+      expect(openGateway[0].status).toBe("Incompatible (con evidencia)")
     })
 
     test("#then the audited surfaces render their authored status", () => {

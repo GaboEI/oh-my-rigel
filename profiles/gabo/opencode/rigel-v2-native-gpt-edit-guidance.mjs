@@ -22,6 +22,11 @@
  * Consequences on OpenCode V2:
  *   - `gpt-5*` / `gpt-6*` (non-`gpt-4`, non-`oss`) -> `GPT_PATCH_ONLY_GUIDANCE`,
  *     because the host removed `edit`/`write` for exactly those ids.
+ *   - the same ids with the `hashline_edit` gate enabled ->
+ *     `GPT_PATCH_AND_HASHLINE_GUIDANCE`, because the runtime registers the
+ *     `hashline_edit` tool alongside the host's `patch`. The exclusive wording
+ *     is false in that configuration and would steer the model away from the
+ *     hash-validated editing path.
  *   - `gpt-4*`, `gpt-oss*`, `codex*`, `o1`/`o3`/`o4` -> `GPT_FILE_EDIT_GUIDANCE`,
  *     because the host keeps `edit`/`write` (and removes `patch`) for them.
  *
@@ -55,6 +60,19 @@ export const GPT_FILE_EDIT_GUIDANCE =
  */
 export const GPT_PATCH_ONLY_GUIDANCE =
   "Your toolset exposes only the patch-based editing tool (`apply_patch`, surfaced as `patch`); `edit` and `write` are not available for this model. Use it for every file change. Keep each patch small and match the surrounding lines exactly so verification passes on the first attempt."
+
+/**
+ * Guidance for a host-recognised GPT model when the runtime also registers the
+ * `hashline_edit` tool (the profile's `hashline_edit` gate is enabled).
+ *
+ * It differs from `GPT_PATCH_ONLY_GUIDANCE` in exactly one fact: it does not
+ * claim `patch` is the only editor. Naming both tools is what makes the
+ * instruction true in a shipped profile where two editing tools exist, and it
+ * keeps the model on the profile's hash-validated path instead of sending every
+ * change through the host patch tool.
+ */
+export const GPT_PATCH_AND_HASHLINE_GUIDANCE =
+  "Your toolset exposes the patch-based editing tool (`apply_patch`, surfaced as `patch`) and `hashline_edit`; `edit` and `write` are not available for this model. Use `hashline_edit` for hash-anchored edits and `patch` when a whole-file patch is the better fit. Keep each change small and match the surrounding lines exactly so verification passes on the first attempt."
 
 /**
  * Sentinel for the injected guidance block, so a repeated context pass rebuilds
@@ -96,16 +114,25 @@ export function isGptFamilyModel(modelID) {
 /**
  * File-edit guidance for the runtime model.
  *
- * Returns `GPT_APPLY_PATCH_GUIDANCE` for a GPT-family model when the harness
- * exposes an `apply_patch` tool, `GPT_FILE_EDIT_GUIDANCE` for a GPT-family model
- * without one, and `undefined` for a non-GPT model (no guidance applies).
+ * Returns `GPT_PATCH_ONLY_GUIDANCE` for a host-recognised GPT model whose
+ * `edit`/`write` the host removed, `GPT_PATCH_AND_HASHLINE_GUIDANCE` for that
+ * same case while the request also advertises `hashline_edit`,
+ * `GPT_FILE_EDIT_GUIDANCE` for a GPT-family model that keeps `edit`/`write`,
+ * and `undefined` for a non-GPT model (no guidance applies). A caller that
+ * passes `hasApplyPatchTool: true` selects the patch branch for a harness it
+ * knows exposes that tool.
+ *
+ * `GPT_APPLY_PATCH_GUIDANCE` is retained only as the byte-parity artifact for
+ * the V1 constant; the selector never returns it.
  */
-export function gptEditGuidanceForModel(modelID, { hasApplyPatchTool = false } = {}) {
+export function gptEditGuidanceForModel(modelID, { hasApplyPatchTool = false, hasHashlineEdit = false } = {}) {
   if (!isGptFamilyModel(modelID)) return undefined
-  // The patch-only wording is correct whenever the harness exposes the patch
-  // tool — either because the caller said so, or because the model is one the
-  // host strips `edit`/`write` from (the GPT family the host recognises).
-  if (hasApplyPatchTool === true || hostExposesPatchTool(modelID)) return GPT_PATCH_ONLY_GUIDANCE
+  // The patch wording is correct whenever the harness exposes the patch tool,
+  // either because the caller said so, or because the model is one the host
+  // strips `edit`/`write` from (the GPT family the host recognises).
+  if (hasApplyPatchTool === true || hostExposesPatchTool(modelID)) {
+    return hasHashlineEdit === true ? GPT_PATCH_AND_HASHLINE_GUIDANCE : GPT_PATCH_ONLY_GUIDANCE
+  }
   return GPT_FILE_EDIT_GUIDANCE
 }
 
@@ -140,6 +167,12 @@ export function hostExposesPatchTool(modelID) {
  * `GPT_EDIT_GUIDANCE_MARKER` so the runtime's marker strip (which cuts from the
  * first known marker to the end) rebuilds it on a repeated pass instead of
  * appending a second copy.
+ *
+ * `options.hasHashlineEdit` must reflect whether the current request advertises
+ * the `hashline_edit` tool. The runtime resolves it from the per-request
+ * `event.tools` catalog and falls back to the `hashline_edit` registration gate
+ * when the host exposes no catalog. It is the one input the selector cannot
+ * derive from the model id.
  */
 export function gptEditGuidanceBlock(modelID, options) {
   const guidance = gptEditGuidanceForModel(modelID, options)

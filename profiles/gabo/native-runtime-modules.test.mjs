@@ -180,7 +180,7 @@ describe("Rigel native runtime module staging guard", () => {
 })
 
 /**
- * REGRESSION GUARD — the failure mode that retired the OpenGateway V2 port.
+ * REGRESSION GUARD: the failure mode that retired the OpenGateway V2 port.
  *
  * `discoverRuntimeModules` follows only `from "./*.mjs"` and appends `.mjs`, so
  * a module that loads a sibling NON-`.mjs` asset at runtime (a JSON catalog via

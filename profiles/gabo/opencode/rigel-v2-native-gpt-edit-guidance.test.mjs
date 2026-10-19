@@ -3,22 +3,25 @@ import {
   GPT_APPLY_PATCH_GUIDANCE,
   GPT_EDIT_GUIDANCE_MARKER,
   GPT_FILE_EDIT_GUIDANCE,
+  GPT_PATCH_AND_HASHLINE_GUIDANCE,
   GPT_PATCH_ONLY_GUIDANCE,
   gptEditGuidanceBlock,
   gptEditGuidanceForModel,
   hostExposesPatchTool,
   isGptFamilyModel,
 } from "./rigel-v2-native-gpt-edit-guidance.mjs"
+import {
+  GPT_APPLY_PATCH_GUIDANCE as V1_APPLY_PATCH_GUIDANCE,
+  GPT_FILE_EDIT_GUIDANCE as V1_FILE_EDIT_GUIDANCE,
+} from "../../../packages/omo-opencode/src/agents/gpt-apply-patch-guard.ts"
 
 // The two constants are the V1 prompt bytes injected into a GPT model's system
-// prompt. Byte parity with V1 `gpt-apply-patch-guard.ts` is the port contract.
-test("the guidance constants are byte-identical to V1", () => {
-  expect(GPT_APPLY_PATCH_GUIDANCE).toBe(
-    "Use `apply_patch` for file edits. Keep patches small and match the surrounding lines exactly so verification passes.",
-  )
-  expect(GPT_FILE_EDIT_GUIDANCE).toBe(
-    "Use whichever file-editing tool is exposed in your toolset (`apply_patch`, or `edit`/`write`). Keep each change small and match the surrounding lines exactly so it applies on the first attempt.",
-  )
+// prompt. Byte parity with the real V1 owner is the port contract, so this
+// compares the ported bytes against the shipped V1 artifact instead of a
+// hand-copied string.
+test("the V1 guidance bytes are ported unchanged", () => {
+  expect(GPT_APPLY_PATCH_GUIDANCE).toBe(V1_APPLY_PATCH_GUIDANCE)
+  expect(GPT_FILE_EDIT_GUIDANCE).toBe(V1_FILE_EDIT_GUIDANCE)
 })
 
 test("#given a GPT model and an apply_patch harness #when guidance is selected #then the patch-only string is returned", () => {
@@ -55,10 +58,25 @@ test("#given the host toolset predicate #when evaluated #then it matches the hos
   expect(hostExposesPatchTool("")).toBe(false)
 })
 
-test("#given the patch-only guidance #when read #then it names only tools the host actually exposes", () => {
-  expect(GPT_PATCH_ONLY_GUIDANCE).toContain("apply_patch")
-  expect(GPT_PATCH_ONLY_GUIDANCE).toContain("`patch`")
-  expect(GPT_PATCH_ONLY_GUIDANCE).toContain("`edit` and `write` are not available")
+// The runtime registers `hashline_edit` when the profile gate is on, so the
+// patch-only wording would falsely claim `patch` is the only editor. Selection
+// is observable routing, so it is asserted through the exported constants.
+test("#given a host-recognised GPT model and an enabled hashline gate #when guidance is selected #then the patch-and-hashline string is returned", () => {
+  expect(gptEditGuidanceForModel("gpt-5.6-sol", { hasHashlineEdit: true })).toBe(GPT_PATCH_AND_HASHLINE_GUIDANCE)
+  expect(gptEditGuidanceForModel("openai/gpt-6-luna", { hasHashlineEdit: true })).toBe(GPT_PATCH_AND_HASHLINE_GUIDANCE)
+})
+
+test("#given a host-recognised GPT model with the hashline gate disabled #when guidance is selected #then the patch-only string is returned", () => {
+  expect(gptEditGuidanceForModel("gpt-5.6-sol", { hasHashlineEdit: false })).toBe(GPT_PATCH_ONLY_GUIDANCE)
+  expect(gptEditGuidanceForModel("gpt-5.6-sol")).toBe(GPT_PATCH_ONLY_GUIDANCE)
+})
+
+test("#given a GPT model whose host keeps edit/write and an enabled hashline gate #when guidance is selected #then the V1 generic string is returned", () => {
+  expect(gptEditGuidanceForModel("gpt-4o", { hasHashlineEdit: true })).toBe(GPT_FILE_EDIT_GUIDANCE)
+})
+
+test("#given a non-GPT model with the hashline gate enabled #when guidance is selected #then undefined is returned", () => {
+  expect(gptEditGuidanceForModel("claude-opus-4-5", { hasHashlineEdit: true })).toBeUndefined()
 })
 
 test("#given a non-GPT model #when guidance is selected #then undefined is returned regardless of the apply_patch flag", () => {

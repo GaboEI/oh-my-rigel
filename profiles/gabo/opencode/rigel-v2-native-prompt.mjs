@@ -167,6 +167,21 @@ function removeInjectedSystemParts(system) {
 }
 
 /**
+ * Whether the per-request tool map advertises `hashline_edit`.
+ *
+ * The V2 `context` hook receives the catalog the host is about to send, after
+ * its own per-model tool edits and after this plugin's tool transforms, so it is
+ * the truth the model will see. `undefined` means the host supplied no usable
+ * catalog (or an empty one), and the caller falls back to the registration gate.
+ */
+function hashlineEditInToolMap(tools) {
+  if (!tools || typeof tools !== "object" || Array.isArray(tools)) return undefined
+  const names = Object.keys(tools)
+  if (names.length === 0) return undefined
+  return names.includes("hashline_edit")
+}
+
+/**
  * Build the official V2 `context` hook. Prompt/context mutations reach the
  * provider request. The V2.0.22 exception is `compaction` system mutation;
  * continuity uses that hook's `event.result` and `event.messages` instead.
@@ -193,6 +208,7 @@ export function createNativeContextHook({
   onSisyphusReconcile,
   getUpdateNotice,
   onGptEditGuidance,
+  hashlineEditEnabled = false,
 } = {}) {
   if (typeof getDelegationRoster !== "function") {
     throw new TypeError("A live V2 delegation roster reader is required")
@@ -267,10 +283,19 @@ export function createNativeContextHook({
     // selects the editing toolset per model: for the GPT family it deletes
     // `edit`/`write` and keeps `patch`, and for every other model it deletes
     // `patch`. The block therefore names the tool the model actually has, which
-    // is resolved from the host's own predicate rather than assumed. Injected on
-    // the same root-session system channel as the notice, marker-wrapped so a
-    // repeated pass rebuilds rather than accumulates.
-    const gptEditGuidance = gptEditGuidanceBlock(modelID)
+    // is resolved from the host's own predicate rather than assumed. When the
+    // request also advertises `hashline_edit` (or the registration gate is on
+    // and the host does not expose a tool map), the block names it too: telling
+    // a GPT model that `patch` is its only editor would be false in the shipped
+    // profile and would steer it away from the hash-validated editing path.
+    // Injected on the same root-session system channel as the notice,
+    // marker-wrapped so a repeated pass rebuilds rather than accumulates.
+    const hashlineInRequest = hashlineEditInToolMap(event.tools)
+    const gptEditGuidance = gptEditGuidanceBlock(modelID, {
+      // The per-request tool map wins when present; the registration gate is the
+      // fallback for a host that does not expose one.
+      hasHashlineEdit: hashlineInRequest ?? hashlineEditEnabled,
+    })
     if (gptEditGuidance) {
       system.push({ type: "text", text: gptEditGuidance })
       // Observability seam: the block that was actually pushed is reported per
