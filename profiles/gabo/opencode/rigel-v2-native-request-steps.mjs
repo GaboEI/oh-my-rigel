@@ -361,7 +361,19 @@ function stripResponsesSkipNote(input) {
  * `RIGEL_IMAGE_RESIZER_PROVIDERS` broaden it. `resize` and `log` are injectable
  * for tests. Never throws.
  */
-export function createImageResizerStep({ providers, resize = resizeImageDataUrl, env = process.env, log = console } = {}) {
+export function createImageResizerStep({ providers, resize = resizeImageDataUrl, env = process.env, log = console, onOutcome } = {}) {
+  // Observability seam: `onOutcome` reports the decision the step reached. It is
+  // observation only and is therefore wrapped in its own try/catch: a receipt
+  // callback that throws must never change the returned outcome, mutate the
+  // body differently, or abort the request.
+  const notifyOutcome = (outcome, providerID) => {
+    if (typeof onOutcome !== "function") return
+    try {
+      onOutcome(outcome, { providerID })
+    } catch (error) {
+      log?.error?.(`[oh-my-rigel] image-resizer outcome callback failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   return {
     name: "image-resizer",
     run: async ({ body, shape, input } = {}) => {
@@ -369,7 +381,9 @@ export function createImageResizerStep({ providers, resize = resizeImageDataUrl,
         const allowed = providers ?? resolveResizerProviders(env)
         const providerID = input?.model?.providerID ?? input?.model?.provider
         if (!isResizerProvider(providerID, allowed)) {
-          return { considered: 0, resized: 0, removed: 0, skipped: "provider" }
+          const skipped = { considered: 0, resized: 0, removed: 0, skipped: "provider" }
+          notifyOutcome(skipped, providerID)
+          return skipped
         }
         const resolvedShape = shape ?? resolveRequestShape(body)
         const outcome = { considered: 0, resized: 0, removed: 0, skips: [] }
@@ -463,6 +477,7 @@ export function createImageResizerStep({ providers, resize = resizeImageDataUrl,
           const reasons = outcome.skips.map((skip) => skip.reason).join(",")
           log?.error?.(`[oh-my-rigel] image-resizer: removed ${outcome.removed} oversized image(s) after resize failure/unavailability (reasons=${reasons})`)
         }
+        notifyOutcome(outcome, providerID)
         return outcome
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

@@ -380,6 +380,33 @@ test("registerNativeAgents skips Hephaestus when no required provider is connect
   expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
 })
 
+// Observation-only contract for the blocked-gate report: attaching the listener
+// must not move the roster or the applied models at all. The per-reason payloads
+// are owned by the report tests above; this one owns the invariance, so a seam
+// that reported a skip AND still registered the agent would fail here.
+test("registerNativeAgents keeps registration identical whether or not a gate listener is attached", async () => {
+  const manifest = {
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol", variant: "medium" },
+      explore: { name: "Explore", mode: "subagent", model: "kimi-for-coding/kimi-for-coding-highspeed", variant: "off" },
+    },
+  }
+  const listModels = async () => [{ providerID: "opencode-go", id: "qwen3.7-plus", enabled: true }]
+  const silent = createHephaestusHarness()
+  const reported = createHephaestusHarness()
+  const skipped = []
+  const silentRegistered = await registerNativeAgents(silent.agentDomain, manifest, { listModels })
+  const reportedRegistered = await registerNativeAgents(reported.agentDomain, manifest, {
+    listModels,
+    onHephaestusGateSkipped: (event) => skipped.push(event),
+  })
+  // Precondition: the listener really ran, so the equality below is not vacuous.
+  expect(skipped).toEqual([{ agent: "Hephaestus - Deep Agent", reason: "provider" }])
+  expect(reportedRegistered).toEqual(silentRegistered)
+  expect(reported.applied).toEqual(silent.applied)
+  expect(silentRegistered).toEqual(["explore"])
+})
+
 test("registerNativeAgents keeps the V1 first-run equivalent when the inventory is unavailable", async () => {
   // V1 registers Hephaestus on a first run with no provider caches; the V2
   // equivalent is an inventory read failure: the provider check is skipped and
@@ -461,6 +488,86 @@ test("registerNativeAgents with chainFallback:false drops Hephaestus whose JSON 
   })
   expect(registered).toEqual([])
   expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
+})
+
+// The skip callback is the only observability a blocked Hephaestus leaves behind:
+// the registration log line is gone once startup ends. It must fire exactly once
+// per skipped agent, carry only the fields the gate decision owns (`agent` and
+// `reason`), and never stand in for the roster decision itself - a blocked gate
+// still keeps the agent out of `registered` and out of `editor.update`.
+test("registerNativeAgents reports a provider-blocked Hephaestus gate once through onHephaestusGateSkipped", async () => {
+  const { applied, agentDomain } = createHephaestusHarness()
+  const skipped = []
+  const manifest = {
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol", variant: "medium" },
+    },
+  }
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    listModels: async () => [{ providerID: "opencode-go", id: "qwen3.7-plus", enabled: true }],
+    onHephaestusGateSkipped: (event) => skipped.push(event),
+  })
+  expect(skipped).toEqual([{ agent: "Hephaestus - Deep Agent", reason: "provider" }])
+  expect(registered).toEqual([])
+  expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
+})
+
+test("registerNativeAgents reports a model-blocked Hephaestus gate through onHephaestusGateSkipped", async () => {
+  const { applied, agentDomain } = createHephaestusHarness()
+  const skipped = []
+  const manifest = {
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol", variant: "medium" },
+      explore: { name: "Explore", mode: "subagent", model: "kimi-for-coding/kimi-for-coding-highspeed", variant: "off" },
+    },
+  }
+  // A required provider IS connected, so only the model gate can block; the
+  // sibling non-Hephaestus agent registers in the same pass without a report.
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    listModels: async () => [{ providerID: "openai", id: "kimi-k3", enabled: true }],
+    explicitAgentModels: new Map([["hephaestus", { model: "openai/kimi-k3" }]]),
+    onHephaestusGateSkipped: (event) => skipped.push(event),
+  })
+  expect(skipped).toEqual([{ agent: "Hephaestus - Deep Agent", reason: "model" }])
+  expect(registered).toEqual(["explore"])
+  expect(applied["Hephaestus - Deep Agent"]).toBeUndefined()
+})
+
+test("registerNativeAgents reports no gate skip when the Hephaestus gate is eligible", async () => {
+  const { applied, agentDomain } = createHephaestusHarness()
+  const skipped = []
+  const manifest = {
+    agents: {
+      "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol", variant: "medium" },
+    },
+  }
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    listModels: async () => [{ providerID: "openai", id: "gpt-6-sol", enabled: true }],
+    onHephaestusGateSkipped: (event) => skipped.push(event),
+  })
+  expect(skipped).toEqual([])
+  expect(registered).toEqual(["Hephaestus - Deep Agent"])
+  expect(applied["Hephaestus - Deep Agent"]).toEqual({ providerID: "openai", id: "gpt-6-sol", variant: "medium" })
+})
+
+test("registerNativeAgents never reports a gate skip for non-Hephaestus agents", async () => {
+  const { agentDomain } = createHephaestusHarness()
+  const skipped = []
+  const manifest = {
+    agents: {
+      explore: { name: "Explore", mode: "subagent", model: "opencode-go/kimi-k3" },
+      judge: { name: "Judge", mode: "primary", model: "opencode-go/kimi-k3" },
+    },
+  }
+  // Neither provider nor model would clear a Hephaestus gate here: the
+  // inventory carries no required provider and the model is not a supported
+  // GPT. Neither agent is Hephaestus, so the gate must not run at all.
+  const registered = await registerNativeAgents(agentDomain, manifest, {
+    listModels: async () => [{ providerID: "opencode-go", id: "kimi-k3", enabled: true }],
+    onHephaestusGateSkipped: (event) => skipped.push(event),
+  })
+  expect(skipped).toEqual([])
+  expect(registered).toEqual(["explore", "judge"])
 })
 
 test("registerNativeAgents exposes acceptance tuning from the applied AgentV2Info request bodies", async () => {

@@ -10,21 +10,51 @@
  *
  * This module is pure: no imports, no state, no I/O. It keys the guidance on the
  * bare model name (the last `/` segment, provider-independent, mirroring
- * `extractModelName` in `rigel-v2-native-sisyphus-prompt.mjs`) and on whether
- * the live harness exposes an `apply_patch` tool. The caller owns that fact: the
- * native V2 runtime registers `edit`/`write`, not `apply_patch`, so it passes
- * `hasApplyPatchTool: false` (the default) and every GPT model receives the
- * generic string; the apply-patch branch stays reachable for a harness that does
- * expose the tool.
+ * `extractModelName` in `rigel-v2-native-sisyphus-prompt.mjs`).
+ *
+ * Which editing tool the harness actually exposes is decided PER MODEL. When the
+ * caller does not pass `hasApplyPatchTool: true`, `gptEditGuidanceForModel` falls
+ * back to `hostExposesPatchTool(modelID)`, which mirrors the host's own per-model
+ * toolset rule: for `gpt-*` ids that are neither `oss` nor `gpt-4*` the host keeps
+ * `patch` and deletes `edit`/`write`; for every other id it keeps `edit`/`write`
+ * and deletes `patch`.
+ *
+ * Consequences on OpenCode V2:
+ *   - `gpt-5*` / `gpt-6*` (non-`gpt-4`, non-`oss`) -> `GPT_PATCH_ONLY_GUIDANCE`,
+ *     because the host removed `edit`/`write` for exactly those ids.
+ *   - `gpt-4*`, `gpt-oss*`, `codex*`, `o1`/`o3`/`o4` -> `GPT_FILE_EDIT_GUIDANCE`,
+ *     because the host keeps `edit`/`write` (and removes `patch`) for them.
+ *
+ * The generic string is therefore NOT the universal GPT answer: naming
+ * `edit`/`write` to a model whose host just deleted them was the defect this
+ * module now avoids. A non-GPT id still yields `undefined` (no guidance applies).
  */
 
 /** V1 `GPT_APPLY_PATCH_GUIDANCE`, byte-identical. */
 export const GPT_APPLY_PATCH_GUIDANCE =
   "Use `apply_patch` for file edits. Keep patches small and match the surrounding lines exactly so verification passes."
 
-/** V1 `GPT_FILE_EDIT_GUIDANCE`, byte-identical. */
+/**
+ * V1 `GPT_FILE_EDIT_GUIDANCE` is retained byte-identical for the models whose
+ * harness still exposes `edit`/`write`, but it is NO LONGER what a GPT-family
+ * model receives on OpenCode V2: the host removes `edit`/`write` for exactly
+ * those models, so naming them instructed the model to use tools it does not
+ * have. The V2 block for that family is `GPT_PATCH_ONLY_GUIDANCE`.
+ */
 export const GPT_FILE_EDIT_GUIDANCE =
   "Use whichever file-editing tool is exposed in your toolset (`apply_patch`, or `edit`/`write`). Keep each change small and match the surrounding lines exactly so it applies on the first attempt."
+
+/**
+ * Guidance for a model whose host exposes ONLY the patch tool.
+ *
+ * Two facts drive the wording: (1) on OpenCode V2 the GPT family gets `patch`
+ * and loses `edit`/`write`, and (2) `patch` is the host's own name for the
+ * apply_patch tool (`apply_patch -> patch` in the tool-name map), while the V2
+ * prompt surface exposes it as `apply_patch`. Naming both is what makes the
+ * instruction correct instead of aspirational.
+ */
+export const GPT_PATCH_ONLY_GUIDANCE =
+  "Your toolset exposes only the patch-based editing tool (`apply_patch`, surfaced as `patch`); `edit` and `write` are not available for this model. Use it for every file change. Keep each patch small and match the surrounding lines exactly so verification passes on the first attempt."
 
 /**
  * Sentinel for the injected guidance block, so a repeated context pass rebuilds
@@ -72,7 +102,36 @@ export function isGptFamilyModel(modelID) {
  */
 export function gptEditGuidanceForModel(modelID, { hasApplyPatchTool = false } = {}) {
   if (!isGptFamilyModel(modelID)) return undefined
-  return hasApplyPatchTool === true ? GPT_APPLY_PATCH_GUIDANCE : GPT_FILE_EDIT_GUIDANCE
+  // The patch-only wording is correct whenever the harness exposes the patch
+  // tool — either because the caller said so, or because the model is one the
+  // host strips `edit`/`write` from (the GPT family the host recognises).
+  if (hasApplyPatchTool === true || hostExposesPatchTool(modelID)) return GPT_PATCH_ONLY_GUIDANCE
+  return GPT_FILE_EDIT_GUIDANCE
+}
+
+/**
+ * True when the OpenCode V2 host exposes the patch-based editing tool for this
+ * model, which is exactly when it removes `edit`/`write`.
+ *
+ * Mirrors the host's per-model toolset hook verbatim (decompiled from the
+ * v2.0.32 binary), on the lowercased bare name:
+ *
+ *   if (id.includes("gpt-") && !id.includes("oss") && !id.includes("gpt-4")) {
+ *     delete tools.edit; delete tools.write   // `patch` (apply_patch) remains
+ *   } else {
+ *     delete tools.patch                      // `edit`/`write` remain
+ *   }
+ *
+ * This predicate is deliberately NOT `isGptFamilyModel`: that one is the V1
+ * inclusion rule for the *guidance text*, which is broader (it also covers
+ * `codex`, `o1`, `o3`, `o4` and `gpt-4*`). Using the V1 rule to decide which
+ * editing tool exists is what made the injected text name tools the host had
+ * just removed.
+ */
+export function hostExposesPatchTool(modelID) {
+  const bare = bareModelName(modelID)
+  if (bare === "") return false
+  return bare.includes("gpt-") && !bare.includes("oss") && !bare.includes("gpt-4")
 }
 
 /**

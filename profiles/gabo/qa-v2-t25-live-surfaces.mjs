@@ -12,10 +12,11 @@
  * V1 path is read, every state root is a throwaway temp dir.
  *
  * Server entrypoint (`rigel-v2-native.mjs` default `setup`):
- *   - opengateway POSITIVE with an ISOLATED test credential (`OPENGATEWAY_API_KEY`
- *     set to a non-secret value) and the packaged catalog: the captured
- *     `context.provider.transform` editor receives the OpenGateway provider and
- *     its models. NEGATIVE (credential removed): the transform is never called.
+ *   - provider transform RETIRED: the OpenGateway port is gone, because the
+ *     runtime materializer stages ESM modules only and its catalog JSON never
+ *     reached a deployed runtime, so the layer could not deliver its claim.
+ *     Setup must therefore register NO `context.provider.transform`. The seam
+ *     stays instrumented so a re-introduction is caught as a regression.
  *   - btw POSITIVE: a side session carrying `omo_btw_side` metadata gets the
  *     bounded parent context injected and a durable receipt. NEGATIVE: a session
  *     without the metadata is left byte-identical.
@@ -62,12 +63,12 @@ function readJsonSafe(file) {
 const receiptDir = path.join(stateHome, "oh-my-rigel")
 
 // ===========================================================================
-// PHASE A - server entrypoint (real setup), OpenGateway + btw context
+// PHASE A - server entrypoint (real setup), btw context
 // ===========================================================================
 async function runServerPhase() {
-  // --- POSITIVE: isolated test credential ---
-  process.env.OPENGATEWAY_API_KEY = "rigel-t25-test-credential"
   const { context, capture } = createEntrypointContext({ directory: projDir })
+  // `context.provider.transform` was the retired OpenGateway layer's only
+  // consumer. The seam stays instrumented: setup must not register one.
   const providerAdds = []
   let providerTransforms = 0
   context.provider = {
@@ -93,13 +94,11 @@ async function runServerPhase() {
 
   const disposeServer = await serverPlugin.setup(context)
   try {
-    const added = providerAdds[0]
-    const modelCount = added && added.models ? Object.keys(added.models).length : 0
     check(
-      "opengateway",
-      "positive: provider.transform called with provider + packaged catalog",
-      providerTransforms === 1 && added?.info?.name === "OpenGateway" && modelCount >= 60,
-      `transforms=${providerTransforms}; name=${added?.info?.name}; models=${modelCount}`,
+      "opengateway-retired",
+      "negative: setup registers NO context.provider.transform (retired layer stays gone)",
+      providerTransforms === 0 && providerAdds.length === 0,
+      `transforms=${providerTransforms}; adds=${providerAdds.length}`,
     )
 
     const contextHook = hooksNamed(capture, "context")[0]
@@ -129,19 +128,6 @@ async function runServerPhase() {
     check("btw-context", "negative: no metadata -> no btw boundary, no parent content", !rootBoundary && !rootHasParent, `boundary=${rootBoundary}; parentContent=${rootHasParent}`)
   } finally {
     await disposeServer()
-    delete process.env.OPENGATEWAY_API_KEY
-  }
-
-  // --- NEGATIVE: no credential -> transform never called ---
-  const negative = createEntrypointContext({ directory: projDir })
-  let negativeTransforms = 0
-  negative.context.provider = { transform: async (cb) => { negativeTransforms += 1; cb({ add() {}, get: () => undefined }); return { dispose() {} } } }
-  negative.context.session.get = async () => ({ data: {} })
-  const disposeNegative = await serverPlugin.setup(negative.context)
-  try {
-    check("opengateway", "negative: no credential -> provider.transform never called", negativeTransforms === 0, `transforms=${negativeTransforms}`)
-  } finally {
-    await disposeNegative()
   }
 }
 

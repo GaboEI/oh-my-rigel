@@ -16,6 +16,7 @@ import {
   resolveResizerFormat,
   resolveResizerProviders,
 } from "./rigel-v2-native-image-resizer.mjs"
+import { createImageResizerStep } from "./rigel-v2-native-request-steps.mjs"
 
 // The native V2 runtime cannot import `packages/` TypeScript, so the resizer
 // decisions are a plain-JS port of the real owners:
@@ -556,5 +557,140 @@ describe("differential parity with the V1 resizer owners", () => {
     // given / when / then
     expect(calculateTargetDimensions(2000, 1000, 1000)).toEqual(v1CalculateTargetDimensions(2000, 1000, 1000))
     expect(calculateTargetDimensions(50, 50, 1000)).toEqual(v1CalculateTargetDimensions(50, 50, 1000))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// createImageResizerStep `onOutcome` observability seam
+//
+// The callback is a receipt: it reports the decision the step reached and must
+// never change the returned outcome, the request body it was handed, or the
+// request itself. A callback that throws is observed and logged, never fatal.
+// ---------------------------------------------------------------------------
+
+function chatImageBody(url) {
+  return { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url } }] }] }
+}
+
+function silentLogger() {
+  const calls = []
+  return { calls, error: (message) => calls.push(message) }
+}
+
+const OVERSIZED_PNG_URL = createLargePngDataUrl(3000, 2000, 4096)
+const WITHIN_LIMITS_PNG_URL = createPngDataUrl(800, 600)
+const RESIZED_DATA_URL = "data:image/png;base64,RESIZED"
+
+describe("createImageResizerStep onOutcome seam", () => {
+  test("reports a provider skip once and returns the same outcome as a callback-free run", async () => {
+    // given
+    const observed = []
+    const body = chatImageBody(OVERSIZED_PNG_URL)
+    const baselineBody = chatImageBody(OVERSIZED_PNG_URL)
+    const input = { model: { providerID: "opencode-go" } }
+    const step = createImageResizerStep({
+      providers: ["anthropic"],
+      log: silentLogger(),
+      onOutcome: (outcome, context) => observed.push({ outcome, context }),
+    })
+    const baselineStep = createImageResizerStep({ providers: ["anthropic"], log: silentLogger() })
+
+    // when
+    const reported = await step.run({ body, shape: "chat", input })
+    const baseline = await baselineStep.run({ body: baselineBody, shape: "chat", input })
+
+    // then
+    expect(observed).toHaveLength(1)
+    expect(observed[0].outcome).toEqual({ considered: 0, resized: 0, removed: 0, skipped: "provider" })
+    expect(observed[0].context).toEqual({ providerID: "opencode-go" })
+    expect(reported).toEqual(baseline)
+    expect(JSON.stringify(body)).toBe(JSON.stringify(baselineBody))
+  })
+
+  test("reports a completed resize with the allowed provider", async () => {
+    // given
+    const observed = []
+    const body = chatImageBody(OVERSIZED_PNG_URL)
+    const resize = async () => ({ resized: true, dataUrl: RESIZED_DATA_URL })
+    const step = createImageResizerStep({
+      providers: ["anthropic"],
+      resize,
+      log: silentLogger(),
+      onOutcome: (outcome, context) => observed.push({ outcome, context }),
+    })
+
+    // when
+    const reported = await step.run({ body, shape: "chat", input: { model: { providerID: "anthropic" } } })
+
+    // then
+    expect(reported.resized).toBe(1)
+    expect(observed).toHaveLength(1)
+    expect(observed[0].outcome.resized).toBe(1)
+    expect(observed[0].outcome).toEqual(reported)
+    expect(observed[0].context).toEqual({ providerID: "anthropic" })
+    expect(body.messages[0].content[0].image_url.url).toBe(RESIZED_DATA_URL)
+  })
+
+  const THROWING_CALLBACK_SCENARIOS = [
+    { label: "a provider skip", providerID: "opencode-go" },
+    {
+      label: "a completed resize",
+      providerID: "anthropic",
+      resize: async () => ({ resized: true, dataUrl: RESIZED_DATA_URL }),
+    },
+  ]
+
+  for (const scenario of THROWING_CALLBACK_SCENARIOS) {
+    test(`a throwing onOutcome cannot change the outcome or the body for ${scenario.label}`, async () => {
+      // given
+      const logger = silentLogger()
+      const body = chatImageBody(OVERSIZED_PNG_URL)
+      const baselineBody = chatImageBody(OVERSIZED_PNG_URL)
+      const input = { model: { providerID: scenario.providerID } }
+      const step = createImageResizerStep({
+        providers: ["anthropic"],
+        resize: scenario.resize,
+        log: logger,
+        onOutcome: () => { throw new Error("callback exploded") },
+      })
+      const baselineStep = createImageResizerStep({
+        providers: ["anthropic"],
+        resize: scenario.resize,
+        log: silentLogger(),
+      })
+
+      // when
+      const attempted = await step.run({ body, shape: "chat", input })
+      const baseline = await baselineStep.run({ body: baselineBody, shape: "chat", input })
+
+      // then
+      expect(attempted).toEqual(baseline)
+      expect(JSON.stringify(body)).toBe(JSON.stringify(baselineBody))
+      expect(logger.calls).toHaveLength(1)
+      expect(logger.calls[0]).toContain("image-resizer outcome callback failed")
+      expect(logger.calls[0]).toContain("callback exploded")
+    })
+  }
+
+  test("leaves the request body bytes unchanged when nothing needs resizing", async () => {
+    // given
+    const observed = []
+    const body = chatImageBody(WITHIN_LIMITS_PNG_URL)
+    const snapshot = JSON.stringify(body)
+    const resize = async () => { throw new Error("resize must not run for a within-limits image") }
+    const step = createImageResizerStep({
+      providers: ["anthropic"],
+      resize,
+      log: silentLogger(),
+      onOutcome: (outcome) => observed.push(outcome),
+    })
+
+    // when
+    const result = await step.run({ body, shape: "chat", input: { model: { providerID: "anthropic" } } })
+
+    // then
+    expect(result).toEqual({ considered: 1, resized: 0, removed: 0, skips: [] })
+    expect(JSON.stringify(body)).toBe(snapshot)
+    expect(observed).toEqual([result])
   })
 })

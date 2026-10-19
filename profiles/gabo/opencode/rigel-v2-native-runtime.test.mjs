@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,6 +10,7 @@ import { registerNativeAgents, resolveProactiveAgentModels } from "./rigel-v2-na
 import { resolveAuthoritativeAgentOverrides } from "./rigel-v2-native-explicit-chain.mjs"
 import { readAgentOverridesFromConfig } from "./rigel-v2-native-config.mjs"
 import { INTERRUPTED_TOOL_ERROR } from "./rigel-v2-flow-logic.mjs"
+import { gptEditGuidanceBlock } from "./rigel-v2-native-gpt-edit-guidance.mjs"
 import { CONTINUATION_PROMPT_MARKER } from "./rigel-v2-native-request-steps.mjs"
 
 // Deterministic event feed for the reactive-fallback tests. The generator
@@ -43,6 +45,7 @@ function createEventFeed() {
     events,
     requestHook: undefined,
     promptHook: undefined,
+    contextHook: undefined,
     subscribe: ({ signal } = {}) => { abortSignal = signal; return events },
     push(event) {
       queue.push(event)
@@ -70,7 +73,7 @@ function reactiveFallbackContext(feed, { switchModel, models } = {}) {
     ] }) },
     event: { subscribe: feed.subscribe },
     session: {
-      hook: async (name, handler) => { if (name === "model.request") feed.requestHook = handler; if (name === "prompt") feed.promptHook = handler; return { dispose() {} } },
+      hook: async (name, handler) => { if (name === "model.request") feed.requestHook = handler; if (name === "prompt") feed.promptHook = handler; if (name === "context") feed.contextHook = handler; return { dispose() {} } },
       create: async () => ({ data: { id: "ses_child" } }),
       prompt: async () => ({ data: {} }),
       ...(switchModel ? { switchModel } : {}),
@@ -1722,6 +1725,370 @@ test("native runtime writes the MCP guidance receipt under the profile-kit state
   } finally {
     if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
     else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// `reactiveFallbackContext` keeps `agent.transform` a no-op, so nothing is ever
+// registered through it. The tuning receipt is produced by the registered
+// roster (registration is what publishes each agent's request body), so these
+// tests need a transform that really runs the editor callback.
+function agentRegistrationContext(feed) {
+  const context = reactiveFallbackContext(feed)
+  context.agent = {
+    list: async () => ({ data: [{ id: "explore", name: "Explore", mode: "subagent" }] }),
+    transform: async (callback) => {
+      callback({
+        update: (id, apply) => apply({ request: { headers: {}, body: {} }, permissions: [] }),
+        add() {},
+        default() {},
+      })
+      return { dispose() {} }
+    },
+    reload: async () => {},
+  }
+  return context
+}
+
+// Rows 51/52: the applied-tuning receipt is the only public observable for the
+// model tuning the runtime puts on the request. It shares the guidance
+// receipt's problem (the service surface does not export XDG_STATE_HOME), so it
+// must resolve the same profile-kit state fallback instead of dropping the
+// receipt. The manifest carries the tuning because the generated agent manifest
+// bakes it per agent in a real install.
+test("native runtime writes the agent-tuning receipt under the profile-kit state fallback", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  const originalAgents = nativeManifest.agents
+  nativeManifest.agents = { Sisyphus: { name: "Sisyphus", mode: "primary", reasoning: "high" } }
+  try {
+    await withLiveAgentConfig({}, async () => {
+      const feed = createEventFeed()
+      const dispose = await plugin.setup(agentRegistrationContext(feed))
+      try {
+        await feed.contextHook({
+          sessionID: "ses_tuning",
+          agent: "Sisyphus",
+          model: { providerID: "openai", modelID: "gpt-6-luna-fast" },
+          system: [],
+          messages: [{ role: "user", content: [{ type: "text", text: "work" }] }],
+          tools: {},
+          options: {},
+        })
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "agent-tuning-applied.json")
+        expect(existsSync(receiptPath)).toBe(true)
+        expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toMatchObject({
+          agent: "Sisyphus",
+          providerID: "openai",
+          shape: "context",
+          source: "agent",
+          payload: { reasoningEffort: "high" },
+        })
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    nativeManifest.agents = originalAgents
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// The receipt must record what was APPLIED, so the negative case is a request
+// whose agent carries no tuning at all: nothing applied, no receipt. Without
+// this, the positive test would pass for a seam that writes on every request.
+test("native runtime writes no agent-tuning receipt when no tuning is applied", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  const originalAgents = nativeManifest.agents
+  nativeManifest.agents = { Sisyphus: { name: "Sisyphus", mode: "primary" } }
+  try {
+    await withLiveAgentConfig({}, async () => {
+      const feed = createEventFeed()
+      const dispose = await plugin.setup(agentRegistrationContext(feed))
+      try {
+        await feed.contextHook({
+          sessionID: "ses_tuning_none",
+          agent: "Sisyphus",
+          model: { providerID: "openai", modelID: "gpt-6-luna-fast" },
+          system: [],
+          messages: [{ role: "user", content: [{ type: "text", text: "work" }] }],
+          tools: {},
+          options: {},
+        })
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "agent-tuning-applied.json")
+        expect(existsSync(receiptPath)).toBe(false)
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    nativeManifest.agents = originalAgents
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// The blocked Hephaestus registration gate is a startup decision, so the receipt
+// is the only record an operator can consult afterwards. It carries the agent id
+// and the gate's own reason and nothing inferred; a run where the gate never
+// blocks writes no receipt at all.
+test("native runtime writes the blocked Hephaestus gate receipt under the profile-kit state fallback", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  const originalAgents = nativeManifest.agents
+  nativeManifest.agents = {
+    "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol" },
+  }
+  try {
+    await withLiveAgentConfig({ hephaestus: { model: "openai/kimi-k3" } }, async () => {
+      const feed = createEventFeed()
+      const dispose = await plugin.setup(agentRegistrationContext(feed))
+      try {
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "hephaestus-gate.json")
+        expect(existsSync(receiptPath)).toBe(true)
+        const receipt = JSON.parse(readFileSync(receiptPath, "utf8"))
+        expect(receipt).toMatchObject({ agent: "Hephaestus - Deep Agent", reason: "model" })
+        expect(typeof receipt.recordedAt).toBe("string")
+        expect(Object.keys(receipt).sort()).toEqual(["agent", "reason", "recordedAt"])
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    nativeManifest.agents = originalAgents
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// Negative control for the gate receipt: a manifest whose Hephaestus entry is
+// absent never reaches the gate branch, so the receipt seam must stay silent.
+// Without this, the positive test would pass for a writer that fires on every
+// startup regardless of a blocked gate.
+test("native runtime writes no Hephaestus gate receipt when the gate never blocks", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  const originalAgents = nativeManifest.agents
+  nativeManifest.agents = { Sisyphus: { name: "Sisyphus", mode: "primary", reasoning: "high" } }
+  try {
+    await withLiveAgentConfig({}, async () => {
+      const feed = createEventFeed()
+      const dispose = await plugin.setup(agentRegistrationContext(feed))
+      try {
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "hephaestus-gate.json")
+        expect(existsSync(receiptPath)).toBe(false)
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    nativeManifest.agents = originalAgents
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// The GPT edit-guidance receipt is the durable proof that the guidance block
+// reached the request's system channel. It carries a hash plus a length and never
+// the block body, so the injected text stays the only copy of the guidance.
+test("native runtime writes the GPT edit-guidance receipt for an injected block", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  try {
+    await withLiveAgentConfig({}, async () => {
+      // The guidance rides the root-session system channel after the
+      // delegation roster resolves, so the context has to expose a callable
+      // agent inventory: an empty one returns before the injection site.
+      const feed = createEventFeed()
+      const dispose = await plugin.setup(agentRegistrationContext(feed))
+      try {
+        const event = {
+          sessionID: "ses_guidance_receipt",
+          agent: "Sisyphus",
+          model: { providerID: "openai", modelID: "openai/gpt-5.6-sol" },
+          system: [{ type: "text", text: "base system" }],
+          messages: [{ role: "user", content: [{ type: "text", text: "work" }] }],
+          tools: {},
+          options: {},
+        }
+        await feed.contextHook(event)
+        const guidance = gptEditGuidanceBlock("openai/gpt-5.6-sol")
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "gpt-edit-guidance.json")
+        expect(existsSync(receiptPath)).toBe(true)
+        expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toMatchObject({
+          agent: "Sisyphus",
+          providerID: "openai",
+          modelID: "openai/gpt-5.6-sol",
+          contentSha256: createHash("sha256").update(guidance).digest("hex"),
+          contentLength: guidance.length,
+        })
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// Same receipt-root regression as the edit-guidance block above, at the
+// redirect seam: the default root is `process.env.XDG_STATE_HOME`, which the
+// installed service does not export, so the write returned early and the
+// contractual redirect left no durable receipt behind. The redirect itself is
+// proven by the confirmed switch, so the receipt is the only thing this test
+// adds on top of the enforcement's own coverage.
+test("native runtime writes the no-sisyphus-gpt receipt under the profile-kit state fallback", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  const originalAgents = nativeManifest.agents
+  // Only a gate-eligible Hephaestus reaches the REGISTERED roster, and that
+  // roster is the availability signal that turns an unsupported GPT model into
+  // a redirect instead of a keep. Registration is JSON-only, so the gate needs
+  // the live `~/.omo/omo.jsonc` pin below to see a supported GPT model.
+  nativeManifest.agents = { Hephaestus: { name: "Hephaestus", mode: "primary", model: "openai/gpt-6-sol" } }
+  const directory = mkdtempSync(join(tmpdir(), "rigel-native-no-sisyphus-gpt-"))
+  try {
+    await withLiveAgentConfig({ hephaestus: { model: "openai/gpt-6-sol" } }, async () => {
+      const feed = createEventFeed()
+      const switched = []
+      const notices = []
+      const context = agentRegistrationContext(feed)
+      context.location = { directory }
+      // The decision reads the LIVE session agent and model, so the fixture is
+      // the session state: a Sisyphus display name on a GPT model with no
+      // native Sisyphus prompt (`gpt-4o`).
+      context.session.get = async () => ({ data: { agent: "Sisyphus - ultraworker", model: { modelID: "gpt-4o" } } })
+      context.session.switchAgent = async (args) => { switched.push(args); return { data: {} } }
+      context.attention = { notify: async (payload) => { notices.push(payload); return { data: {} } } }
+      const dispose = await plugin.setup(context)
+      try {
+        await feed.promptHook({ sessionID: "ses_no_sisyphus_gpt", prompt: { text: "work" } })
+
+        // then: the switch is confirmed and the redirect is durable on the
+        // profile-kit state fallback, not dropped for a root the service never
+        // exports.
+        expect(switched).toEqual([{ sessionID: "ses_no_sisyphus_gpt", agent: "Hephaestus" }])
+        expect(notices.length).toBe(1)
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "no-sisyphus-gpt.json")
+        expect(existsSync(receiptPath)).toBe(true)
+        expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toMatchObject({
+          message: "no-sisyphus-gpt: unsupported-gpt",
+          sessionID: "ses_no_sisyphus_gpt",
+          modelID: "gpt-4o",
+          switched: true,
+          source: "prompt",
+        })
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    nativeManifest.agents = originalAgents
+    rmSync(directory, { recursive: true, force: true })
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// The image-resize receipt is the only durable record of what the transport step
+// decided for a request. The rebuilt step keeps the module step's defaults, so a
+// provider the resizer does not serve still reaches the receipt unchanged.
+test("native runtime writes the image-resize receipt under the profile-kit state fallback", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  try {
+    await withLiveAgentConfig({}, async () => {
+      const { context, registrations } = recordingHookContext()
+      const dispose = await plugin.setup(context)
+      try {
+        const httpRegistration = registrations.find((registration) => registration.name === "http.request")
+        await httpRegistration.handler(childRequest())
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "image-resize.json")
+        expect(existsSync(receiptPath)).toBe(true)
+        expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toMatchObject({
+          providerID: "opencode-go",
+          considered: 0,
+          resized: 0,
+          removed: 0,
+          skipped: "provider",
+          skips: [],
+        })
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+// Rows 51/52 complement: the tuning receipt root is resolved from the live
+// environment at write time, not from the shared `writeStateReceipt` default.
+// `withLiveAgentConfig` points HOME at a disposable temp dir, so both state-root
+// configurations the service can run under are observable here: with
+// XDG_STATE_HOME unset the receipt lands on the profile-kit HOME fallback, and
+// with it exported the XDG root wins and HOME is left untouched.
+test("native runtime resolves the agent-tuning receipt root from XDG_STATE_HOME over the HOME fallback", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const stateRoot = mkdtempSync(join(tmpdir(), "rigel-agent-tuning-root-"))
+  const originalAgents = nativeManifest.agents
+  nativeManifest.agents = { Sisyphus: { name: "Sisyphus", mode: "primary", reasoning: "high" } }
+  const driveTuning = async (sessionID) => {
+    const feed = createEventFeed()
+    const dispose = await plugin.setup(agentRegistrationContext(feed))
+    try {
+      await feed.contextHook({
+        sessionID,
+        agent: "Sisyphus",
+        model: { providerID: "openai", modelID: "gpt-6-luna-fast" },
+        system: [],
+        messages: [{ role: "user", content: [{ type: "text", text: "work" }] }],
+        tools: {},
+        options: {},
+      })
+    } finally {
+      await dispose()
+    }
+  }
+  try {
+    await withLiveAgentConfig({}, async () => {
+      const fallbackReceipt = join(process.env.HOME, ".local", "state", "oh-my-rigel", "agent-tuning-applied.json")
+      const xdgReceipt = join(stateRoot, "oh-my-rigel", "agent-tuning-applied.json")
+
+      // given XDG_STATE_HOME is unset and HOME is the disposable sandbox home
+      delete process.env.XDG_STATE_HOME
+      await driveTuning("ses_tuning_root_fallback")
+      expect(existsSync(fallbackReceipt)).toBe(true)
+      expect(JSON.parse(readFileSync(fallbackReceipt, "utf8"))).toMatchObject({
+        agent: "Sisyphus",
+        providerID: "openai",
+        shape: "context",
+        source: "agent",
+        payload: { reasoningEffort: "high" },
+      })
+      expect(existsSync(xdgReceipt)).toBe(false)
+
+      // when XDG_STATE_HOME is exported, the receipt must move to that root
+      rmSync(fallbackReceipt, { force: true })
+      process.env.XDG_STATE_HOME = stateRoot
+      await driveTuning("ses_tuning_root_xdg")
+      expect(existsSync(xdgReceipt)).toBe(true)
+      expect(JSON.parse(readFileSync(xdgReceipt, "utf8"))).toMatchObject({
+        agent: "Sisyphus",
+        providerID: "openai",
+        shape: "context",
+        source: "agent",
+        payload: { reasoningEffort: "high" },
+      })
+      expect(existsSync(fallbackReceipt)).toBe(false)
+    })
+  } finally {
+    nativeManifest.agents = originalAgents
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    rmSync(stateRoot, { recursive: true, force: true })
   }
 })
 
