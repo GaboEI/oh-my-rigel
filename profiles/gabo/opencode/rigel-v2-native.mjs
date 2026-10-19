@@ -491,6 +491,10 @@ export default {
       manifest,
       resolveAgent: sessionAgentResolver,
     })
+    // Buffered observability for the Hephaestus registration gate. The
+    // transform callback below is replayable, so it only records the skip here.
+    const hephaestusGateSkips = new Map()
+    let hephaestusGateReceiptsFlushed = false
     const registeredAgents = await registerNativeAgents(context.agent, manifest, {
       // JSON-only registration: an agent with a JSON model registers that ref;
       // an agent with no JSON model registers with NO model (inherits the
@@ -513,12 +517,23 @@ export default {
       onAgentPermissions: (id, permissions) => permissionWiring.onAgentPermissions(id, permissions),
       // Observability: the Hephaestus registration gate blocks at startup, so a
       // skip is otherwise only a log line nobody can consult afterwards. The
-      // receipt is durable through the same profile-kit state root as the MCP
-      // guidance receipt; the gate decision and the roster are unchanged.
+      // durable receipt is emitted after registration (below) instead of here:
+      // OpenCode replays `agent.transform` when the registry is rebuilt, so a
+      // write in this callback would repeat a one-time startup receipt and
+      // perform filesystem I/O during the rebuild.
       onHephaestusGateSkipped: (event) => {
-        writeStateReceipt("hephaestus-gate.json", event, resolveMcpGuidanceReceiptRoot())
+        if (hephaestusGateReceiptsFlushed) return
+        hephaestusGateSkips.set(`${event?.agent ?? ""}\u0000${event?.reason ?? ""}`, event)
       },
     })
+    // Emitted after `registerNativeAgents` awaits `agent.reload()`, so a later
+    // transform replay cannot rewrite the startup receipt. Duplicate skips from
+    // that replay collapse by agent and reason.
+    for (const event of hephaestusGateSkips.values()) {
+      writeStateReceipt("hephaestus-gate.json", event, resolveMcpGuidanceReceiptRoot())
+    }
+    hephaestusGateSkips.clear()
+    hephaestusGateReceiptsFlushed = true
     // Upstream 5fd04b590: redirect a Sisyphus session on an unsupported GPT model
     // to Hephaestus, or keep Sisyphus with a distinct notice when Hephaestus is
     // not in the REGISTERED roster. The redirect uses the V2 switchAgent seam and
@@ -1795,6 +1810,9 @@ export default {
       onGptEditGuidance: (event) => {
         writeStateReceipt("gpt-edit-guidance.json", event, resolveMcpGuidanceReceiptRoot())
       },
+      // The guidance selector cannot derive the `hashline_edit` tool from the
+      // model id: the gate decides whether the runtime registered it.
+      hashlineEditEnabled: hashlineEnabled,
       ultraworkPrompt,
       ultraworkPrompts,
       keywordMessages,

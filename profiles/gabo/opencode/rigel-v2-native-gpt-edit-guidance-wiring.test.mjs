@@ -17,22 +17,23 @@ import { createHash } from "node:crypto"
 import { createNativeContextHook } from "./rigel-v2-native-prompt.mjs"
 import { GPT_EDIT_GUIDANCE_MARKER, GPT_PATCH_ONLY_GUIDANCE, gptEditGuidanceBlock } from "./rigel-v2-native-gpt-edit-guidance.mjs"
 
-function buildHook(onGptEditGuidance) {
+function buildHook(onGptEditGuidance, options = {}) {
   return createNativeContextHook({
     getDelegationRoster: async () => [{ name: "Explore", mode: "subagent" }],
     categories: [],
     ...(onGptEditGuidance ? { onGptEditGuidance } : {}),
+    ...options,
   })
 }
 
-function buildEvent(modelID, providerID = "openai") {
+function buildEvent(modelID, providerID = "openai", tools = {}) {
   return {
     sessionID: "ses_gpt_guidance",
     agent: "Sisyphus",
     model: { providerID, modelID },
     system: [{ type: "text", text: "base system" }],
     messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-    tools: {},
+    tools,
     options: {},
   }
 }
@@ -135,6 +136,35 @@ describe("#given the native V2 context hook", () => {
       expect(textParts(withReceipt)).toEqual(textParts(withoutReceipt))
       expect(textParts(withoutReceipt)).toContain(gptEditGuidanceBlock(modelID))
       expect(guidanceParts(withReceipt).map((part) => part.text)).toEqual([gptEditGuidanceBlock(modelID)])
+    })
+  })
+
+  describe("#when the request advertises its editing tools", () => {
+    test("#then a per-request hashline_edit is named alongside the patch tool", async () => {
+      const event = buildEvent("openai/gpt-5.6-sol", "openai", { patch: {}, hashline_edit: {} })
+      await buildHook(undefined, { hashlineEditEnabled: false })(event)
+      const parts = guidanceParts(event)
+      expect(parts.length).toBe(1)
+      expect(parts[0].text).toContain("hashline_edit")
+      expect(parts[0].text).toBe(gptEditGuidanceBlock("openai/gpt-5.6-sol", { hasHashlineEdit: true }))
+    })
+
+    test("#when the request omits hashline_edit #then the block is the patch-only wording", async () => {
+      const event = buildEvent("openai/gpt-5.6-sol", "openai", { patch: {} })
+      await buildHook(undefined, { hashlineEditEnabled: true })(event)
+      const parts = guidanceParts(event)
+      expect(parts.length).toBe(1)
+      expect(parts[0].text).not.toContain("hashline_edit")
+      expect(parts[0].text).toBe(gptEditGuidanceBlock("openai/gpt-5.6-sol"))
+    })
+
+    test("#when the host exposes no tool map #then the registration gate supplies the answer", async () => {
+      const event = buildEvent("openai/gpt-5.6-sol")
+      await buildHook(undefined, { hashlineEditEnabled: true })(event)
+      const parts = guidanceParts(event)
+      expect(parts.length).toBe(1)
+      expect(parts[0].text).toContain("hashline_edit")
+      expect(parts[0].text).toBe(gptEditGuidanceBlock("openai/gpt-5.6-sol", { hasHashlineEdit: true }))
     })
   })
 })

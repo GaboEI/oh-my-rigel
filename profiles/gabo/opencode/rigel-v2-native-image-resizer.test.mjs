@@ -672,6 +672,29 @@ describe("createImageResizerStep onOutcome seam", () => {
     })
   }
 
+  test("reports the failure outcome when the step throws", async () => {
+    // given
+    const observed = []
+    const logger = silentLogger()
+    const body = chatImageBody(OVERSIZED_PNG_URL)
+    const step = createImageResizerStep({
+      providers: ["anthropic"],
+      resize: async () => { throw new Error("decoder blew up") },
+      log: logger,
+      onOutcome: (outcome, context) => observed.push({ outcome, context }),
+    })
+
+    // when
+    const reported = await step.run({ body, shape: "chat", input: { model: { providerID: "anthropic" } } })
+
+    // then
+    expect(reported).toMatchObject({ considered: 0, resized: 0, removed: 0, skipped: "error", error: "decoder blew up" })
+    expect(observed).toHaveLength(1)
+    expect(observed[0].outcome).toEqual(reported)
+    expect(observed[0].context).toEqual({ providerID: "anthropic" })
+    expect(logger.calls.some((line) => line.includes("image-resizer step failed"))).toBe(true)
+  })
+
   test("leaves the request body bytes unchanged when nothing needs resizing", async () => {
     // given
     const observed = []

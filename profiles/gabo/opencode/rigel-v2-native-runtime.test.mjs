@@ -1,6 +1,6 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import plugin from "./rigel-v2-native.mjs"
@@ -1749,6 +1749,27 @@ function agentRegistrationContext(feed) {
   return context
 }
 
+// Same live agent config, but the transform callback is captured so a test can
+// replay it the way OpenCode does when the agent registry is rebuilt.
+function agentRegistrationContextWithReplay(feed, replays) {
+  const context = reactiveFallbackContext(feed)
+  context.agent = {
+    list: async () => ({ data: [{ id: "explore", name: "Explore", mode: "subagent" }] }),
+    transform: async (callback) => {
+      const editor = {
+        update: (id, apply) => apply({ request: { headers: {}, body: {} }, permissions: [] }),
+        add() {},
+        default() {},
+      }
+      callback(editor)
+      replays.push(() => callback(editor))
+      return { dispose() {} }
+    },
+    reload: async () => {},
+  }
+  return context
+}
+
 // Rows 51/52: the applied-tuning receipt is the only public observable for the
 // model tuning the runtime puts on the request. It shares the guidance
 // receipt's problem (the service surface does not export XDG_STATE_HOME), so it
@@ -1878,6 +1899,53 @@ test("native runtime writes no Hephaestus gate receipt when the gate never block
       try {
         const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "hephaestus-gate.json")
         expect(existsSync(receiptPath)).toBe(false)
+      } finally {
+        await dispose()
+      }
+    })
+  } finally {
+    nativeManifest.agents = originalAgents
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+  }
+})
+
+// The Hephaestus gate receipt is a one-time startup decision, and the transform
+// that discovers it is replayed whenever the agent registry is rebuilt. A write
+// inside the transform would repeat the receipt and perform filesystem I/O
+// during the rebuild, so a replayed transform must leave the receipt untouched.
+test("a replayed agent transform does not rewrite the Hephaestus gate receipt", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  delete process.env.XDG_STATE_HOME
+  const originalAgents = nativeManifest.agents
+  nativeManifest.agents = {
+    "Hephaestus - Deep Agent": { name: "Hephaestus - Deep Agent", mode: "primary", model: "openai/gpt-6-sol" },
+  }
+  try {
+    await withLiveAgentConfig({ hephaestus: { model: "openai/kimi-k3" } }, async () => {
+      const feed = createEventFeed()
+      const replays = []
+      const dispose = await plugin.setup(agentRegistrationContextWithReplay(feed, replays))
+      try {
+        const receiptPath = join(process.env.HOME, ".local", "state", "oh-my-rigel", "hephaestus-gate.json")
+        expect(existsSync(receiptPath)).toBe(true)
+        const before = readFileSync(receiptPath, "utf8")
+        expect(JSON.parse(before)).toMatchObject({ agent: "Hephaestus - Deep Agent", reason: "model" })
+        expect(replays.length).toBeGreaterThan(0)
+        // The receipt is rewritten through a temp file plus rename, and its
+        // payload carries `recordedAt` with millisecond precision, so comparing
+        // bytes would pass whenever a rewrite landed in the same millisecond.
+        // Count the writes instead: the fix is that a replay performs none.
+        const writeSpy = spyOn(fs, "writeFileSync")
+        try {
+          for (const replay of replays) replay()
+          const receiptWrites = writeSpy.mock.calls.filter(([target]) => String(target).includes("hephaestus-gate.json"))
+          expect(receiptWrites).toHaveLength(0)
+        } finally {
+          writeSpy.mockRestore()
+        }
+
+        expect(readFileSync(receiptPath, "utf8")).toBe(before)
       } finally {
         await dispose()
       }

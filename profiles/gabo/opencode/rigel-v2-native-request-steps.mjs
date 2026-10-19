@@ -377,9 +377,12 @@ export function createImageResizerStep({ providers, resize = resizeImageDataUrl,
   return {
     name: "image-resizer",
     run: async ({ body, shape, input } = {}) => {
+      // Resolved before the try so the failure path can report the provider it
+      // was deciding for: the outcome observer is the only writer of the durable
+      // image-resize receipt, and every decision path must reach it.
+      const providerID = input?.model?.providerID ?? input?.model?.provider
       try {
         const allowed = providers ?? resolveResizerProviders(env)
-        const providerID = input?.model?.providerID ?? input?.model?.provider
         if (!isResizerProvider(providerID, allowed)) {
           const skipped = { considered: 0, resized: 0, removed: 0, skipped: "provider" }
           notifyOutcome(skipped, providerID)
@@ -482,7 +485,11 @@ export function createImageResizerStep({ providers, resize = resizeImageDataUrl,
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         log?.error?.(`[oh-my-rigel] image-resizer step failed: ${message}`)
-        return { considered: 0, resized: 0, removed: 0, skipped: "error", error: message }
+        const outcome = { considered: 0, resized: 0, removed: 0, skipped: "error", error: message }
+        // The failure path is a decision too. Without this call a throwing run
+        // leaves either no receipt or the previous request's receipt in place.
+        notifyOutcome(outcome, providerID)
+        return outcome
       }
     },
   }
