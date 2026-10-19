@@ -56,7 +56,6 @@ import { registerNativeTodoTool } from "./rigel-v2-native-todo-description.mjs"
 import { createNativeUpdateChecker } from "./rigel-v2-native-update-checker.mjs"
 import { createNativeUpdateState } from "./rigel-v2-native-update-state.mjs"
 import { createServerApi } from "./rigel-v2-native-http.mjs"
-import { createOpenGatewayProviderTransform } from "./rigel-v2-native-opengateway.mjs"
 import { createBtwContextInjector, resolveBtwReceiptPath, writeBtwInjectionReceipt } from "./rigel-v2-native-btw-context.mjs"
 import { createHashlineEditTool, createHashlineReadEnhancer } from "./rigel-v2-native-hashline.mjs"
 import { createNativeCategorySkillReminder } from "./rigel-v2-native-category-skill-reminder.mjs"
@@ -75,7 +74,7 @@ import { createFlowRules } from "./rigel-v2-native-flow-rules.mjs"
 import { createNativeCompactionContextHook, isCompactionSummaryRequest } from "./rigel-v2-native-compaction-context.mjs"
 import { createNativeCompactionTodoPreserver } from "./rigel-v2-native-compaction-todo-preserver.mjs"
 import { createNativePreemptiveCompaction, createNativeCompactionIncidentRegistry, readAssistantUsage, resolveNativeContextLimit, PREEMPTIVE_COMPACTION_THRESHOLD } from "./rigel-v2-native-preemptive-compaction.mjs"
-import { applyPromptAdmission, createStopContinuationState, resolveRequestShape, runRequestSteps } from "./rigel-v2-native-request-steps.mjs"
+import { applyPromptAdmission, createImageResizerStep, createStopContinuationState, resolveRequestShape, runRequestSteps } from "./rigel-v2-native-request-steps.mjs"
 import { validateAndRepairMessages } from "./rigel-v2-native-message-repair.mjs"
 import { createNativeAutoSlashCommandHook } from "./rigel-v2-auto-slash-command-bridge.mjs"
 import { OMO_INTERNAL_INITIATOR_MARKER } from "./rigel-v2-keyword-core.mjs"
@@ -247,8 +246,14 @@ function writeStateReceipt(fileName, event, stateRoot = process.env.XDG_STATE_HO
   }
 }
 
+// The applied-tuning receipt is the observable for the model tuning the runtime
+// actually put on the request. It is written through the same profile-kit state
+// root the MCP guidance receipt uses: the service surface does not export
+// XDG_STATE_HOME, and a receipt that is never written is not durable. The
+// shared `writeStateReceipt` default root is deliberately left untouched, so no
+// other receipt seam changes behavior.
 function recordAgentTuning(event) {
-  writeStateReceipt("agent-tuning-applied.json", event)
+  writeStateReceipt("agent-tuning-applied.json", event, resolveMcpGuidanceReceiptRoot())
 }
 
 function recordConditionalToolRegistration(event) {
@@ -506,6 +511,13 @@ export default {
       // The permission gate consumes each agent's translated tool-name gates
       // here, so the `execute.before` hook below governs the real roster.
       onAgentPermissions: (id, permissions) => permissionWiring.onAgentPermissions(id, permissions),
+      // Observability: the Hephaestus registration gate blocks at startup, so a
+      // skip is otherwise only a log line nobody can consult afterwards. The
+      // receipt is durable through the same profile-kit state root as the MCP
+      // guidance receipt; the gate decision and the roster are unchanged.
+      onHephaestusGateSkipped: (event) => {
+        writeStateReceipt("hephaestus-gate.json", event, resolveMcpGuidanceReceiptRoot())
+      },
     })
     // Upstream 5fd04b590: redirect a Sisyphus session on an unsupported GPT model
     // to Hephaestus, or keep Sisyphus with a distinct notice when Hephaestus is
@@ -537,7 +549,12 @@ export default {
       hephaestusTarget: () => registeredAgents.find((id) => isHephaestusAgentId(id)),
       log: (message, detail) => {
         console.error(`[oh-my-rigel] ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`)
-        writeStateReceipt("no-sisyphus-gpt.json", { message, ...detail })
+        // Same receipt-root defect row 52 fixed for `agent-tuning-applied`: the
+        // default root is `process.env.XDG_STATE_HOME`, which the installed
+        // service does not export, so the write returned early and the
+        // contractual redirect left NO durable receipt. The root resolves like
+        // every other receipt (fallback `$HOME/.local/state`).
+        writeStateReceipt("no-sisyphus-gpt.json", { message, ...detail }, resolveMcpGuidanceReceiptRoot())
       },
     })
     // Native skill surface (Task 14). Discovered skills are registered into
@@ -618,19 +635,13 @@ export default {
         guidance: builtinMcpRegistration.guided.map(({ name, reason, fix }) => ({ name, reason, fix })),
       }, resolveMcpGuidanceReceiptRoot())
     }
-    // V1 `features/opengateway-provider`: when an OpenGateway credential is
-    // present (env `OPENGATEWAY_API_KEY` or the isolated auth store), register
-    // the provider and the packaged catalog through the V2 provider transform.
-    // Absent credential is a byte-identical no-op: `install` returns before the
-    // transform runs. Never throws into setup.
-    const openGateway = createOpenGatewayProviderTransform({
-      log: (message) => console.error(`[oh-my-rigel] ${message}`),
-    })
-    try {
-      await openGateway.install(context)
-    } catch (error) {
-      console.error(`[oh-my-rigel] OpenGateway provider install failed: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    // V1 `features/opengateway-provider` is NOT ported here. Adding an extra
+    // provider and its model catalog behind a stored credential is a V2 builtin
+    // surface (`context.provider.transform` / the integration registry), not a
+    // Rigel layer: the ported layer could never deliver its own claim because
+    // the runtime materializer stages ESM modules only, so the packaged catalog
+    // JSON never reached a deployed runtime and the transform registered a bare
+    // provider with zero models. See `migration-classifications/features.mjs`.
     // Real skill-body injection for delegated children: resolve each requested
     // name through the discovered registry and inject the body. Disabled or
     // target-restricted names resolve to nothing and are reported, never faked.
@@ -1778,6 +1789,12 @@ export default {
       onAgentTuningApplied: (event) => {
         recordAgentTuning(event)
       },
+      // The GPT file-edit guidance injection is observable per request as a
+      // content hash plus a length (never the guidance body or any message
+      // text), written through the same durable profile-kit state root.
+      onGptEditGuidance: (event) => {
+        writeStateReceipt("gpt-edit-guidance.json", event, resolveMcpGuidanceReceiptRoot())
+      },
       ultraworkPrompt,
       ultraworkPrompts,
       keywordMessages,
@@ -1952,6 +1969,24 @@ export default {
       : undefined
     // Native HTTP is reserved for the image transport mutation. Context,
     // admission, semantic options, headers, and fallback all use V2 hooks.
+    // The image-resizer step is rebuilt here only to attach the outcome
+    // receipt: the instance keeps the module step's defaults, its returned
+    // outcome is unchanged, and the write happens after the body was already
+    // mutated (a no-resize request keeps byte-identical body bytes).
+    const imageResizeSteps = flowRules.requestSteps.map((step) => (step.name === "image-resizer"
+      ? createImageResizerStep({
+        onOutcome: (outcome, context) => {
+          writeStateReceipt("image-resize.json", {
+            providerID: context?.providerID ?? null,
+            considered: outcome?.considered ?? 0,
+            resized: outcome?.resized ?? 0,
+            removed: outcome?.removed ?? 0,
+            skipped: outcome?.skipped ?? null,
+            skips: outcome?.skips ?? [],
+          }, resolveMcpGuidanceReceiptRoot())
+        },
+      })
+      : step))
     const imageRequestRegistration = await context.session.hook("http.request", async (input) => {
       let body
       try { body = await input.request.clone().json() } catch { return }
@@ -1974,7 +2009,7 @@ export default {
           sessionID: input.sessionID,
           input,
           onError: (failure) => reportRuleFailure("http.request", failure),
-        }, flowRules.requestSteps)
+        }, imageResizeSteps)
         input.request = new Request(input.request, { body: JSON.stringify(body) })
       }
     })

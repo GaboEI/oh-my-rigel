@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+
 import { DIRECTORY_AGENTS_MARKER, isDirectoryInstructionMessage } from "./rigel-v2-directory-instructions.mjs"
 import {
   appendDirectiveToResponsesInput,
@@ -190,6 +192,7 @@ export function createNativeContextHook({
   sisyphusPromptPlan,
   onSisyphusReconcile,
   getUpdateNotice,
+  onGptEditGuidance,
 } = {}) {
   if (typeof getDelegationRoster !== "function") {
     throw new TypeError("A live V2 delegation roster reader is required")
@@ -260,13 +263,29 @@ export function createNativeContextHook({
     // the root-session gate, so a delegated child never receives it (V1 parity).
     const updateNotice = typeof getUpdateNotice === "function" ? getUpdateNotice() : ""
     if (updateNotice) system.push({ type: "text", text: updateNotice })
-    // Model-keyed file-edit guidance (V1 `gpt-apply-patch-guard`): the native
-    // runtime registers `edit`/`write` (no `apply_patch`), so every GPT-family
-    // model receives the generic guidance and a non-GPT model none. Injected on
+    // Model-keyed file-edit guidance (V1 `gpt-apply-patch-guard`). The host
+    // selects the editing toolset per model: for the GPT family it deletes
+    // `edit`/`write` and keeps `patch`, and for every other model it deletes
+    // `patch`. The block therefore names the tool the model actually has, which
+    // is resolved from the host's own predicate rather than assumed. Injected on
     // the same root-session system channel as the notice, marker-wrapped so a
     // repeated pass rebuilds rather than accumulates.
-    const gptEditGuidance = gptEditGuidanceBlock(modelID, { hasApplyPatchTool: false })
-    if (gptEditGuidance) system.push({ type: "text", text: gptEditGuidance })
+    const gptEditGuidance = gptEditGuidanceBlock(modelID)
+    if (gptEditGuidance) {
+      system.push({ type: "text", text: gptEditGuidance })
+      // Observability seam: the block that was actually pushed is reported per
+      // request as a hash plus a length, so an operator can prove the injection
+      // happened without the guidance body (or any message text) leaving the
+      // runtime. The callback is observation only: the pushed bytes are set
+      // before it runs and are never read back from it.
+      onGptEditGuidance?.({
+        agent: agentName,
+        providerID: event.model?.providerID ?? event.model?.provider,
+        modelID,
+        contentSha256: createHash("sha256").update(gptEditGuidance).digest("hex"),
+        contentLength: gptEditGuidance.length,
+      })
+    }
     event.system = system
     if (!Array.isArray(event.messages)) return
     const { decision, directive } = keywordSeam.decide({

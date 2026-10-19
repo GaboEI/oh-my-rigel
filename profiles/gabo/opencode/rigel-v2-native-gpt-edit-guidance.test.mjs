@@ -3,8 +3,10 @@ import {
   GPT_APPLY_PATCH_GUIDANCE,
   GPT_EDIT_GUIDANCE_MARKER,
   GPT_FILE_EDIT_GUIDANCE,
+  GPT_PATCH_ONLY_GUIDANCE,
   gptEditGuidanceBlock,
   gptEditGuidanceForModel,
+  hostExposesPatchTool,
   isGptFamilyModel,
 } from "./rigel-v2-native-gpt-edit-guidance.mjs"
 
@@ -19,13 +21,44 @@ test("the guidance constants are byte-identical to V1", () => {
   )
 })
 
-test("#given a GPT model and an apply_patch harness #when guidance is selected #then the apply-patch string is returned", () => {
-  expect(gptEditGuidanceForModel("gpt-5.6-sol", { hasApplyPatchTool: true })).toBe(GPT_APPLY_PATCH_GUIDANCE)
+test("#given a GPT model and an apply_patch harness #when guidance is selected #then the patch-only string is returned", () => {
+  expect(gptEditGuidanceForModel("gpt-5.6-sol", { hasApplyPatchTool: true })).toBe(GPT_PATCH_ONLY_GUIDANCE)
 })
 
-test("#given a GPT model and no apply_patch tool #when guidance is selected #then the generic string is returned", () => {
-  expect(gptEditGuidanceForModel("gpt-5.6-sol")).toBe(GPT_FILE_EDIT_GUIDANCE)
-  expect(gptEditGuidanceForModel("gpt-5.6-sol", { hasApplyPatchTool: false })).toBe(GPT_FILE_EDIT_GUIDANCE)
+// The host deletes `edit`/`write` for this family, so the default (no explicit
+// harness flag) must still resolve to the patch-only wording. Before this test
+// existed the runtime injected text naming `edit`/`write` at the exact moment
+// the host had removed them.
+test("#given a host-recognised GPT model and no harness flag #when guidance is selected #then the patch-only string is returned", () => {
+  expect(gptEditGuidanceForModel("gpt-5.6-sol")).toBe(GPT_PATCH_ONLY_GUIDANCE)
+  expect(gptEditGuidanceForModel("openai/gpt-6-luna")).toBe(GPT_PATCH_ONLY_GUIDANCE)
+})
+
+// The V1 family rule is broader than the host's toolset rule. Where they
+// disagree the host keeps `edit`/`write`, so the generic wording is correct.
+test("#given a V1-GPT model the host does NOT strip edit/write from #when guidance is selected #then the generic string is returned", () => {
+  for (const id of ["gpt-4o", "gpt-4.1", "gpt-oss-120b", "codex-mini-latest", "o1", "o3-mini"]) {
+    expect(isGptFamilyModel(id)).toBe(true)
+    expect(hostExposesPatchTool(id)).toBe(false)
+    expect(gptEditGuidanceForModel(id)).toBe(GPT_FILE_EDIT_GUIDANCE)
+  }
+})
+
+test("#given the host toolset predicate #when evaluated #then it matches the host's own rule", () => {
+  // gpt- and not oss and not gpt-4  -> patch only (edit/write removed)
+  expect(hostExposesPatchTool("gpt-6-luna")).toBe(true)
+  expect(hostExposesPatchTool("opencode-go/gpt-5.6-luna")).toBe(true)
+  expect(hostExposesPatchTool("gpt-4o")).toBe(false)
+  expect(hostExposesPatchTool("gpt-4.1")).toBe(false)
+  expect(hostExposesPatchTool("gpt-oss-120b")).toBe(false)
+  expect(hostExposesPatchTool("claude-opus-4-5")).toBe(false)
+  expect(hostExposesPatchTool("")).toBe(false)
+})
+
+test("#given the patch-only guidance #when read #then it names only tools the host actually exposes", () => {
+  expect(GPT_PATCH_ONLY_GUIDANCE).toContain("apply_patch")
+  expect(GPT_PATCH_ONLY_GUIDANCE).toContain("`patch`")
+  expect(GPT_PATCH_ONLY_GUIDANCE).toContain("`edit` and `write` are not available")
 })
 
 test("#given a non-GPT model #when guidance is selected #then undefined is returned regardless of the apply_patch flag", () => {
@@ -67,8 +100,8 @@ test("#given a GPT model #when the injection block is built #then it is marker-d
   const block = gptEditGuidanceBlock("gpt-5.6-sol")
   expect(block.startsWith(GPT_EDIT_GUIDANCE_MARKER)).toBe(true)
   expect(block.endsWith(GPT_EDIT_GUIDANCE_MARKER)).toBe(true)
-  expect(block).toContain(GPT_FILE_EDIT_GUIDANCE)
-  expect(gptEditGuidanceBlock("gpt-5.6-sol", { hasApplyPatchTool: true })).toContain(GPT_APPLY_PATCH_GUIDANCE)
+  expect(block).toContain(GPT_PATCH_ONLY_GUIDANCE)
+  expect(gptEditGuidanceBlock("gpt-5.6-sol", { hasApplyPatchTool: true })).toContain(GPT_PATCH_ONLY_GUIDANCE)
 })
 
 test("#given a non-GPT model #when the injection block is built #then it is empty", () => {

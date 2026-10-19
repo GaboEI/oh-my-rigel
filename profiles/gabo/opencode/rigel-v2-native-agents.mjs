@@ -254,7 +254,7 @@ function canonicalAgentEntries(agents) {
     .map((entry) => [entry.id, byId.get(entry.id)])
 }
 
-export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions, chainFallback } = {}) {
+export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions, onHephaestusGateSkipped, chainFallback } = {}) {
   if (typeof agentDomain?.transform !== "function" || typeof agentDomain?.reload !== "function") {
     throw new Error("OpenCode V2 agent.transform/agent.reload is unavailable")
   }
@@ -303,6 +303,10 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
         const gate = evaluateHephaestusGate({ definition: gateDefinition, model: candidate, inventory })
         if (!gate.eligible) {
           console.error(gate.message)
+          // Observability seam: a blocked gate is otherwise a startup log line
+          // nobody can consult afterwards. Only fields the gate actually
+          // carries are reported, and the decision itself is unchanged.
+          onHephaestusGateSkipped?.({ agent: id, reason: gate.reason })
           continue
         }
       }

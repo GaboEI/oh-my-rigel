@@ -83,6 +83,24 @@ function committedRuntimeModules() {
     .filter((file) => !file.endsWith(".test.mjs"))
 }
 
+/**
+ * Narrow a HEAD-derived candidate list to modules that still exist on disk.
+ *
+ * A module deleted in the working tree is RETIRED, not orphaned: lab staging has
+ * nothing to copy, and the removal is proven by the deletion (and by the diff)
+ * rather than by reachability. Without this filter the guard reports every
+ * uncommitted retirement as "orphaned from lab staging" until the deletion is
+ * committed, which makes the guard unusable for exactly the review window it is
+ * meant to protect.
+ *
+ * The failure mode the guard actually exists for is preserved: a module that is
+ * still on disk but that the entry can never reach would deploy as dead weight
+ * (or break at import time), and it is still reported.
+ */
+function existingRuntimeModules(sourceDir, candidates = committedRuntimeModules()) {
+  return candidates.filter((file) => fs.existsSync(path.join(sourceDir, file)))
+}
+
 describe("Rigel native runtime module discovery", () => {
   test("#given an entry that imports a nested module #when discovering #then both the entry's deps and nested files are returned", () => {
     const root = workspace()
@@ -114,7 +132,7 @@ describe("Rigel native runtime module staging guard", () => {
   })
 
   test("#given the committed runtime modules #when compared to the native entry's transitive graph #then none is orphaned from lab staging", () => {
-    const unreachable = findUnreachableRuntimeModules(committedRuntimeModules(), discoverRuntimeModules(SOURCE_DIR, RUNTIME_ENTRIES))
+    const unreachable = findUnreachableRuntimeModules(existingRuntimeModules(SOURCE_DIR), discoverRuntimeModules(SOURCE_DIR, RUNTIME_ENTRIES))
     expect(unreachable).toEqual([])
   })
 
@@ -133,6 +151,24 @@ describe("Rigel native runtime module staging guard", () => {
     })
   }
 
+  test("#given a candidate list mixing present and deleted modules #when narrowed to the disk #then only present modules survive", () => {
+    const root = workspace()
+    fs.writeFileSync(path.join(root, ENTRY), 'import { a } from "./present.mjs"\n')
+    fs.writeFileSync(path.join(root, "present.mjs"), "export const a = 1\n")
+    expect(existingRuntimeModules(root, ["present.mjs", "retired.mjs"])).toEqual(["present.mjs"])
+  })
+
+  test("#given a module still on disk but reachable from nothing #when narrowed to the disk #then it is NOT dropped and stays RED", () => {
+    // Pins the limit of the existence filter: it excuses deletions only. A
+    // present-but-unreachable module is still the guard's actual failure mode.
+    const root = workspace()
+    fs.writeFileSync(path.join(root, ENTRY), 'import { a } from "./present.mjs"\n')
+    fs.writeFileSync(path.join(root, "present.mjs"), "export const a = 1\n")
+    fs.writeFileSync(path.join(root, "rigel-v2-orphan.mjs"), "export const orphan = 1\n")
+    const candidates = existingRuntimeModules(root, ["present.mjs", "rigel-v2-orphan.mjs"])
+    expect(findUnreachableRuntimeModules(candidates, discoverRuntimeModules(root, ENTRY))).toEqual(["rigel-v2-orphan.mjs"])
+  })
+
   test("#given a runtime-looking module reachable from nothing #when checking reachability #then it is reported RED", () => {
     const root = workspace()
     fs.writeFileSync(path.join(root, ENTRY), 'import { a } from "./reachable.mjs"\n')
@@ -140,5 +176,60 @@ describe("Rigel native runtime module staging guard", () => {
     fs.writeFileSync(path.join(root, "rigel-v2-orphan.mjs"), "export const orphan = 1\n")
     const unreachable = findUnreachableRuntimeModules(["reachable.mjs", "rigel-v2-orphan.mjs"], discoverRuntimeModules(root, ENTRY))
     expect(unreachable).toEqual(["rigel-v2-orphan.mjs"])
+  })
+})
+
+/**
+ * REGRESSION GUARD — the failure mode that retired the OpenGateway V2 port.
+ *
+ * `discoverRuntimeModules` follows only `from "./*.mjs"` and appends `.mjs`, so
+ * a module that loads a sibling NON-`.mjs` asset at runtime (a JSON catalog via
+ * `new URL(..., import.meta.url)`, a `.txt` template, …) is staged WITHOUT that
+ * asset. The module then deploys and silently degrades at runtime instead of
+ * failing at packaging time: `rigel-v2-native-opengateway.mjs` loaded a 60-model
+ * JSON catalog this way, deployed fine on NLS1 v1/v2/v3, and registered a
+ * provider with ZERO models even when a credential was present.
+ *
+ * These tests pin the property that makes that detectable: a runtime module
+ * must not reference a non-`.mjs` sibling asset, because the materializer will
+ * never ship it.
+ */
+describe("runtime modules must not depend on non-.mjs sibling assets", () => {
+  const NON_MODULE_ASSET_REF = /new URL\(\s*["']\.\/([^"']+\.(?:json|txt|md|yml|yaml|toml))["']\s*,\s*import\.meta\.url\s*\)/g
+
+  function findAssetRefs(dir) {
+    const findings = []
+    for (const rel of discoverRuntimeModules(dir, ENTRY)) {
+      const abs = path.join(dir, rel)
+      if (!fs.existsSync(abs)) continue
+      const text = fs.readFileSync(abs, "utf8")
+      for (const match of text.matchAll(NON_MODULE_ASSET_REF)) findings.push({ file: rel, asset: match[1] })
+    }
+    return findings
+  }
+
+  test("#given the real runtime tree #when scanned #then no module references a non-.mjs sibling asset", () => {
+    // If this fails, the referenced file will be absent from every deployed
+    // runtime: stage it explicitly in the materializer, or inline the data.
+    expect(findAssetRefs(path.join(HERE, RUNTIME_SUBDIR))).toEqual([])
+  })
+
+  test("#given a module referencing a sibling JSON asset #when scanned #then it is reported RED", () => {
+    const root = workspace()
+    fs.writeFileSync(path.join(root, ENTRY), 'import { a } from "./dep.mjs"\n')
+    fs.writeFileSync(path.join(root, "dep.mjs"),
+      'const url = new URL("./models.json", import.meta.url)\nexport const a = url.pathname\n')
+    fs.writeFileSync(path.join(root, "models.json"), "{}\n")
+    expect(findAssetRefs(root)).toEqual([{ file: "dep.mjs", asset: "models.json" }])
+  })
+
+  test("#given the retired opengateway layer's exact pattern #when scanned #then it is reported RED", () => {
+    const root = workspace()
+    fs.writeFileSync(path.join(root, ENTRY), 'import { a } from "./dep.mjs"\n')
+    // Verbatim shape of the retired rigel-v2-native-opengateway.mjs line 32.
+    fs.writeFileSync(path.join(root, "dep.mjs"),
+      'const CATALOG_URL = new URL("./rigel-v2-opengateway-models.json", import.meta.url)\nexport const a = CATALOG_URL.href\n')
+    fs.writeFileSync(path.join(root, "rigel-v2-opengateway-models.json"), "{}\n")
+    expect(findAssetRefs(root)).toContainEqual({ file: "dep.mjs", asset: "rigel-v2-opengateway-models.json" })
   })
 })
