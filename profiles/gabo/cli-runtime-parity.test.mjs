@@ -74,7 +74,7 @@ describe("#given the native runtime non-interactive session flow", () => {
   })
 })
 
-// Row 2 `config-migrate` (`cli/config-migrate.ts` -> runOpenCodeStartupMigration):
+// Row 2 `config-migrate` (`startup-migration.ts` -> runOpenCodeStartupMigration; automatic only):
 // V1 migrates legacy keys; V2 migrates them in-memory in the resolver. Each case
 // is pinned to the real V1 owner of that exact key.
 describe("#given the native loader legacy-key migration table", () => {

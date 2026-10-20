@@ -1,19 +1,16 @@
 import { Command, Option } from "commander"
 import { install } from "./install"
 import { configureCleanupCommand, resolveCleanupPlatform } from "./cleanup-command"
-import { run } from "./run"
 import { getLocalVersion } from "./get-local-version"
 import { doctor, resolveDoctorTarget } from "./doctor"
 import { createMcpOAuthCommand } from "./mcp-oauth"
 import { configureRuntimeCommands } from "./runtime-commands"
-import { runConfigMigrate } from "./config-migrate"
 import {
   availableInstallPlatforms,
   isNativeDevPlatformEnabled,
   NATIVE_DEV_PLATFORM_ENV_FLAG,
 } from "./native-dev-platform-flag"
 import type { InstallArgs } from "./types"
-import type { RunOptions } from "./run"
 import type { GetLocalVersionOptions } from "./get-local-version/types"
 import type { DoctorOptions } from "./doctor"
 import packageJson from "../../../../package.json" with { type: "json" }
@@ -43,11 +40,6 @@ type InstallCommandOptions = {
 
 type RootCommandOptions = {
   readonly platform?: InstallArgs["platform"]
-}
-
-type ConfigMigrateCommandOptions = {
-  readonly dryRun?: boolean
-  readonly json?: boolean
 }
 
 type DoctorCommandOptions = {
@@ -151,67 +143,6 @@ Model Providers (Priority: Native > Copilot > OpenCode Zen > Z.ai > Kimi > Baili
 
 configureCleanupCommand(program)
 
-program
-   .command("run <message>")
-   .allowUnknownOption()
-   .passThroughOptions()
-  .description("Run opencode with todo/background task completion enforcement")
-  .option("-a, --agent <name>", "Agent to use (default: from CLI/env/config, fallback: Sisyphus)")
-  .option("-m, --model <provider/model>", "Model override (e.g., anthropic/claude-sonnet-4)")
-  .option("-d, --directory <path>", "Working directory")
-  .option("-p, --port <port>", "Server port (attaches if port already in use)", parseInt)
-  .option("--attach <url>", "Attach to existing opencode server URL")
-  .option("--on-complete <command>", "Shell command to run after completion")
-  .option("--json", "Output structured JSON result to stdout")
-  .option("--no-timestamp", "Disable timestamp prefix in run output")
-  .option("--verbose", "Show full event stream (default: messages/tools only)")
-  .option("--session-id <id>", "Resume existing session instead of creating new one")
-  .addHelpText("after", `
-Examples:
-  $ bunx oh-my-opencode run "Fix the bug in index.ts"
-  $ bunx oh-my-opencode run --agent Sisyphus "Implement feature X"
-  $ bunx oh-my-opencode run --port 4321 "Fix the bug"
-  $ bunx oh-my-opencode run --attach http://127.0.0.1:4321 "Fix the bug"
-  $ bunx oh-my-opencode run --json "Fix the bug" | jq .sessionId
-  $ bunx oh-my-opencode run --on-complete "notify-send Done" "Fix the bug"
-  $ bunx oh-my-opencode run --session-id ses_abc123 "Continue the work"
-  $ bunx oh-my-opencode run --model anthropic/claude-sonnet-4 "Fix the bug"
-  $ bunx oh-my-opencode run --agent Sisyphus --model openai/gpt-5.6-sol "Implement feature X"
-
-Agent resolution order:
-  1) --agent flag
-  2) OPENCODE_DEFAULT_AGENT
-  3) .omo/omo.jsonc "default_run_agent"
-  4) Sisyphus (fallback)
-
-Available core agents:
-  Sisyphus, Hephaestus, Prometheus, Atlas
-
-Unlike 'opencode run', this command waits until:
-  - All todos are completed or cancelled
-  - All child sessions (background tasks) are idle
-`)
-  .action(async (message: string, options) => {
-    if (options.port && options.attach) {
-      console.error("Error: --port and --attach are mutually exclusive")
-      process.exit(1)
-    }
-    const runOptions: RunOptions = {
-      message,
-      agent: options.agent,
-      model: options.model,
-      directory: options.directory,
-      port: options.port,
-      attach: options.attach,
-      onComplete: options.onComplete,
-      json: options.json ?? false,
-      timestamp: options.timestamp ?? true,
-      verbose: options.verbose ?? false,
-      sessionId: options.sessionId,
-    }
-    const exitCode = await run(runOptions)
-    process.exit(exitCode)
-  })
 
 program
   .command("get-local-version")
@@ -263,18 +194,6 @@ Examples:
       json: options.json ?? false, target: resolveDoctorTarget(process.env.OMO_INVOCATION_NAME, options.platform ?? rootDoctorPlatform),
     }
     const exitCode = await doctor(doctorOptions)
-    process.exit(exitCode)
-  })
-
-program
-  .command("config")
-  .description("Manage unified OMO configuration")
-  .command("migrate")
-  .description("Migrate legacy OMO configuration into ~/.omo/omo.jsonc")
-  .option("--dry-run", "Print the transform, backup move plan, and conflicts without new migration writes")
-  .option("--json", "Print machine-readable migration output")
-  .action((options: ConfigMigrateCommandOptions) => {
-    const exitCode = runConfigMigrate({ dryRun: options.dryRun ?? false, json: options.json ?? false })
     process.exit(exitCode)
   })
 

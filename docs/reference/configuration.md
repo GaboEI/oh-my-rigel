@@ -103,16 +103,16 @@ Run `bunx oh-my-openagent install` for guided setup. Run `opencode models` to li
 
 #### Migration
 
-The first time a current harness starts (and again on install or via the CLI), a lock-and-journal migration engine imports the legacy files into the unified file:
+The first time a current harness starts (and again on install), a lock-and-journal migration engine imports the legacy files into the unified file:
 
 - Sources: `oh-my-openagent.json[c]` / `oh-my-opencode.json[c]` in the OpenCode user config directory, in each of its `profiles/<name>/` directories, and in walked project `.opencode/` directories, plus `~/.omo/config.jsonc`.
 - Targets: the legacy user file imports into `~/.omo/omo.jsonc` under `[opencode]`; each legacy profile becomes `profiles.<name>."[opencode]"` holding only the keys that differ from the user file; a project file imports into that project's `.omo/omo.jsonc`. `~/.omo/config.jsonc` imports its `[opencode]` / `[codex]` blocks, and a legacy `[omo]` block maps to `[native]`.
 - OpenCode legacy files import only model/provider controls (`disabled_providers`, `model_fallback`, `models`, and `omo_agent` renamed to `sisyphus_agent`); agent and category registries, agent disable lists, hooks, and unrelated plugin settings are not imported.
 - OmO Native's first start then reports, once, every OpenCode edition agent or category model choice (from the legacy files, their migration backups, or the `[opencode]` block) that Native does not use, each with the `"[native]": { ... }` member that would set it (`metis` as `plan-consultant`, `momus` as `plan-reviewer`, OpenCode provider ids as omo's) and a pointer to `omo setup`, which carries them over with your consent. It writes only the `2026-09-opencode-routing-notice` marker; `omo doctor` repeats the line while the gap exists.
 - Conflict policy: no-clobber. A value already present in the target wins, and every skipped legacy value is reported as a diagnostic instead of overwriting. Prior legacy migration history is preserved under the target's `legacy_migrations` key.
-- Markers: each applied migration records its id in the target's `_migrations` array, so re-runs are no-ops. `2026-07-opencode-config-unification` covers the `oh-my-*` files; `2026-07-codex-config-jsonc` covers `~/.omo/config.jsonc`; `2026-08-reasoning-unification` rewrites persisted model and reasoning fields. Codex startup runs only the second group; OpenCode plugin startup, Senpi startup, install, and the CLI run both groups, so whichever side runs first applies each group exactly once.
+- Markers: each applied migration records its id in the target's `_migrations` array, so re-runs are no-ops. `2026-07-opencode-config-unification` covers the `oh-my-*` files; `2026-07-codex-config-jsonc` covers `~/.omo/config.jsonc`; `2026-08-reasoning-unification` rewrites persisted model and reasoning fields. Codex startup runs only the second group; OpenCode plugin startup, Senpi startup, and install run both groups, so whichever side runs first applies each group exactly once.
 - Backups: sources move to `~/.omo/migration-backup-<UTC timestamp>-opencode-config/` (project sources to `<project>/.omo/migration-backup-<UTC timestamp>/`). An interrupted run resumes from its journal on the next start.
-- Manual run: `oh-my-openagent config migrate`. `--dry-run` prints the transform, backup move plan, and conflicts without writing; `--json` prints machine-readable output.
+- There is no manual migrate command: migration runs automatically at OpenCode plugin startup, Senpi startup, Codex startup (the `config.jsonc` group), and install. Conflicts and backup moves are recorded in the migration journal under `~/.omo/`.
 - Diagnostics surface once per startup: an OpenCode toast, a Senpi `session_start` notification, or Codex loader warnings.
 
 ### Quick Start Example

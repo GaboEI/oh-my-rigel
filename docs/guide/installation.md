@@ -939,7 +939,6 @@ Every agent, hook, skill, MCP, command, and tool is configurable via `disabled_*
 | `OMO_OPENCLAW_REPLY_LISTENER_STARTUP_TOKEN` | Startup token for OpenClaw reply listener daemon |
 | `OMO_OPENCLAW_REPLY_LISTENER_STARTUP_TIMEOUT_MS` | Timeout for reply listener startup |
 | `OH_MY_OPENCODE_FORCE_BASELINE=1` | Forces baseline (non-AVX2) binary selection on x64 |
-| `OPENCODE_DEFAULT_AGENT` | Default agent for `omo-agent-toolkit run` (overridden by `--agent`) |
 | `CODEX_LOCAL_BIN_DIR` | Overrides `~/.local/bin` for Codex component symlinks |
 
 #### Hash-anchored edits (Hashline)
@@ -962,7 +961,6 @@ OpenClaw is a bidirectional external integration: outbound dispatchers fire on s
 | `bunx oh-my-openagent mcp oauth status [server-name]` | Show OAuth token status for one or all servers |
 | `bunx oh-my-openagent get-local-version` | Show installed version vs npm latest |
 | `bunx oh-my-openagent version` | Print the CLI version |
-| `bunx oh-my-openagent run <message>` | Non-interactive session; waits until todos clear and background tasks idle |
 
 Postinstall validates both platform binary resolution and OpenCode version compatibility — the validation runs after every npm install.
 
@@ -979,7 +977,7 @@ Per product:
 
 | Product | Event name | Sources |
 |---------|-----------|---------|
-| Main plugin | `omo_daily_active` | Plugin load (`plugin_loaded`) + `run` CLI (`run_started`) |
+| Main plugin | `omo_daily_active` | Plugin load (`plugin_loaded`) |
 | Codex CLI Light edition | `omo_codex_daily_active` | Installer (`install_completed`) + Codex `SessionStart` hook (`session_start`) |
 
 Opt-out:

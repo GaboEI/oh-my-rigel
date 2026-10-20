@@ -892,7 +892,7 @@
       "nombre": "Configuration management and migration",
       "que_es": "Reads, merges and updates your configuration.",
       "modo_de_activacion": "Automatic",
-      "como_se_usa": "Automatic: on startup it reads and merges your configuration. Terminal: to move from the old format to the new one, `omo config migrate` (and `--dry-run` to preview without writing anything).",
+      "como_se_usa": "Automatic: on startup it reads and merges your configuration, and the move from the old format to the new one runs by itself at plugin startup, Senpi startup, Codex startup and install. There is no manual migration command.",
       "cuando_sirve": "You have the configuration from the previous installation: you consolidate it to the new format with its preview, without breaking anything.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
@@ -901,7 +901,7 @@
       "nombre": "Execution without interaction",
       "que_es": "Runs a task and finishes without interaction.",
       "modo_de_activacion": "Terminal",
-      "como_se_usa": "Terminal: `omo run \"<your task>\"` (with `--agent` to pin the agent) runs, finishes and exits; the host program itself resolves it.",
+      "como_se_usa": "Terminal: the host's own `opencode run \"<your task>\"` (with `--agent` to pin the agent) runs the task, finishes and exits. Oh My Rigel adds no launcher of its own; the internal non-interactive guard is preserved.",
       "cuando_sirve": "In an overnight routine, you generate the day's report and the session closes by itself when it finishes.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."

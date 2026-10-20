@@ -4402,7 +4402,7 @@
       "v2": "adaptada",
       "que_es": "Lee, combina y actualiza tu configuración.",
       "como_se_activa": "Automático.",
-      "como_se_usa": "Automático — al arrancar lee y combina tu configuración. Terminal — para cambiar del formato antiguo al nuevo, `omo config migrate` (y `--dry-run` para previsualizar sin escribir nada).",
+      "como_se_usa": "Automático — al arrancar lee y combina tu configuración, y la migración del formato antiguo al nuevo ocurre sola en el arranque del plugin, el arranque de Senpi, el arranque de Codex y la instalación; no existe comando manual de migración.",
       "cuando_sirve": "Tienes la configuración de la instalación anterior: la consolidas al formato nuevo con su previsualización, sin romper nada.",
       "url": "/catalogo/gestion-y-migracion-de-configuracion/",
       "modo_de_activacion": "Automático",
@@ -4419,15 +4419,13 @@
       "ejemplos": {
         "procedencia": "derivado",
         "valor": [
-          "Tienes la configuración de la instalación anterior: la consolidas al formato nuevo con su previsualización, sin romper nada."
+          "Tienes la configuración de la instalación anterior: el arranque la consolida al formato nuevo por sí solo, sin romper nada."
         ],
         "fuente": "catálogo: columna «Cuándo te sirve»"
       },
       "comandos": {
         "procedencia": "derivado",
-        "valor": [
-          "omo config"
-        ],
+        "valor": [],
         "fuente": "catálogo: celdas «Cómo la usas»/«Cómo se activa»; verificado contra el CLI real"
       },
       "version_desde": {
@@ -4450,7 +4448,7 @@
       "v2": "sustituida",
       "que_es": "Ejecuta una tarea y termina sin interacción.",
       "como_se_activa": "Automático.",
-      "como_se_usa": "Terminal — `omo run \"<tu tarea>\"` (con `--agent` para fijar el agente) ejecuta, termina y sale; lo resuelve el propio programa anfitrión.",
+      "como_se_usa": "Terminal — `opencode run \"<tu tarea>\"` del programa anfitrión (con `--agent` para fijar el agente) ejecuta la tarea, termina y sale. Oh My Rigel no añade un lanzador propio: el guard no interactivo interno se conserva.",
       "cuando_sirve": "En una rutina nocturna, generas el reporte del día y la sesión se cierra sola al terminar.",
       "url": "/catalogo/ejecucion-sin-interaccion/",
       "modo_de_activacion": "Terminal",
@@ -4473,9 +4471,7 @@
       },
       "comandos": {
         "procedencia": "derivado",
-        "valor": [
-          "omo run"
-        ],
+        "valor": [],
         "fuente": "catálogo: celdas «Cómo la usas»/«Cómo se activa»; verificado contra el CLI real"
       },
       "version_desde": {

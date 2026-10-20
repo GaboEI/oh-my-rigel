@@ -21,11 +21,11 @@ It contains no credentials, accounts, model catalog, SSH targets, database setti
 ## Validation
 
 **Live validation boundary (aligned with `.omo/rules/protect-opencode-v1.md`):** live validation runs
-only on **NLS1**, with a snapshot taken before the change and a verified rollback after it. The
-isolated laboratory (`opencode-v2-lab.service`) and Docker are prohibited and must not be used as a
-live gate or as a substitute for NLS1. Every laboratory runner described below is therefore historical
-and inapplicable to a live gate; `profiles/gabo/check-rule-nls1-only.mjs` fails if that alignment is
-reverted.
+only on **kris**, with a snapshot taken before the change and a verified rollback after it. **NLS1 is
+retired** and must not be used for validation. Other laboratories, services, sandboxes and runners are
+prohibited and must not be used as a live gate or as a substitute for kris. Docker is prohibited for
+this project. Every laboratory runner described below is therefore historical and inapplicable to a
+live gate; `profiles/gabo/check-rule-nls1-only.mjs` fails if that alignment is reverted.
 
 **Dark goal vendor:** `node profiles/gabo/rigel-v2-goal-vendor.mjs verify` checks the pinned artifact,
 its closure, the upstream `LICENSE` and the deterministic `NOTICE`; `materialize --out <dir>` lays the

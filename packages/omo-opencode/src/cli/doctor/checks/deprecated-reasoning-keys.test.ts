@@ -253,8 +253,8 @@ describe("deprecated reasoning keys check", () => {
         "Deprecated config key",
       ])
       expect(result.issues.map((issue) => issue.fix)).toEqual([
-        "Replace variant with reasoning, or run: oh-my-openagent config migrate",
-        'Replace thinking with reasoning: "off" or provider_options.thinking, or run: oh-my-openagent config migrate',
+        "Replace variant with reasoning, or restart OpenCode to run the automatic config migration",
+        'Replace thinking with reasoning: "off" or provider_options.thinking, or restart OpenCode to run the automatic config migration',
       ])
       expect(result.message).toBe("2 deprecated config key(s) found")
     } finally {
@@ -273,8 +273,8 @@ describe("deprecated reasoning keys check", () => {
     }
   })
 
-  it("#given fallback_models and the reasoning unification marker #when the check runs #then the fix explains models[0] is the primary and does not advertise config migrate", async () => {
-    //#given a config that config migrate already processed (marker recorded) but which gained fallback_models afterwards
+  it("#given fallback_models and the reasoning unification marker #when the check runs #then the fix explains models[0] is the primary and does not advertise the automatic migration", async () => {
+    //#given a config the automatic migration already processed (marker recorded) but which gained fallback_models afterwards
     const originalConfigDir = process.env.OPENCODE_CONFIG_DIR
     const originalHome = process.env.HOME
     const originalCwd = process.cwd()
@@ -314,7 +314,7 @@ describe("deprecated reasoning keys check", () => {
       for (const issue of result.issues) {
         expect(issue.fix).toContain("models: [<primary>, ...fallbacks]")
         expect(issue.fix).toContain("first entry becomes the primary model")
-        expect(issue.fix).not.toContain("config migrate")
+        expect(issue.fix).not.toContain("automatic config migration")
       }
     } finally {
       process.chdir(originalCwd)
@@ -332,8 +332,8 @@ describe("deprecated reasoning keys check", () => {
     }
   })
 
-  it("#given fallback_models and no migration marker #when the check runs #then the fix still suggests config migrate", async () => {
-    //#given a config that config migrate has never processed
+  it("#given fallback_models and no migration marker #when the check runs #then the fix still points at the automatic migration", async () => {
+    //#given a config the automatic migration has never processed
     const originalConfigDir = process.env.OPENCODE_CONFIG_DIR
     const originalHome = process.env.HOME
     const originalCwd = process.cwd()
@@ -353,7 +353,7 @@ describe("deprecated reasoning keys check", () => {
       const { checkDeprecatedReasoningKeys } = await import("./deprecated-reasoning-keys")
       const result = await checkDeprecatedReasoningKeys()
 
-      //#then the fix explains the chain semantics and still offers the one-shot migration
+      //#then the fix explains the chain semantics and still points at the automatic one-shot migration
       expect(result.status).toBe("warn")
       expect(result.issues.map((issue) => issue.description)).toEqual([
         `${configPath}: categories.deep.fallback_models`,
@@ -361,7 +361,7 @@ describe("deprecated reasoning keys check", () => {
       ])
       for (const issue of result.issues) {
         expect(issue.fix).toContain("first entry becomes the primary model")
-        expect(issue.fix).toEndWith(", or run: oh-my-openagent config migrate")
+        expect(issue.fix).toEndWith(", or restart OpenCode to run the automatic config migration")
       }
     } finally {
       process.chdir(originalCwd)

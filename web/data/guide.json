@@ -371,13 +371,6 @@
       "queToca": "Configura el producto padre Oh My OpenCode; no es Oh My Rigel."
     },
     {
-      "id": "omo:run",
-      "surface": "omo",
-      "name": "run",
-      "queHace": "Ejecuta OpenCode en modo no interactivo con cierre por todos y tareas en segundo plano.",
-      "queToca": "Lanza una sesión y escribe el estado de sesión del producto padre."
-    },
-    {
       "id": "omo:doctor",
       "surface": "omo",
       "name": "doctor",
@@ -390,13 +383,6 @@
       "name": "get-local-version",
       "queHace": "Muestra la versión instalada del producto padre y busca actualizaciones.",
       "queToca": "Lectura de versión; no modifica estado."
-    },
-    {
-      "id": "omo:config",
-      "surface": "omo",
-      "name": "config",
-      "queHace": "Gestiona la configuración unificada de OMO, incluida la migración.",
-      "queToca": "Migra configuración heredada a ~/.omo/omo.jsonc."
     },
     {
       "id": "omo:cleanup",

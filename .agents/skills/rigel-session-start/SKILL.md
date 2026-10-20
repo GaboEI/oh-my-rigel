@@ -37,7 +37,7 @@ These are permanent mandatory reading, not one-task evidence. Do not delegate th
 Rules that bind every migration decision:
 
 - The official documentation PRECEDES inferences, decompilation, or an earlier session's assumptions. When the docs contradict a prior inference, the docs win and the migration inventory/ledger must be updated to record the correction.
-- Live tests resolve real divergences: where the documentation is silent or ambiguous, an authorized live test on NLS1 is the arbiter, not a guess.
+- Live tests resolve real divergences: where the documentation is silent or ambiguous, an authorized live test on kris is the arbiter, not a guess.
 - Every decision must map: V1 behavior -> official V2 API -> strategy -> observable test.
 - Do not blind-replace a proven surface, and do not keep duplicated logic when an official V2 surface provides complete equivalence; verify equivalence before either choice.
 
@@ -49,16 +49,16 @@ Treat `.omo/rules/protect-opencode-v1.md` as an absolute safety constraint:
 
 - V1 is production and must remain operational and unchanged.
 - Docker and every container-based runner are prohibited for this project.
-- All live validation runs only on NLS1, with a prior snapshot and a verified rollback. The isolated laboratory (`opencode-v2-lab.service`) is prohibited: it is not a live path and may not be used as a gate or as a substitute for NLS1.
+- All live validation runs only on kris, with a prior snapshot and a verified rollback. NLS1 is retired and must not be used for validation. Any other laboratory, service, sandbox, or runner is prohibited: it is not a live path and may not be used as a gate or as a substitute for kris.
 - A temporary working directory, `--standalone`, a different port, or a V2 binary does not establish isolation.
 - Never launch OpenCode until the complete `HOME`, XDG, goal-state, process, service, socket, port, plugin, and database separation required by the rule has been positively verified.
-- Never invent a container, runner, subprocess, service, or fallback when NLS1 cannot execute a test.
+- Never invent a container, runner, subprocess, service, or fallback when kris cannot execute a test.
 - If isolation or compatibility is ambiguous, stop before execution and explain the exact uncertainty to Gabo.
 
 This skill provides no authorization to repair, restart, inspect through a mutating interface, or otherwise touch V1. A separate, explicit, task-specific instruction from Gabo is required for any V1 operation.
 
 ## Continue the task
 
-After loading the rules, continue the user's requested Oh My Rigel work without asking for ritual confirmation. State briefly that `rigel-session-start` was loaded and identify NLS1 as the only live validation surface before the first runtime experiment. Do not ask Gabo to choose Docker, a laboratory, or another runner.
+After loading the rules, continue the user's requested Oh My Rigel work without asking for ritual confirmation. State briefly that `rigel-session-start` was loaded and identify kris as the only live validation surface before the first runtime experiment. Do not ask Gabo to choose Docker, a laboratory, or another runner.
 
 For OpenCode QA, invoke the repository's `opencode-qa` skill as required by `AGENTS.md`; this bootstrap remains active alongside it.

@@ -17,7 +17,7 @@ const CANONICAL_REPLACEMENT = new Map([
   ["fallback_models", "models: [<primary>, ...fallbacks] (the first entry becomes the primary model)"],
 ])
 
-const MIGRATE_SUFFIX = ", or run: oh-my-openagent config migrate"
+const MIGRATE_SUFFIX = ", or restart OpenCode to run the automatic config migration"
 
 const TUNING_CONTAINERS = new Set(["agents", "categories", "models"])
 // Canonical migration output nests provider-native keys (thinking, textVerbosity) under these
@@ -68,7 +68,8 @@ function collectIssues(configPath: string, value: unknown, prefix: string, fixSu
 }
 
 // The reasoning-unification migration is one-shot: once its marker is recorded in the file,
-// `config migrate` answers "Nothing to migrate", so advertising it would send users in a loop.
+// the automatic startup migration will not rewrite it again, so advertising the migration would
+// send users in a loop.
 function migrateFixSuffix(parsed: unknown): string {
   if (isRecord(parsed) && hasMigrationMarker(parsed, REASONING_UNIFICATION_MIGRATION_ID)) return ""
   return MIGRATE_SUFFIX

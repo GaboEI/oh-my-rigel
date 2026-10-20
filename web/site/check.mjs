@@ -135,8 +135,8 @@ for (const lang of ["es", "en"]) {
   const rel = `${lang}/agentes-y-modelos/guia-modelos/index.html`
   const guide = await readFile(join(outPath, rel), "utf8")
   const items = (guide.match(/class="guide-item"/g) || []).length
-  assert(items === 77, `${rel} expected 77 guide items, found ${items}`)
-  for (const [prefix, count] of [["agente-", 12], ["skill-", 33], ["cmd-", 32]]) {
+  assert(items === 75, `${rel} expected 75 guide items, found ${items}`)
+  for (const [prefix, count] of [["agente-", 12], ["skill-", 33], ["cmd-", 30]]) {
     const ids = [...guide.matchAll(new RegExp(`<details class="guide-item" id="${prefix}([^"]+)"`, "g"))].map((m) => m[1])
     assert(ids.length === count && new Set(ids).size === count, `${rel} ${prefix} ids must be ${count} unique, found ${ids.length}`)
   }

@@ -33,7 +33,12 @@ export const OhMyOpenCodeConfigSchema = z.object({
   $schema: z.string().optional(),
   /** Enable new task system (default: false) */
   new_task_system_enabled: z.boolean().optional(),
-  /** Default agent name for `oh-my-opencode run` (env: OPENCODE_DEFAULT_AGENT) */
+  /**
+   * Retained for config compatibility only. No CLI command and no runtime reads it since the
+   * public `run` command was retired (PR2/F72); the `OPENCODE_DEFAULT_AGENT` environment variable
+   * this comment used to advertise has no producer or consumer either. The key stays so existing
+   * configs that set it still validate.
+   */
   default_run_agent: z.string().optional(),
   /** Preferred display order for known agents. Invalid names are ignored with a toast warning. */
   agent_order: z.array(z.string().max(128)).max(64).optional(),
