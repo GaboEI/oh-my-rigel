@@ -42,10 +42,8 @@ bunx oh-my-opencode
 | `install` / `setup` | Interactive setup wizard |
 | `uninstall` / `cleanup` | Remove managed Codex Light state |
 | `doctor` | Installation health diagnostics |
-| `run <message>` | Non-interactive OpenCode session runner with completion enforcement |
 | `get-local-version` | Show current installed version and check for updates |
 | `refresh-model-capabilities` | Refresh cached model capabilities snapshot from models.dev |
-| `config migrate` | Migrate legacy OMO configuration into the unified config at `~/.omo/omo.jsonc` (`--dry-run` prints the transform/backup plan without writing, `--json` emits a machine-readable report) |
 | `worktree-sweep` | Report (and optionally remove) stale linked git worktrees: SWEEP when merged into the default branch and clean, KEEP when locked/external/unmerged/dirty, PRUNE when the path is gone. Dry-run by default; `--apply` removes with `git worktree remove` (never forced) and prunes; `--older-than <days>` adds an age fallback, `--repo <path>` is repeatable, `--json` emits machine-readable output |
 | `ulw-loop [args...]` | Pass arguments through to the Codex LazyCodex ulw-loop CLI |
 | `update` | `lazycodex` / `lazycodex-ai` bins only: refresh the installed Codex Light edition in place (`--dry-run`, `--repo-root <path>`) |
@@ -95,7 +93,7 @@ Subscription flags (`--claude`, `--openai`, etc.) only apply when `--platform` i
 
 Anonymous telemetry uses PostHog with a SHA-256 hash of a machine-ID prefix plus hostname (not an install-specific identifier). Two streams exist:
 
-- `omo_daily_active`: fired by the main plugin when it loads (`reason: "plugin_loaded"`) and by `oh-my-openagent run` (`reason: "run_started"`).
+- `omo_daily_active`: fired by the main plugin when it loads (`reason: "plugin_loaded"`).
 - `omo_codex_daily_active`: fired by `omo-agent-toolkit install --platform=codex` or `--platform=both` (`reason: "install_completed"`) and by the Codex plugin's `SessionStart` hook on every Codex session (`reason: "session_start"`). Both sources share the same UTC-day deduplication, so daily/weekly/monthly active counts reflect real Codex usage, not just install events.
 
 Opt-out env vars:
@@ -163,48 +161,6 @@ bunx oh-my-openagent doctor
   - display count and screen-lock state;
   - the stop path, reported as not armed until computer use starts input, because the engine arms the stop chord only then.
   The probe sends only the read-only `engine.hello` and `capabilities` requests and is bounded by the doctor's timeout.
-
----
-
-## run
-
-Runs a non-interactive session and exits only when all of these conditions are true:
-
-- the main session is idle
-- all todos are completed or cancelled
-- all descendant sessions are idle
-- no continuation hooks (boulder, ralph-loop, or todo-hook markers) are active
-
-### Usage
-
-```bash
-bunx oh-my-openagent run <message>
-```
-
-### Options
-
-| Option | Description |
-| --- | --- |
-| `-a, --agent <name>` | Agent to use (default resolution chain applies) |
-| `-m, --model <provider/model>` | Model override (example: `anthropic/claude-sonnet-4`) |
-| `-d, --directory <path>` | Working directory |
-| `-p, --port <port>` | Server port (attaches if already in use) |
-| `--attach <url>` | Attach to an existing OpenCode server URL |
-| `--on-complete <command>` | Run shell command after completion |
-| `--json` | Output structured JSON result |
-| `--no-timestamp` | Disable timestamp prefix in output |
-| `--verbose` | Show full event stream (default: messages/tools only) |
-| `--session-id <id>` | Resume an existing session |
-
-### Agent Resolution Order
-
-1. `--agent`
-2. `OPENCODE_DEFAULT_AGENT`
-3. `default_run_agent` in plugin config
-
-`--agent` accepts config keys (`sisyphus`, `prometheus`) and remapped display names (`Sisyphus - ultraworker`). Builtin categories (`quick`, `deep`, `ultrabrain`, `unspecified-high`, and the others used by `task(category=...)`) are not CLI agents; `oh-my-openagent run --agent quick` errors with the runnable names.
-
-`opencode run --agent` does exact-key lookup in the host. Prefer `oh-my-openagent run --agent`, or pass the remapped display name. Unknown host `--agent` values should fail closed (see the OpenCode CLI).
 
 ---
 
@@ -307,6 +263,5 @@ bunx oh-my-openagent mcp oauth status [server-name]
 - `0` on success
 - `1` on failure
 - `2` when the boulder state file exists but can't be read
-- `130` when `run` is aborted
 
-`run`, `install`, `uninstall`/`cleanup`, `doctor`, `get-local-version`, `refresh-model-capabilities`, `config migrate`, `boulder`, `ulw-loop`, and `mcp oauth` subcommands return explicit numeric exit codes.
+`install`, `uninstall`/`cleanup`, `doctor`, `get-local-version`, `refresh-model-capabilities`, `boulder`, `ulw-loop`, and `mcp oauth` subcommands return explicit numeric exit codes.

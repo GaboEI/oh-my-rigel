@@ -242,7 +242,7 @@ Defaults                   (Zod schema defaults)
 - `models` catalog: a `model` string matching a catalog key resolves to the entry's model id and fills unset tuning; site tuning wins; `[harness]` blocks can override entries
 - Merge: plain objects deep-merge recursively (prototype-pollution safe); scalars and arrays replace
 - `mcp_env_allowlist` + `browser_automation_engine.playwright_mcp_args`: **user-layer only** (incl. the user's own profile block); project layers cannot extend them
-- Runtime migration (lock+journal, no-clobber, markers in `_migrations`): ids `2026-07-opencode-config-unification` (oh-my-* files) and `2026-07-codex-config-jsonc` (`~/.omo/config.jsonc`); backups at `~/.omo/migration-backup-<UTC-ts>-opencode-config/`; triggers at plugin startup (opencode + senpi), codex startup (config.jsonc group only), install, and `oh-my-openagent config migrate` (`--dry-run`/`--json`)
+- Runtime migration (lock+journal, no-clobber, markers in `_migrations`): ids `2026-07-opencode-config-unification` (oh-my-* files) and `2026-07-codex-config-jsonc` (`~/.omo/config.jsonc`); backups at `~/.omo/migration-backup-<UTC-ts>-opencode-config/`; triggers at plugin startup (opencode + senpi), codex startup (config.jsonc group only), and install
 
 Schema autocomplete: `"$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json"`
 
@@ -374,7 +374,6 @@ bun run test:fast                # Partitioned local suite: opencode-memory → 
 bun run clean                     # rm -rf dist
 bunx oh-my-opencode install       # Interactive setup wizard
 bunx oh-my-opencode doctor        # Health diagnostics (4 categories: System / Config / Tools / Models)
-bunx oh-my-opencode run <message> # Non-interactive session (auto-completes when todos done + no bg tasks)
 bunx oh-my-opencode mcp oauth login <server-name> # Tier-3 MCP OAuth (PKCE + DCR); top-level command is `mcp` with nested `oauth login|logout|status`
 ```
 

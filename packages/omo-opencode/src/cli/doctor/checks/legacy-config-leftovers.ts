@@ -28,7 +28,7 @@ export function legacyConfigLeftoverWarning(paths: readonly string[]): DoctorIss
   return {
     affects: ["configuration migration"],
     description: `Legacy configuration remains at ${paths.join(", ")}. It is not part of the unified OMO config chain.`,
-    fix: "Run `oh-my-openagent config migrate` to move it into ~/.omo/omo.jsonc.",
+    fix: "Move it into ~/.omo/omo.jsonc; plugin startup migrates legacy files automatically.",
     severity: "warning",
     title: "Legacy OMO configuration remains",
   }

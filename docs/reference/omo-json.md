@@ -490,7 +490,7 @@ Before the unification, the OpenCode plugin read a walked `oh-my-openagent.json[
 - `~/.omo/config.jsonc` imports its `[opencode]` / `[codex]` blocks; a legacy `[omo]` block maps to `[native]`.
 - No-clobber: a value already present in the target wins, and skipped legacy values surface as diagnostics. Legacy migration history is preserved under `legacy_migrations`, and applied migrations are marked in the target's `_migrations` array (`2026-07-opencode-config-unification` for the `oh-my-*` files, `2026-07-codex-config-jsonc` for `~/.omo/config.jsonc`, and `2026-08-reasoning-unification` for persisted model and reasoning fields).
 - Sources move to `~/.omo/migration-backup-<UTC timestamp>-opencode-config/` (project sources to `<project>/.omo/migration-backup-<UTC timestamp>/`).
-- Triggers: OpenCode plugin startup, Senpi startup, and install run both migration groups; Codex startup runs only the `config.jsonc` group; `oh-my-openagent config migrate` runs both on demand (`--dry-run`, `--json`).
+- Triggers: OpenCode plugin startup, Senpi startup, and install run both migration groups; Codex startup runs only the `config.jsonc` group. Migration is automatic; there is no manual migrate command.
 
 Full user-facing detail: [`docs/reference/configuration.md`](./configuration.md#migration).
 

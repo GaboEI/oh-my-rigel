@@ -1,19 +1,17 @@
-# src/cli/ — CLI: install, run, doctor, config, mcp (oauth), refresh-model-capabilities, get-local-version, version, boulder, worktree-sweep, cleanup, ulw-loop
+# src/cli/ — CLI: install, doctor, mcp (oauth), refresh-model-capabilities, get-local-version, version, boulder, worktree-sweep, cleanup, ulw-loop
 
 **Generated:** 2026-07-03
 
 ## OVERVIEW
 
-Commander.js CLI with 12 commands (`sparkshell` removed 2026-07). Entry: `index.ts` → `runCli()` in `cli-program.ts`; runtime commands registered via `configureRuntimeCommands()` in `runtime-commands.ts`.
+Commander.js CLI with 10 commands (`sparkshell` removed 2026-07). Entry: `index.ts` → `runCli()` in `cli-program.ts`; runtime commands registered via `configureRuntimeCommands()` in `runtime-commands.ts`.
 
 ## COMMANDS
 
 | Command | Purpose | Key Logic |
 |---------|---------|-----------|
 | `install` | Interactive/non-interactive setup | Provider selection → config gen → plugin registration |
-| `run <message>` | Non-interactive session launcher | Agent resolution (flag → env → config → Sisyphus) |
 | `doctor` | 4-category health checks | System, Config, Tools, Models |
-| `config migrate` | Migrate legacy OMO config into `~/.omo/omo.jsonc` | `config-migrate.ts` over `runOpenCodeStartupMigration`; `--dry-run` prints transform + backup move plan, `--json` machine-readable |
 | `get-local-version` | Version detection | Installed vs npm latest |
 | `version` | Print plugin version | Trivial 2-line subcommand |
 | `mcp` | MCP management; nested `oauth` group | `mcp oauth login <server-name>` (PKCE), `logout`, `status` |
@@ -30,7 +28,7 @@ Commander.js CLI with 12 commands (`sparkshell` removed 2026-07). Entry: `index.
 ```
 cli/
 ├── index.ts                     # Entry point → runCli()
-├── cli-program.ts               # Commander.js program (10 commands)
+├── cli-program.ts               # Commander.js program
 ├── install.ts                   # Routes to TUI or CLI installer
 ├── cli-installer.ts             # Non-interactive (console output)
 ├── tui-installer.ts             # Interactive (@clack/prompts)
@@ -45,12 +43,6 @@ cli/
 │   ├── runner.ts                # Parallel check execution
 │   ├── formatter.ts             # Output formatting
 │   └── checks/                  # 25 check files (8 registered + 3 Codex-only) — see [doctor/AGENTS.md](doctor/AGENTS.md)
-├── run/                         # Session launcher
-│   ├── runner.ts                # Main orchestration
-│   ├── agent-resolver.ts        # Flag → env → config → Sisyphus
-│   ├── session-resolver.ts      # Create/resume sessions
-│   ├── event-handlers.ts        # Event processing
-│   └── poll-for-completion.ts   # Wait for todos/background tasks
 ├── worktree-sweep/               # Stale git worktree classification + sweep
 └── mcp-oauth/                   # OAuth token management
 ```

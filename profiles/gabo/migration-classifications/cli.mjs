@@ -4,19 +4,20 @@
  * Cada fila mapea un directorio o archivo real bajo
  * `packages/omo-opencode/src/cli/` a su destino en el runtime nativo de
  * OpenCode V2 (`profiles/gabo/opencode/rigel-v2-native.mjs` y sus satélites) y
- * en la superficie de comandos que el fork distribuye
- * (`profiles/gabo/rigel-v2-cli.mjs`). El generador
+ * en el registro de comandos del arnes de laboratorio
+ * (`profiles/gabo/rigel-v2-cli.mjs`), que NO es una CLI publica: `package.json` no
+ * publica ningun bin `rigel-v2`. El generador
  * `profiles/gabo/generate-v2-migration-inventory.mjs` consume este objeto
  * como la sección `cli` del ledger.
  *
  * T38 cierra las 19 filas que citaban `task:38` owner por owner. Ninguna fila
  * se cierra como `Interno de build` por mera clasificación: el efecto existe en
  * un artefacto V2 real y se prueba sobre ESE artefacto:
- *  - el CLI de comandos del fork (`profiles/gabo/rigel-v2-cli.mjs`) implementa
+ *  - el registro de comandos del arnes (`profiles/gabo/rigel-v2-cli.mjs`) implementa
  *    el valor portado y delega solo el install/uninstall real a los paquetes
  *    adaptadores (`@oh-my-opencode/omo-codex/install`,
  *    `@oh-my-opencode/omo-senpi/install`) y a `@oh-my-opencode/utils`;
- *  - el CLI se MATERIALIZA en el despliegue del laboratorio V2 unicamente a
+ *  - ese registro se MATERIALIZA en el despliegue del laboratorio V2 unicamente a
  *    traves de `apply-v2-runtime-service.sh` (via `materialize-v2-cli.mjs`):
  *    launcher en `<labRoot>/rigel/bin/rigel-v2` y `<labHome>/.local/bin/rigel-v2`,
  *    enraizado en el HOME/XDG del lab. La aceptacion `qa-v2-cli-installed.mjs`
@@ -45,14 +46,14 @@ export default {
     classification: "Adaptar",
     status: "Migrado",
     rationale:
-      "`cleanup.ts` limpia el estado de Codex Light. El efecto existe en el CLI V2: `rigel-v2 uninstall --platform=codex` delega en el cleanup real de Codex (`cleanupCodexLight` de `@oh-my-opencode/omo-codex/install`); el uninstall de opencode revierte el runtime del fork. Probado positivo (dry-run del plan + cleanup codex con adaptador inyectado) y negativo (plataforma desconocida).",
+      "`cleanup.ts` limpia el estado de Codex Light. El efecto existe como comando del arnes de laboratorio: `rigel-v2 uninstall --platform=codex` delega en el cleanup real de Codex (`cleanupCodexLight` de `@oh-my-opencode/omo-codex/install`); el uninstall de opencode revierte el runtime del fork. Probado positivo (dry-run del plan + cleanup codex con adaptador inyectado) y negativo (plataforma desconocida).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (uninstall codex); `profiles/gabo/cli/commands/uninstall.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "cleanup-command": {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "El cableado del comando cleanup/uninstall existe en el CLI V2: el comando `uninstall` (alias `cleanup`) del CLI del fork. Probado positivo (alias `cleanup --dry-run` -> plan) y negativo (entrada foránea -> exit 1).",
+      "El cableado del comando cleanup/uninstall existe como comando del arnes de laboratorio: el comando `uninstall` (alias `cleanup`) del arnes de laboratorio. Probado positivo (alias `cleanup --dry-run` -> plan) y negativo (entrada foránea -> exit 1).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (cleanup alias); `profiles/gabo/cli/commands/uninstall.mjs`",
   },
   "cli-installer": {
@@ -66,14 +67,14 @@ export default {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "La entrada Commander del CLI se materializa como el CLI V2 real del fork (`profiles/gabo/rigel-v2-cli.mjs`): un dispatcher de comandos (`runRigelV2Cli` + registro) que es el entry que el fork distribuye. Probado positivo (`--help` lista la superficie, `version` responde) y negativo (comando desconocido -> exit 1).",
+      "El entry Commander de V1 (`packages/omo-opencode/src/cli/cli-program.ts`) queda con su superficie publica recortada a `install`, `get-local-version` y `doctor`, tras retirar `run` (PR2/F72) y `config migrate` (PR2/F71). Su equivalente en el arnes de laboratorio es el dispatcher `runRigelV2Cli` + registro de `profiles/gabo/rigel-v2-cli.mjs`, que NO es una CLI publica: no hay bin `rigel-v2` en `package.json`. Probado positivo (`--help` lista la superficie, `version` responde) y negativo (comando desconocido -> exit 1).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs`; `profiles/gabo/rigel-v2-cli.mjs`; `profiles/gabo/cli/rigel-v2-cli-registry.mjs`",
   },
   "codex-ulw-loop": {
     classification: "Adaptar",
     status: "Migrado",
     rationale:
-      "El comando ulw-loop de Codex existe en el CLI V2: `rigel-v2 ulw-loop` resuelve el bin del componente (CODEX_LOCAL_BIN_DIR / cache de Codex / sentinel de delegación) con una implementación propia, no importando el owner V1. Probado positivo (bin presente -> resuelto) y negativo (ausente -> exit 1; sentinel -> no-op).",
+      "El comando ulw-loop de Codex existe como comando del arnes de laboratorio: `rigel-v2 ulw-loop` resuelve el bin del componente (CODEX_LOCAL_BIN_DIR / cache de Codex / sentinel de delegación) con una implementación propia, no importando el owner V1. Probado positivo (bin presente -> resuelto) y negativo (ausente -> exit 1; sentinel -> no-op).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (ulw-loop); `profiles/gabo/cli/commands/ulw-loop.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "config-manager": {
@@ -87,8 +88,8 @@ export default {
     classification: "Adaptar",
     status: "Migrado",
     rationale:
-      "La migración de configuración legada de `packages/omo-opencode/src/cli/config-migrate.ts` (`runOpenCodeStartupMigration`) se adapta al resolvedor nativo V2, que migra las mismas claves legadas en memoria: `ralph_loop -> goal` (igual que `validatePluginConfig`) y `experimental.hashline_edit -> hashline_edit` raíz (igual que `migrateConfigFile`). Contrato diferencial por clave contra los owners V1 reales.",
-    futureEvidence: "`profiles/gabo/cli-runtime-parity.test.mjs` (config-migrate); `profiles/gabo/opencode/rigel-v2-native-config.parity.test.mjs`",
+      "La capacidad de migración legada se conserva y la superficie pública se retira (PR2/F71). `packages/omo-opencode/src/cli/config-migrate.ts` era solo un impresor de consola sobre `runOpenCodeStartupMigration`, con un único importador (`cli-program.ts`), así que el comando público `config migrate` (`--dry-run`, `--json`) se elimina junto con su módulo y su test; ningún script, bin, instalador ni plugin lo invocaba. La migración sigue siendo automática en `packages/omo-opencode/src/startup-migration.ts` (`runOpenCodeStartupMigration`) en el arranque del plugin OpenCode, el arranque de Senpi, el arranque de Codex (solo el grupo `config.jsonc`) y la instalación, y el resolvedor nativo V2 migra las mismas claves legadas en memoria: `ralph_loop -> goal` (igual que `validatePluginConfig`) y `experimental.hashline_edit -> hashline_edit` raíz (igual que `migrateConfigFile`). Contrato diferencial por clave contra los owners V1 reales.",
+    futureEvidence: "`packages/omo-opencode/src/startup-migration.ts`; `packages/omo-opencode/src/startup-migration.test.ts`; `profiles/gabo/cli-runtime-parity.test.mjs` (config-migrate); `profiles/gabo/opencode/rigel-v2-native-config.parity.test.mjs`",
   },
   doctor: {
     classification: "Migrar",
@@ -157,7 +158,7 @@ export default {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "La validación de opciones de instalación existe en el CLI V2: `rigel-v2 install` valida la plataforma (implementación propia) y rechaza valores desconocidos con exit 1. Probado positivo (plan válido) y negativo (plataforma desconocida).",
+      "La validación de opciones de instalación existe como comando del arnes de laboratorio: `rigel-v2 install` valida la plataforma (implementación propia) y rechaza valores desconocidos con exit 1. Probado positivo (plan válido) y negativo (plataforma desconocida).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (install validation); `profiles/gabo/cli/commands/install.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "mcp-oauth": {
@@ -199,14 +200,14 @@ export default {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "La bandera de plataforma native-dev existe en el CLI V2: `rigel-v2 install --platform=native-dev` exige `OMO_ENABLE_NATIVE_DEV_PLATFORM` (legacy aceptada) y rechaza la plataforma sin el opt-in. Probado positivo (con flag) y negativo (sin flag -> exit 1).",
+      "La bandera de plataforma native-dev existe como comando del arnes de laboratorio: `rigel-v2 install --platform=native-dev` exige `OMO_ENABLE_NATIVE_DEV_PLATFORM` (legacy aceptada) y rechaza la plataforma sin el opt-in. Probado positivo (con flag) y negativo (sin flag -> exit 1).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (native-dev gate); `profiles/gabo/cli/commands/install.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "native-edition-hint": {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "El aviso de la edición OmO Native existe en el CLI V2: `rigel-v2 install` imprime el hint (comando de instalación + guía) cuando la edición nativa no está presente. Probado positivo (el hint aparece en el dry-run) y negativo (no se imprime al instalar native/native-dev).",
+      "El aviso de la edición OmO Native existe como comando del arnes de laboratorio: `rigel-v2 install` imprime el hint (comando de instalación + guía) cuando la edición nativa no está presente. Probado positivo (el hint aparece en el dry-run) y negativo (no se imprime al instalar native/native-dev).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (native-edition hint); `profiles/gabo/cli/commands/install.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "openai-only-model-catalog": {
@@ -241,21 +242,21 @@ export default {
     classification: "Equivale a builtin V2",
     status: "Migrado",
     rationale:
-      "El lanzador de sesión no interactiva de `packages/omo-opencode/src/cli/run/runner.ts` queda cubierto por el flujo no interactivo del host V2 (crear sesión -> prompt -> idle). El runtime nativo no implementa un bucle propio: conduce la API de sesión del host (`create -> prompt(resume) -> wait -> context`) y rechaza si el host no la expone. Prueba viva: `qa-v2-builtin-mcps.mjs` conduce create+prompt+idle contra `opencode-v2-lab.service`.",
-    futureEvidence: "`profiles/gabo/cli-runtime-parity.test.mjs` (run); `profiles/gabo/qa-v2-builtin-mcps.mjs` (vivo); `profiles/gabo/qa-v2-native-delegation.mjs`",
+      "El comando publico `run` (`packages/omo-opencode/src/cli/run/`, 62 archivos) se retira por PR2/F72: su unico importador era `cli-program.ts` y duplicaba el modo no interactivo del host. Se CONSERVA el guard interno no interactivo (`profiles/gabo/opencode/rigel-v2-native-noninteractive.mjs`) y los lectores de `OPENCODE_CLI_RUN_MODE` (`plugin-handlers/tool-config-handler.ts`, `hooks/auto-update-checker/hook.ts`). El flujo no interactivo del host V2 (crear sesión -> prompt -> idle). El runtime nativo no implementa un bucle propio: conduce la API de sesión del host (`create -> prompt(resume) -> wait -> context`) y rechaza si el host no la expone. Prueba de laboratorio, no concluyente (el servicio de laboratorio esta prohibido como gate vivo; kris es el unico laboratorio designado y NLS1 queda como historico retirado): `qa-v2-builtin-mcps.mjs` conduce create+prompt+idle contra ese servicio.",
+    futureEvidence: "`profiles/gabo/cli-runtime-parity.test.mjs` (run); `profiles/gabo/qa-v2-builtin-mcps.mjs` (laboratorio, no concluyente); `profiles/gabo/qa-v2-native-delegation.mjs`",
   },
   "runtime-commands": {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "El registro de comandos de runtime existe en el CLI V2: el registro de comandos del fork expone version, doctor, install, uninstall, ulw-loop, worktree-sweep, refresh-model-capabilities y ast-grep. Probado positivo (`--help` lista la superficie; `version` responde) y negativo (comando desconocido -> exit 1).",
+      "El registro de comandos de runtime de `packages/omo-opencode/src/cli/runtime-commands.ts` se conserva en el producto (`configureRuntimeCommands(program)`); su equivalente en el arnes de laboratorio expone version, doctor, install, uninstall, ulw-loop, worktree-sweep, refresh-model-capabilities y ast-grep. Probado positivo (`--help` lista la superficie; `version` responde) y negativo (comando desconocido -> exit 1).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs`; `profiles/gabo/cli/rigel-v2-cli-registry.mjs`",
   },
   "star-request": {
     classification: "Migrar",
     status: "Migrado",
     rationale:
-      "La cortesía de estrella en GitHub existe en el CLI V2: `rigel-v2 install --star` ejecuta `gh api ... /user/starred/<repo>` por repositorio de la plataforma, con implementación propia. Probado positivo (dry-run muestra el comando; el runner invoca gh) y negativo (fallo por repo se registra sin abortar).",
+      "La cortesía de estrella en GitHub existe como comando del arnes de laboratorio: `rigel-v2 install --star` ejecuta `gh api ... /user/starred/<repo>` por repositorio de la plataforma, con implementación propia. Probado positivo (dry-run muestra el comando; el runner invoca gh) y negativo (fallo por repo se registra sin abortar).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (star); `profiles/gabo/cli/commands/install.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "tui-install-prompts": {

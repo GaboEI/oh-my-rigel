@@ -366,7 +366,12 @@ describe("#given cli.json #when re-derived against the real CLI sources #then no
     ]
     const parsed = new Set<string>()
     for (const f of files) for (const m of readRepo(f).matchAll(/\.command\(\s*"([a-z][a-z0-9-]*)/g)) parsed.add(m[1])
-    const nested = new Set(["migrate", "login", "logout", "status"])
+    // `login`/`logout`/`status` are real nested `mcp oauth` subcommands. `migrate` was removed
+    // deliberately: the public `config migrate` command is retired (PR2/F71) and internal legacy
+    // migration is automatic at startup (`startup-migration.ts`, consumed by
+    // `testing/create-plugin-module.ts` and `cli/config-manager/write-omo-config.ts`), so it has no
+    // CLI verb. Keeping it allowlisted made this gate blind to a reintroduced `.command("migrate")`.
+    const nested = new Set(["login", "logout", "status"])
     const declared = new Set((cliDoc.owners.omo.commands as { name: string }[]).map((c) => c.name))
     for (const name of parsed) expect(["omo", name, declared.has(name) || nested.has(name)]).toEqual(["omo", name, true])
     for (const name of declared) expect(["omo", name, parsed.has(name) || name === "setup" || name === "mcp"]).toEqual(["omo", name, true])

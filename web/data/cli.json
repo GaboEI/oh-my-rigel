@@ -15,7 +15,8 @@
     "rigel-v2": {
       "owner": "omr",
       "program": "rigel-v2",
-      "note": "Oh My Rigel CLI. Product label: oh-my-rigel. Must NOT be confused with the parent `omo` command.",
+      "note": "Laboratory command registry (profiles/gabo/cli/**): 10 commands materialized only into the lab deployment by apply-v2-runtime-service.sh. It is NOT a published bin (package.json has no rigel-v2 bin) and must never be presented as a product CLI. The public human route is the lifecycle installer profiles/gabo/rigel-v2-user-install.mjs (verbs: install, upgrade, rollback, uninstall, status).",
+      "publicRoute": "profiles/gabo/rigel-v2-user-install.mjs",
       "commands": [
         { "name": "version", "aliases": [] },
         { "name": "get-local-version", "aliases": [] },
@@ -37,10 +38,8 @@
       "commands": [
         { "name": "install", "aliases": ["setup"] },
         { "name": "setup", "aliases": [] },
-        { "name": "run", "aliases": [] },
         { "name": "doctor", "aliases": [] },
         { "name": "get-local-version", "aliases": [] },
-        { "name": "config", "aliases": [] },
         { "name": "cleanup", "aliases": ["uninstall"] },
         { "name": "refresh-model-capabilities", "aliases": [] },
         { "name": "version", "aliases": [] },
