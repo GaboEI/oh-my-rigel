@@ -55,6 +55,29 @@ export function memberWorktreeDirectory({ repoRoot, teamName, memberName, baseDi
   return path.join(root, encodeNameSegment(teamName, "team name"), encodeNameSegment(memberName, "member name"))
 }
 
+/**
+ * Map a per-member worktree directory back to the repo root that owns the team.
+ *
+ * A member session whose directory is its own worktree resolves a DIFFERENT git
+ * top level, so without this it would get a different project key: its panes
+ * would fail caller-pane discovery AND its own `team_task_*`/`team_send_message`
+ * calls would look in a namespace where its team does not exist.
+ *
+ * Lexical and pure on purpose (no git, no fs): it must be safe to call on every
+ * `session.created` and inside scope resolution. Anything that is not under the
+ * standard `<root>/.omo/team-worktrees/` segment is returned as `undefined`, so
+ * the caller keeps its existing directory unchanged (this is why a team worktree
+ * created with a custom `baseDir` stays pane-less: it cannot be mapped back).
+ */
+export function mapTeamWorktreeToRepoRoot(directory, { realpath = (value) => value } = {}) {
+  if (typeof directory !== "string" || !directory) return undefined
+  let normalized
+  try { normalized = realpath(directory) } catch { normalized = directory }
+  const marker = `${path.sep}${TEAM_WORKTREE_DIR_SEGMENT}${path.sep}`
+  const index = normalized.lastIndexOf(marker)
+  return index > 0 ? normalized.slice(0, index) : undefined
+}
+
 export function createGitWorktreeRunner({ exec = execFileAsync, env = GIT_ENV } = {}) {
   return async function runGit(args, options = {}) {
     try {
@@ -77,7 +100,11 @@ export function createGitWorktreeRunner({ exec = execFileAsync, env = GIT_ENV } 
 async function ensureGitRepository(repoRoot, runGit) {
   const result = await runGit(["-C", repoRoot, "rev-parse", "--is-inside-work-tree"])
   if (result.code !== 0 || result.stdout.trim() !== "true") {
-    throw new Error(`team worktrees require a git repository at ${repoRoot}`)
+    throw new Error(
+      `team worktrees require a git repository at ${repoRoot}, so the team was NOT created. ` +
+        `Do not switch the worktree policy on your own: worktree: false is a different policy, and choosing it is the user's decision, not yours. ` +
+        `Report this failure and ask the user to confirm explicitly; create the team again only after they confirm.`,
+    )
   }
 }
 

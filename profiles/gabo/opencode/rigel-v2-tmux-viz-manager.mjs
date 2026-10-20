@@ -22,6 +22,7 @@ import path from "node:path"
 import { createHash, randomBytes } from "node:crypto"
 
 import { detectTmuxVizEnvironment } from "./rigel-v2-tmux-viz-env.mjs"
+import { resolveSessionStatus } from "./rigel-v2-tmux-viz-status.mjs"
 import { createTmuxVizRunner, createServerHealthProbe } from "./rigel-v2-tmux-viz-runner.mjs"
 import { queryWindowState } from "./rigel-v2-tmux-viz-pane-state.mjs"
 import {
@@ -349,11 +350,21 @@ export function createTmuxVizManager({
   attachEnv = [],
   fetchSessionStatus,
   shouldSkipSession = () => false,
+  // Team members are long-lived by design: a teammate goes idle after every
+  // turn, so the idle-stability close would drop its pane seconds after
+  // creation. Persistence is a per-session property, default off, so ordinary
+  // delegated children keep their existing close behavior byte for byte.
+  isPersistentSession = () => false,
   managerPid = process.pid,
   healthMarker = globalThis,
   logger = console.error,
   spawnImpl,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  // The readiness deadline is read through this seam so a test can drive the
+  // whole 10s window with a fake clock instead of really waiting it out.
+  // Production defaults to the wall clock; every other timestamp in this file
+  // keeps reading `Date.now()` directly.
+  now = () => Date.now(),
 } = {}) {
   const environment = detectTmuxVizEnvironment({ env, discoveredPaneId, discoveryReason })
   const resolved = {
@@ -457,27 +468,38 @@ export function createTmuxVizManager({
   }
 
   async function waitForSessionReady(sessionID) {
-    const deadline = Date.now() + SESSION_READY_TIMEOUT_MS
-    let lastStatus
-    let probed = false
-    while (Date.now() < deadline) {
-      const statuses = typeof fetchSessionStatus === "function" ? await fetchSessionStatus() : null
-      if (statuses != null) probed = true
-      lastStatus = statuses?.get?.(sessionID)
-      if (ATTACHABLE_STATUSES.has(lastStatus)) return true
-      await sleep(SESSION_READY_POLL_MS)
+    const deadline = now() + SESSION_READY_TIMEOUT_MS
+    let observed = false
+    while (now() < deadline) {
+      const lookup = await resolveSessionStatus(fetchSessionStatus, sessionID)
+      // Only a status the seam actually produced for THIS session counts as
+      // observability. A non-null container is not: the host has no aggregate
+      // status call, so an argument-less read answers with an empty container
+      // that is not a signal at all. Treating that container as probed is what
+      // burned the whole readiness budget on every member and deferred the
+      // spawn forever with no pane.
+      if (lookup.kind === "value") {
+        observed = true
+        if (ATTACHABLE_STATUSES.has(lookup.status)) return true
+        await sleep(SESSION_READY_POLL_MS)
+        continue
+      }
+      // Nothing to observe means no signal will arrive inside this window, so
+      // stop spending the readiness budget instead of polling an absent seam.
+      break
     }
     // The host may expose no per-session status seam at all (observed live on
-    // NLS1, OpenCode 2.0.32: `context.session.status` is not a function). Blocking
-    // on an unobservable signal defers the spawn forever, which is precisely how a
-    // working feature looked broken. When nothing can be probed we attach instead:
+    // NLS1, OpenCode 2.0.32: `context.session.status` is not a function), or the
+    // seam exists but reports nothing for this session. Blocking on an
+    // unobservable signal defers the spawn forever, which is precisely how a
+    // working feature looked broken. When nothing was observed we attach instead:
     // the session already exists (the creation event delivered it) and the pane
-    // targets it by id. A PROBED but not-attachable status still defers.
-    if (!probed) {
-      log("session status seam unavailable on this host; attaching without a readiness confirmation")
+    // targets it by id. An OBSERVED but not-attachable status still defers.
+    if (!observed) {
+      log("session status seam is not observable for this session; attaching without a readiness confirmation")
       return true
     }
-    // A PROBED status that never became attachable is a real signal: defer.
+    // An OBSERVED status that never became attachable is a real signal: defer.
     return false
   }
 
@@ -496,6 +518,7 @@ export function createTmuxVizManager({
       isolated: Boolean(result.isolated),
       cmux: environment.cmux,
       createdAt: Date.now(),
+      persistent: isPersistentSession(sessionID) === true,
       activityVersion: 0,
       stablePolls: 0,
       attachActivated: environment.cmux && !result.isolated,
@@ -517,7 +540,7 @@ export function createTmuxVizManager({
       log(`deferred queue is full (${MAX_DEFERRED_QUEUE_SIZE}); dropping session ${entry.sessionID}`)
       return
     }
-    deferredSessions.push({ ...entry, queuedAt: Date.now(), reason })
+    deferredSessions.push({ ...entry, queuedAt: now(), reason })
   }
 
   async function drainSpawnQueue() {
@@ -527,7 +550,22 @@ export function createTmuxVizManager({
       while (spawnQueue.length > 0) {
         const entry = spawnQueue.shift()
         if (!entry) continue
-        const result = await spawnPendingSession(entry)
+        let result
+        try {
+          result = await spawnPendingSession(entry)
+        } catch (error) {
+          // A throwing spawn is an UNKNOWN outcome, never a lost queue entry.
+          // The readiness path awaits the host, so a transient host failure
+          // surfaces here; before this guard the exception escaped into the
+          // host's event handler and the entry vanished with its claim held.
+          const message = error instanceof Error ? error.message : String(error)
+          if (!entry.throwLogged) {
+            entry.throwLogged = true
+            log(`spawn threw for ${entry.sessionID}: ${message}`)
+          }
+          queueDeferred(entry, message)
+          continue
+        }
         if (!result.ok) {
           if (result.paneId) await closeTmuxPane({ runner, paneId: result.paneId, sleep })
           if (result.deferred) {
@@ -551,13 +589,25 @@ export function createTmuxVizManager({
     }
   }
 
+  function pruneExpiredDeferred(currentTime) {
+    while (deferredSessions.length > 0 && currentTime - deferredSessions[0].queuedAt > DEFERRED_SESSION_TTL_MS) {
+      const expired = deferredSessions.shift()
+      if (!expired) continue
+      // Dropping an entry silently left its claim held for the rest of the
+      // process, so every later attempt for that session looked "already
+      // claimed" and the failure was invisible. Expiry is a DECISION, not a
+      // silent drop: release the claim, then say so. Releasing before the line
+      // is written makes "claim released" proof the on-disk claim is already
+      // gone rather than a promise about to be kept.
+      releaseClaim(expired.sessionID)
+      log(`deferred spawn expired for ${expired.sessionID} after ${Math.round(DEFERRED_SESSION_TTL_MS / 60000)}min; claim released`)
+    }
+  }
+
   function startDeferredLoop() {
     if (deferredLoop || deferredLoopStopped) return
     deferredLoop = setInterval(() => {
-      const now = Date.now()
-      while (deferredSessions.length > 0 && now - deferredSessions[0].queuedAt > DEFERRED_SESSION_TTL_MS) {
-        deferredSessions.shift()
-      }
+      pruneExpiredDeferred(now())
       const entry = deferredSessions.shift()
       if (entry) spawnQueue.push(entry)
       void drainSpawnQueue()

@@ -14,6 +14,7 @@
  */
 
 import { buildReplaceArgs, buildAttachCommand } from "./rigel-v2-tmux-viz-layout.mjs"
+import { resolveSessionStatus } from "./rigel-v2-tmux-viz-status.mjs"
 import { V2_ACTIVITY_EVENT_TYPES, resolveV2EventSessionID } from "./rigel-v2-native-activity.mjs"
 
 export const POLL_INTERVAL_BACKGROUND_MS = 2000
@@ -94,25 +95,51 @@ export function createTmuxVizPolling({
       // pass gets a bounded retry with a cooldown instead of leaking.
       if (typeof onPoll === "function") await onPoll(now)
       await activateFocusedPanes(now)
-      const statuses = typeof fetchSessionStatus === "function" ? await fetchSessionStatus() : null
+      // The host answers session status PER SESSION, so the seam is asked once per
+      // tracked session. A session it cannot answer for reads as `null`: an
+      // absent entry is not an idle signal, and (as before) it must never be
+      // treated as a fresh sighting for the missing/idle stability logic.
+      // THREE-STATE: `absent` (host answered, no status for this session) still
+      // feeds the missing-grace safety net, but `unavailable` (the question could
+      // not be asked) must never drive a status-derived close - that would tear
+      // down a live pane on a transient host failure. Probed once per pass.
+      let seamUnavailable = false
       for (const tracked of getTrackedSessions().values()) {
         if (tracked.closePending) continue
-        const status = statuses?.get?.(tracked.sessionID) ?? null
+        let lookup = { kind: "unavailable" }
+        if (!seamUnavailable) {
+          lookup = await resolveSessionStatus(fetchSessionStatus, tracked.sessionID)
+          if (lookup.kind === "unavailable") seamUnavailable = true
+        }
+        const unavailable = lookup.kind === "unavailable"
+        const statusValue = lookup.kind === "value" ? lookup.status : null
         const age = now - (tracked.createdAt ?? now)
-        if (!tracked.attachActivated && !status) {
+        const isTimedOut = !tracked.persistent && age > limits.sessionTimeout
+        if (!tracked.attachActivated && !statusValue) {
           if (age > limits.sessionTimeout) {
             tracked.closePending = true
             logger(`[oh-my-rigel] tmux-viz: never-activated pane timed out (${Math.round(limits.sessionTimeout / 60000)}min): ${tracked.sessionID}`)
           }
           continue
         }
-        if (tracked.attachActivated && !status && tracked.attachActivatedAt != null && now - tracked.attachActivatedAt <= 10_000) continue
-        if (status) tracked.lastSeenAt = now
+        if (unavailable) {
+          // Age is a fact this process owns; status is the host's answer. Only the
+          // hard age timeout survives an unanswerable seam.
+          if (isTimedOut) {
+            tracked.closePending = true
+            logger(`[oh-my-rigel] tmux-viz: closing pane for ${tracked.sessionID} (stable=false, missing=false, timedOut=true)`)
+          }
+          continue
+        }
+        if (tracked.attachActivated && !statusValue && tracked.attachActivatedAt != null && now - tracked.attachActivatedAt <= 10_000) continue
+        if (statusValue) tracked.lastSeenAt = now
         const missingTooLong = tracked.lastSeenAt != null && now - tracked.lastSeenAt > limits.missingGrace
-        const isTimedOut = age > limits.sessionTimeout
+        // A persistent session (a team member) closes only on session deletion or
+        // a genuinely vanished session, never on idle stability or the hard age
+        // timeout: it is EXPECTED to sit idle between turns.
         // Stability: consecutive idle ticks whose activity version never
         // changed. Any other status, or any activity bump, resets the run.
-        if (status === "idle") {
+        if (statusValue === "idle") {
           if (tracked.stabilityVersion !== tracked.activityVersion) {
             tracked.stabilityVersion = tracked.activityVersion
             tracked.stablePolls = 1
@@ -124,7 +151,7 @@ export function createTmuxVizPolling({
           tracked.stablePolls = 0
         }
         const stableFor = age
-        const isStableIdle = status === "idle" && (tracked.stablePolls ?? 0) >= limits.stablePolls && stableFor >= limits.minStability
+        const isStableIdle = !tracked.persistent && statusValue === "idle" && (tracked.stablePolls ?? 0) >= limits.stablePolls && stableFor >= limits.minStability
         if (isStableIdle || missingTooLong || isTimedOut) {
           tracked.closePending = true
           logger(`[oh-my-rigel] tmux-viz: closing pane for ${tracked.sessionID} (stable=${isStableIdle}, missing=${missingTooLong}, timedOut=${isTimedOut})`)

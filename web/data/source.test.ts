@@ -537,7 +537,7 @@ describe("#given the guide source #when checked against the real product surface
     const omo = skillIds("packages/shared-skills/skills")
     const beta = skillIds("profiles/gabo/skills")
     expect(omo.length).toBe(18)
-    expect(beta.length).toBe(14)
+    expect(beta.length).toBe(15)
     expect(guideDoc.skills.filter((s) => s.provenance === "omo").map((s) => s.id).sort()).toEqual(omo.sort())
     expect(guideDoc.skills.filter((s) => s.provenance === "beta").map((s) => s.id).sort()).toEqual(beta.sort())
     const ids = guideDoc.skills.map((s) => s.id)

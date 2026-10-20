@@ -55,6 +55,37 @@ test("processed embedded command is expanded once when admission repeats", async
   expect(draft.prompt.text.match(/<auto-slash-command>/g)).toHaveLength(1)
 })
 
+test("#given a native command sharing a skill name #when the same slash is admitted #then the native handler runs and the skill template never reaches the model", async () => {
+  // given: the `team-mode` skill and the native `/team-mode` command collide on
+  // name. Skills normally win, which is exactly how the visible command drifted
+  // into an agentic skill prompt.
+  const calls = []
+  const hook = createNativeAutoSlashCommandHook({
+    skills: [{ name: "team-mode", template: "SKILL BODY: inspect the repo with shell commands before acting" }],
+    listCommands: async () => {
+      calls.push("listCommands")
+      return []
+    },
+    nativeCommands: {
+      "team-mode": async ({ sessionID, args }) => {
+        calls.push({ sessionID, args })
+        return "DETERMINISTIC: the team was created"
+      },
+    },
+  })
+  const draft = event("/team-mode team: host55check. worktree: no")
+
+  // when
+  await hook.before(draft)
+
+  // then: the native command owns the name, and discovery/skill expansion is
+  // never consulted for it
+  expect(calls).toEqual([{ sessionID: "ses_1", args: "team: host55check. worktree: no" }])
+  expect(draft.prompt.text).toContain("DETERMINISTIC: the team was created")
+  expect(draft.prompt.text).not.toContain("SKILL BODY")
+  expect(draft.prompt.text).not.toContain("inspect the repo")
+})
+
 test("command resolution gives skills priority before the V1 scope order", () => {
   // given
   const commands = {

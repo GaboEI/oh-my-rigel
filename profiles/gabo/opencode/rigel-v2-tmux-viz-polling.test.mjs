@@ -31,6 +31,8 @@ function trackedSession(overrides = {}) {
     createdAt: Date.now(),
     activityVersion: 0,
     stablePolls: 0,
+    persistent: false,
+    closePending: false,
     attachActivated: true,
     lastSeenAt: Date.now(),
     ...overrides,
@@ -136,12 +138,54 @@ describe("tmux-viz polling", () => {
     expect(harness1.logs).toEqual(["[oh-my-rigel] tmux-viz: closing pane for ses_child (stable=false, missing=false, timedOut=true)"])
   })
 
+  test("a persistent team-member session is never stability-closed", async () => {
+    const now = 5_000_000
+    const harness1 = harness({
+      tracked: [["ses_child", trackedSession({ createdAt: now - MIN_STABILITY_TIME_MS - 1_000, lastSeenAt: now - 1_000, persistent: true })]],
+    })
+    harness1.setStatus(new Map([["ses_child", "idle"]]))
+    // given: far more than the stability window elapses with no activity at all
+    for (let index = 0; index < STABLE_POLLS_REQUIRED + 2; index += 1) await harness1.polling.pollOnce(now + 1_000 * (index + 1))
+    // then: a teammate idles between turns by design, so its pane must survive
+    expect(harness1.closes).toEqual([])
+  })
+
+  test("a persistent session is never closed by the hard age timeout", async () => {
+    const now = 5_000_000
+    const harness1 = harness({
+      tracked: [["ses_child", trackedSession({ createdAt: now - 60_001, attachActivatedAt: now - 11_000, lastSeenAt: now - 500, persistent: true })]],
+      timeouts: { sessionTimeout: 60_000, missingGrace: 1_000 },
+    })
+    harness1.setStatus(new Map([["ses_child", "running"]]))
+    await harness1.polling.pollOnce(now)
+    // same shape as the non-persistent timeout case above, which DOES close
+    expect(harness1.closes).toEqual([])
+  })
+
+  test("a persistent session whose pane really vanished is still closed as missing", async () => {
+    const t1 = 5_000_000
+    const harness1 = harness({
+      tracked: [["ses_child", trackedSession({ createdAt: t1 - 1_000, attachActivatedAt: t1 - 20_000, lastSeenAt: t1 - 999, persistent: true })]],
+      timeouts: { sessionTimeout: 60_000, missingGrace: 1_000 },
+    })
+    harness1.setStatus(new Map([["ses_child", "running"]]))
+    await harness1.polling.pollOnce(t1)
+    expect(harness1.closes).toEqual([])
+    harness1.setStatus(new Map())
+    await harness1.polling.pollOnce(t1 + 1_001)
+    // the safety net is retained: persistence is not a licence to leak panes
+    expect(harness1.closes).toEqual(["ses_child"])
+  })
+
   test("a poll re-entered while one is in flight is a no-op", async () => {
     let calls = 0
     let release
     const gate = new Promise((resolve) => { release = resolve })
+    // given: one tracked session, so the per-session status read runs exactly once
+    // per pass (the host has no aggregate read to count any more)
     const harness1 = harness({
-      fetchSessionStatus: async () => { calls += 1; await gate; return new Map() },
+      tracked: [["ses_child", trackedSession()]],
+      fetchSessionStatus: async (id) => { calls += 1; await gate; return id === "ses_child" ? "running" : undefined },
     })
     const first = harness1.polling.pollOnce(5_000_000)
     const second = harness1.polling.pollOnce(5_000_000)
@@ -161,6 +205,54 @@ describe("tmux-viz polling", () => {
     await harness1.polling.pollOnce(now)
     expect(harness1.logs.some((line) => line.includes("attach respawn failed"))).toBe(true)
     expect(harness1.sessions.get("ses_child").attachActivated).toBe(false)
+    expect(harness1.closes).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Per-session status seam (RETEST-4). The host answers `session.status(id)` one
+// session at a time, so the polling pass must ask per tracked session; an
+// argument-less aggregate read always came back empty, which silently killed
+// `lastSeenAt` and every idle-stability decision.
+// ---------------------------------------------------------------------------
+describe("tmux-viz polling per-session status seam", () => {
+  const t1 = 5_000_000
+
+  function idleFixture() {
+    return trackedSession({ createdAt: t1 - MIN_STABILITY_TIME_MS - 1_000, lastSeenAt: t1 - 20_000, attachActivated: true, attachActivatedAt: t1 - 20_000 })
+  }
+
+  test("a per-session idle status reaches idle stability", async () => {
+    // given: the seam answers for THIS session only
+    const tracked = idleFixture()
+    const harness1 = harness({
+      tracked: [["ses_child", tracked]],
+      fetchSessionStatus: async (id) => (id === tracked.sessionID ? "idle" : undefined),
+      timeouts: { stablePolls: 2, missingGrace: 30_000 },
+    })
+    // when: two passes observe the same session-level idle status
+    await harness1.polling.pollOnce(t1)
+    await harness1.polling.pollOnce(t1 + 1_000)
+    // then: the stability window closes the pane, proving the status was SEEN
+    expect(tracked.closePending).toBe(true)
+    expect(harness1.closes).toEqual(["ses_child"])
+  })
+
+  test("an unanswerable seam never closes a pane on a stale sighting", async () => {
+    // given: the same fixture behind a seam that reports nothing for it
+    const tracked = idleFixture()
+    const harness1 = harness({
+      tracked: [["ses_child", tracked]],
+      fetchSessionStatus: async () => {
+        throw new Error("host unavailable")
+      },
+      timeouts: { stablePolls: 2, missingGrace: 1_000 },
+    })
+    // when
+    await harness1.polling.pollOnce(t1)
+    await harness1.polling.pollOnce(t1 + 1_000)
+    // then: no status, no stability close - an absent entry is not an idle signal
+    expect(tracked.closePending).toBeFalsy()
     expect(harness1.closes).toEqual([])
   })
 })

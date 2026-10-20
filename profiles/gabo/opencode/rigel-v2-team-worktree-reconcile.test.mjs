@@ -270,3 +270,86 @@ describe("team worktree cleanup journal named-RED mutations", () => {
     expect(receipt.beforeHash).toBe(receipt.afterHash)
   })
 })
+
+// Row 55 audit round 2, blocker 2: `team_delete` KEEPS a team record while an owned
+// member session could not be terminated (and a create rollback keeps one too). That
+// retry state is only useful if the startup sweep cannot reclaim it, so the status
+// the team tools persist must stay outside both recovery sets. This guards the
+// storage/architecture contract a later `team_delete` depends on.
+describe("team worktree startup reconciliation: retained cleanup-failed retry state", () => {
+  test("#given a team retained because an owned session could not be terminated #when reconcile runs #then the record and its retry state survive", async () => {
+    // given: exactly the shape team_delete persists while sessionsFailed is non-empty
+    const retained = {
+      name: "stuck",
+      projectKey: PK,
+      status: "cleanup-failed",
+      sessionsTerminated: [],
+      cleanupPending: ["ses_scout"],
+      cleanupErrors: [{ sessionID: "ses_scout", error: "no terminator installed" }],
+      members: [{ name: "scout", sessionID: "ses_scout", owned: true, provenance: "spawned", status: "running" }],
+    }
+    const storage = memoryStorage({ [`${TEAM_PREFIX}stuck`]: retained })
+    const worktrees = scriptedWorktrees()
+    // when: a restart runs the startup sweep
+    const summary = await createTeamWorktreeReconciler({ storage, worktrees }).reconcile()
+    // then: reconcile neither reclaims nor alters the record, so a retry can still
+    // finish. (Scope: the lead-orphan handler is a different writer and may flip the
+    // status to `orphaned` - reconcilable but not removable - so no retry state is lost.)
+    expect(summary.removedTeams).toEqual([])
+    expect(summary.cleaned).toEqual([])
+    expect(storage.map.get(`${TEAM_PREFIX}stuck`)).toEqual(retained)
+  })
+
+  test("#given a failed team with no worktrees #when reconcile runs #then it is reclaimed (control: the sweep really removes records)", async () => {
+    // control: without this, the assertion above could pass because reconcile did nothing
+    const storage = memoryStorage({ [`${TEAM_PREFIX}broken`]: { name: "broken", projectKey: PK, status: "failed", members: [] } })
+    const summary = await createTeamWorktreeReconciler({ storage, worktrees: scriptedWorktrees() }).reconcile()
+    expect(summary.removedTeams).toEqual(["broken"])
+    expect(storage.map.has(`${TEAM_PREFIX}broken`)).toBe(false)
+  })
+
+// Round-2 review R4 (the crash window): a `binding` record can persist spawned
+// `owned` session ids before the create finishes. If the process dies there, the
+// startup sweep must NOT reclaim it - cleaning would delete the working directory
+// of a session that is still alive, and removing the record would strand those
+// persistent panes with no `team_delete` left to finish the teardown. Ownership is
+// exactly what protects it: the same record WITHOUT an owned session is reclaimed.
+describe("team worktree startup reconciliation: owned live sessions are never reclaimed", () => {
+  const staleBinding = (members) => ({
+    name: "crashed",
+    projectKey: PK,
+    status: "binding",
+    bindingAt: 1, // long past the freshness window
+    members,
+  })
+
+  test("#given a stale binding record that still owns a member session #when reconcile runs #then no worktree is cleaned and the record survives with retry state", async () => {
+    // given: one owned, live member session (the crash window)
+    const storage = memoryStorage({
+      [`${TEAM_PREFIX}crashed`]: staleBinding([{ name: "scout", sessionID: "ses_scout", owned: true, provenance: "spawned", worktreePath: "/w/scout", worktreeBranch: "rigel-team/crashed/scout" }]),
+    })
+    const worktrees = scriptedWorktrees([{ removed: ["/w/scout"], errors: [] }])
+    // when: a restart runs the startup sweep
+    const summary = await createTeamWorktreeReconciler({ storage, worktrees }).reconcile()
+    // then: no git cleanup ran on the live session's cwd, and the record kept its ids
+    expect(worktrees.calls.cleanup).toBe(0)
+    expect(summary.removedTeams).toEqual([])
+    expect(summary.retained).toEqual(["crashed"])
+    expect(storage.map.get(`${TEAM_PREFIX}crashed`)).toMatchObject({ status: "cleanup-failed", cleanupPending: ["ses_scout"], retainedBy: "reconcile:binding" })
+  })
+
+  test("#given the same stale binding with no owned session #when reconcile runs #then it is reclaimed (control: ownership is what protects it)", async () => {
+    // control: without this the assertion above could pass because nothing was ever reclaimed
+    const storage = memoryStorage({
+      [`${TEAM_PREFIX}crashed`]: staleBinding([{ name: "scout", sessionID: "ses_scout", worktreePath: "/w/scout", worktreeBranch: "rigel-team/crashed/scout" }]),
+    })
+    const worktrees = scriptedWorktrees([{ removed: ["/w/scout"], errors: [] }])
+    const summary = await createTeamWorktreeReconciler({ storage, worktrees }).reconcile()
+    expect(worktrees.calls.cleanup).toBe(1)
+    // NOTE: deliberately NO assertion on `summary.retained` here: a control must
+    // hold on the pre-fix code too, otherwise it only proves the new summary key.
+    expect(summary.removedTeams).toEqual(["crashed"])
+    expect(storage.map.has(`${TEAM_PREFIX}crashed`)).toBe(false)
+  })
+})
+})
