@@ -44,9 +44,9 @@
     }
   },
   "skillPolicy": {
-    "bundled": ["prompt-master", "juez-tester", "juez-repo", "github-public-writing", "opencode-multi-auth-fix", "defuddle", "obsidian-vault-writing-rules", "obsidian-second-brain-audit", "obsidian-cli", "obsidian-markdown", "obsidian-bases", "json-canvas", "tui-design", "skill-creator"],
+    "bundled": ["prompt-master", "juez-tester", "juez-repo", "github-public-writing", "opencode-multi-auth-fix", "defuddle", "obsidian-vault-writing-rules", "obsidian-second-brain-audit", "obsidian-cli", "obsidian-markdown", "obsidian-bases", "json-canvas", "tui-design", "skill-creator", "team-mode"],
     "gaboCore": ["prompt-master", "juez-tester", "juez-repo"],
-    "gaboAvailable": ["github-public-writing", "obsidian-vault-writing-rules", "obsidian-second-brain-audit", "obsidian-markdown", "obsidian-cli", "obsidian-bases", "json-canvas", "tui-design", "skill-creator", "opencode-multi-auth-fix", "defuddle"],
+    "gaboAvailable": ["github-public-writing", "obsidian-vault-writing-rules", "obsidian-second-brain-audit", "obsidian-markdown", "obsidian-cli", "obsidian-bases", "json-canvas", "tui-design", "skill-creator", "opencode-multi-auth-fix", "defuddle", "team-mode"],
     "omoAdopt": ["debugging", "frontend", "git-master", "remove-ai-slops", "security-research", "visual-qa", "team-mode"],
     "omoAdapt": ["playwright", "review-work", "init-deep", "ulw-plan", "ulw-research", "ulw-execute"],
     "omoProgressive": ["ast-grep", "coding-agent-sessions", "data-scientist", "lsp-setup", "programming", "refactor"],

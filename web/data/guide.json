@@ -273,6 +273,12 @@
       "uso": "Úsala para crear una skill desde cero, editarla u optimizar su descripción."
     },
     {
+      "id": "team-mode",
+      "provenance": "beta",
+      "funcion": "Crea y dirige un equipo: un lead y sesiones miembro coordinadas, con tareas y mensajes compartidos.",
+      "uso": "Úsala cuando pidan trabajar con varios agentes en paralelo, montar un equipo o usar /team-mode."
+    },
+    {
       "id": "tui-design",
       "provenance": "beta",
       "funcion": "Diseña, construye y revisa interfaces de terminal.",

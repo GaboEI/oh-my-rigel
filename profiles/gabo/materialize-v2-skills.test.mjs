@@ -27,7 +27,7 @@ const AUTHORIZED_SHARED = [
   "ast-grep", "coding-agent-sessions", "data-scientist", "lsp-setup", "programming", "refactor",
 ]
 const NOT_DELIVERED = ["browser", "ultimate-browsing"]
-const RIGEL_KIT_COUNT = 14
+const RIGEL_KIT_COUNT = 15
 
 const roots = []
 function makeHome() {

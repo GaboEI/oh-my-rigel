@@ -84,6 +84,7 @@ import { createUlwExecuteCommand } from "./rigel-v2-ulw-execute.mjs"
 import { registerBuiltinCommands } from "./rigel-v2-native-builtin-commands.mjs"
 import { registerMcpOAuthCommand } from "./rigel-v2-native-mcp-oauth-command.mjs"
 import { registerModelsCommand } from "./rigel-v2-native-models-command.mjs"
+import { createTeamModePromptHandler, registerTeamModeCommand, teamCreatePortFromTool, TEAM_MODE_COMMAND_NAME } from "./rigel-v2-native-team-mode-command.mjs"
 import { createNativeContextLimitRecovery, createNativeIdleContinuations, createNativeIdleGate } from "./rigel-v2-native-phase4-events.mjs"
 import { createNativeTeamEventHandlers } from "./rigel-v2-team-events.mjs"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
@@ -95,7 +96,10 @@ import { registerClaudeCodeMcps } from "./rigel-v2-claude-code-mcp.mjs"
 import { registerNativeBuiltinMcps, resolveOpenCodeConfigDir } from "./rigel-v2-native-builtin-mcps.mjs"
 import { createNativeToolBeforeRules } from "./rigel-v2-native-tool-before.mjs"
 import { createTmuxVizManager } from "./rigel-v2-tmux-viz-manager.mjs"
+import { createSessionStatusReader } from "./rigel-v2-tmux-viz-status.mjs"
+import { createTmuxVizLogSink } from "./rigel-v2-tmux-viz-log.mjs"
 import { resolveNativeTmuxVisualization } from "./rigel-v2-native-config.mjs"
+import { createMemberSessionTerminator } from "./rigel-v2-native-session-teardown.mjs"
 import { discoverCallerPane, findExecutableOnPath } from "./rigel-v2-tmux-viz-env.mjs"
 import { createTmuxVizProjectRegistry, resolveChildProjectDirectory, resolveChildSessionInfo } from "./rigel-v2-tmux-viz-projects.mjs"
 import { createTmuxVizRunner } from "./rigel-v2-tmux-viz-runner.mjs"
@@ -941,6 +945,58 @@ export default {
     const teamEventHandlers = nativeGates.team_mode === true && typeof context?.storage?.set === "function"
       ? createNativeTeamEventHandlers({ storage: context.storage, session: context.session, scopeRegistry: teamScopeRegistry })
       : []
+    // Member sessions created by `team_create`. Tracked so the pane layer can mark
+    // them persistent: a teammate goes idle after EVERY turn by design, so the
+    // ordinary idle-stability close would drop its pane seconds after creation.
+    const teamMemberSessionIDs = new Set()
+    // The composition owns agent/category/model resolution (the same resolvers
+    // `rigel_task` uses), so the team tool file stays host-free and resolves
+    // nothing itself. Sequential spawns keep the member/session mapping
+    // deterministic and never fan out at the model.
+    const teamStartMemberSession = nativeGates.team_mode === true
+      ? async (assignment, { leadSessionID } = {}) => {
+          if (isCoordinatorAgent(assignment.agent)) {
+            throw new Error(`Cannot make coordinator agent "${String(assignment.agent).trim()}" a team member. Select a worker agent or a category instead.`)
+          }
+          const clients = [context, context.client]
+          const agents = await listCallableAgentsFromClients(clients, location)
+          const category = assignment.category
+            ? await resolveCategoryFromClients(clients, location, assignment.category, { userCategories })
+            : undefined
+          const agent = category
+            ? resolveNamedAgent(agents, "Sisyphus-Junior")
+            : resolveNamedAgent(agents, assignment.agent)
+          const delegated = await delegateNamedAgentFromClients({
+            clients,
+            location,
+            agent,
+            prompt: category ? categoryTaskPrompt(assignment.prompt, category) : assignment.prompt,
+            background: true,
+            model: assignment.model ?? await resolveDelegationModel(category, agent),
+            ...(leadSessionID ? { parentSessionID: leadSessionID } : {}),
+            onChildSession: (sessionID, child) => {
+              teamMemberSessionIDs.add(sessionID)
+              childSessionIDs.add(sessionID)
+              if (category) {
+                categoryChildSessions.set(sessionID, {
+                  name: category.name,
+                  explicit: category.explicit,
+                  chain: category.fallbackChain,
+                })
+              }
+              seedChildFallback(sessionID, child)
+            },
+          })
+          return { sessionID: delegated.sessionID, agent: agent.name }
+        }
+      : undefined
+    // Idempotent member teardown. A member pane closes on `session.deleted`, so
+    // team_delete must really delete the member session. Every host shape is
+    // attempted AND verified: a delete that resolves without deleting leaves a
+    // live pane behind, so a resolved promise is never treated as success.
+    const teamTerminateMemberSession = nativeGates.team_mode === true
+      ? createMemberSessionTerminator({ context })
+      : undefined
     // Gating and injectors scan the project namespaces and act only on the team
     // the calling session belongs to.
     const teamGatingRule = teamEventHandlers.length > 0
@@ -961,6 +1017,11 @@ export default {
     // `resolveCallingSessionDirectory`), so a setup-time value froze every
     // project in the daemon to whichever project the instance was created for.
     const tmuxVizEnv = context?.options?.tmuxVizEnv ?? process.env
+    // Diagnostics must survive the process: in the V2 service the plugin console
+    // is a socket, so `console.error` reached no file at all. A live run that
+    // created two sessions and zero panes left no trace of WHY, which is
+    // indistinguishable from the feature never running.
+    const tmuxVizLog = createTmuxVizLogSink({ env: tmuxVizEnv })
     const tmuxVizRealpath = (candidate) => {
       try { return fs.realpathSync(candidate) } catch { return candidate }
     }
@@ -980,6 +1041,7 @@ export default {
       manifest,
       env: tmuxVizEnv,
       teamModeEnabled: nativeGates.team_mode === true,
+      logger: tmuxVizLog,
       resolveGate: ({ manifest: gateManifest, directory, env: gateEnv }) =>
         resolveNativeTmuxVisualization({ manifest: gateManifest, directory, env: gateEnv }),
       discoverPane: async (directory) => {
@@ -1000,6 +1062,15 @@ export default {
           directory,
           run: (args) => tmuxVizDiscoveryRunner.run(args),
           realpath: tmuxVizRealpath,
+          // The pane this daemon inherited, when it was started from inside tmux.
+          // It is only ever adopted when discovery has ALREADY validated it as a
+          // TUI pane of THIS project, so it cannot pull a member into another
+          // project's window; it only breaks a tie between two TUI panes of the
+          // same project (a stale session left open), which otherwise degraded
+          // the whole feature silently.
+          preferredPaneId: typeof tmuxVizEnv?.TMUX_PANE === "string" && tmuxVizEnv.TMUX_PANE.length > 0
+            ? tmuxVizEnv.TMUX_PANE
+            : undefined,
         })
       },
       createManager: ({ directory, discoveredPaneId, discoveryReason }) =>
@@ -1011,22 +1082,21 @@ export default {
           discoveredPaneId,
           discoveryReason,
           attachEnv: tmuxVizAttachEnv,
-          fetchSessionStatus: async () => {
-            // The V2 host may expose the status aggregate on `session` or on the
-            // `v2` domain; neither is guaranteed. Returning null means "no status
-            // seam", which the manager treats as unobservable (never as ready).
-            const domain = typeof context?.session?.status === "function"
-              ? context.session
-              : (typeof context?.v2?.session?.status === "function" ? context.v2.session : null)
-            if (!domain) return null
-            const response = await domain.status()
-            const rows = response?.data ?? response
-            const map = new Map()
-            for (const row of Array.isArray(rows) ? rows : []) {
-              if (row?.sessionID) map.set(row.sessionID, row.status ?? row.type)
-            }
-            return map
-          },
+          // A team member's pane must outlive its idle turns. Only team members
+          // are persistent, so no other session's close behavior changes.
+          isPersistentSession: (sessionID) => teamMemberSessionIDs.has(sessionID),
+          logger: tmuxVizLog,
+          // The host exposes status PER SESSION (`session.status(id)`) and has no
+          // aggregate, so the seam is the reader over that accessor. A value the
+          // host cannot answer for must read as "unobservable" - never as a
+          // status, and never as proof that the seam was observed - or the
+          // manager waits out its whole readiness budget for a signal that
+          // cannot arrive and defers the spawn forever. The reader never logs and
+          // never throws: a degraded read is the caller's decision to make.
+          fetchSessionStatus: createSessionStatusReader(context, {
+            // One line, once per instance: a live run must name the surface that answered.
+            logger: (line) => tmuxVizLog(line),
+          }),
         }),
       normalizeDirectory: tmuxVizRealpath,
     })
@@ -1857,9 +1927,22 @@ export default {
     })
     // Prompt admission owns embedded slash-command expansion. Top-level slash
     // commands are expanded by the host before this hook is needed.
+    //
+    // `/team-mode` is the exception that must be handled HERE: a literal paste of
+    // the slash reaches this seam as plain prompt text, and the bundled `team-mode`
+    // skill shares the name. Without a native-command entry the skill wins (skills
+    // are consulted before host commands), so the command never executes and the
+    // model is left to decide on its own whether to call `team_create`. The handler
+    // below is the SAME executable decision the command executor runs, so there is
+    // one create contract and no model discretion. `team_create` is registered
+    // later in this setup, hence the lazy holder rather than a captured value.
+    let teamModeCreateTool
     const autoSlashCommand = createNativeAutoSlashCommandHook({
       skills: skillRegistry.skills,
       listCommands: () => context?.command?.list?.(),
+      nativeCommands: nativeGates.team_mode === true && !readNativeDisabled(manifest).commands.includes(TEAM_MODE_COMMAND_NAME)
+        ? { [TEAM_MODE_COMMAND_NAME]: createTeamModePromptHandler({ resolveCreateTeam: () => teamCreatePortFromTool(teamModeCreateTool) }) }
+        : undefined,
     })
     const autoSlashCommandRegistration = typeof context?.session?.hook === "function"
       ? await context.session.hook("prompt", async (event) => {
@@ -2056,6 +2139,8 @@ export default {
       maxTools: readNativeMaxTools(manifest),
       existingToolNames: coreToolNames,
       teamScopeRegistry,
+      teamStartMemberSession,
+      teamTerminateMemberSession,
     })
     goalController = conditionalTools.goalController
     let goalCommandRegistration
@@ -2142,6 +2227,21 @@ export default {
         disabledCommands: readNativeDisabled(manifest).commands,
       })
     }
+    // The `/team-mode` front door: `/team-mode <objective>` decides deterministically
+    // whether the team definition is complete, and only then creates it. It is
+    // V2-native and double-gated: the materialized `team_mode` gate decides whether
+    // the surface exists at all, and `disabled_commands` can still deny the name.
+    // The create port is the SAME `team_create` definition the agent calls, so the
+    // command adds a front door rather than a second create contract.
+    let teamModeCommandRegistration
+    teamModeCreateTool = conditionalTools?.definitions?.team_create
+    if (nativeGates.team_mode === true && typeof context?.command?.transform === "function") {
+      teamModeCommandRegistration = await registerTeamModeCommand({
+        context,
+        disabledCommands: readNativeDisabled(manifest).commands,
+        createTeam: teamCreatePortFromTool(teamModeCreateTool),
+      })
+    }
     // Reconcile durable background state from a previous process: re-admit
     // queued descriptors (they never started), re-track running children WITHOUT
     // re-creating them, and re-queue undelivered wakes. A fresh manager (tests,
@@ -2204,6 +2304,7 @@ export default {
       await builtinCommandsRegistration?.dispose?.()
       await mcpOAuthCommandRegistration?.dispose?.()
       await modelsCommandRegistration?.dispose?.()
+      await teamModeCommandRegistration?.dispose?.()
       autoSlashCommand.clear()
       disposeClaudeCodeHooks()
       await Promise.all([registration?.dispose?.(), directoryReadRegistration?.dispose?.(), remindersRegistration?.dispose?.(), writeGuardRegistration?.dispose?.(), nonInteractiveRegistration?.dispose?.(), permissionRegistration?.dispose?.(), autoSlashCommandRegistration?.dispose?.(), contextRegistration?.dispose?.(), modelRequestRegistration?.dispose?.(), compactionContextRegistration?.dispose?.(), imageRequestRegistration?.dispose?.(), skillRegistry?.dispose?.(), skillMcpRegistration?.dispose?.(), builtinMcpRegistration?.dispose?.(), claudeMcpRegistration?.dispose?.(), eventSubscription, tmuxVizProjects.cleanup()])

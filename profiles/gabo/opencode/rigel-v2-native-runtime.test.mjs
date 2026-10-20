@@ -1449,27 +1449,31 @@ test("native runtime honors disabled_commands for the native builtin commands", 
   }
 })
 
+// Commands a real `plugin.setup` registers, keyed by name, plus the session turns
+// they deliver. Shared by the gate-wiring tests below.
+function commandCapture() {
+  const commands = new Map()
+  const prompts = []
+  const context = {
+    ...editorCaptureContext().context,
+    session: {
+      hook: async () => ({ dispose() {} }),
+      create: async () => ({ data: { id: "ses_cmd" } }),
+      prompt: async (input) => { prompts.push(input); return { data: {} } },
+    },
+    command: {
+      transform: async (callback) => {
+        callback({ add: (definition) => commands.set(definition.name, definition) })
+        return { dispose() {} }
+      },
+    },
+  }
+  return { commands, prompts, context }
+}
+
 test("native runtime selects the team-mode template from the team_mode gate", async () => {
   const originalMetadata = nativeManifest.metadata
-  const capture = () => {
-    const commands = new Map()
-    const prompts = []
-    const context = {
-      ...editorCaptureContext().context,
-      session: {
-        hook: async () => ({ dispose() {} }),
-        create: async () => ({ data: { id: "ses_cmd" } }),
-        prompt: async (input) => { prompts.push(input); return { data: {} } },
-      },
-      command: {
-        transform: async (callback) => {
-          callback({ add: (definition) => commands.set(definition.name, definition) })
-          return { dispose() {} }
-        },
-      },
-    }
-    return { commands, prompts, context }
-  }
+  const capture = commandCapture
   try {
     nativeManifest.metadata = { global: { gates: { team_mode: false } } }
     const off = capture()
@@ -1486,6 +1490,171 @@ test("native runtime selects the team-mode template from the team_mode gate", as
     // The team-mode addendum adds content; a wiring regression that ignores the
     // gate would deliver the identical base template.
     expect(on.prompts[0].text.length).toBeGreaterThan(off.prompts[0].text.length)
+  } finally {
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+})
+
+test("native runtime registers the /team-mode front door only when the team_mode gate is on", async () => {
+  const originalMetadata = nativeManifest.metadata
+  try {
+    // given: the gate is off
+    nativeManifest.metadata = { global: { gates: { team_mode: false } } }
+    const off = commandCapture()
+    const disposeOff = await plugin.setup(off.context)
+    await disposeOff()
+    // when: the same plugin loads with the gate on
+    nativeManifest.metadata = { global: { gates: { team_mode: true } } }
+    const on = commandCapture()
+    const disposeOn = await plugin.setup(on.context)
+    // then: only the enabled runtime exposes the command
+    expect(off.commands.has("team-mode")).toBe(false)
+    expect(on.commands.has("team-mode")).toBe(true)
+    // and it is a live command: an incomplete objective reaches the session turn
+    await on.commands.get("team-mode").execute({ sessionID: "ses_team", prompt: { text: "members: scout, builder" }, delivery: "queue" })
+    expect(on.prompts).toHaveLength(1)
+    await disposeOn()
+  } finally {
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+})
+
+// Row 55: pasting `/team-mode <objective>` into the TUI reaches the runtime as
+// PROMPT TEXT, not as a host command invocation. The bundled `team-mode` skill
+// shares the command name, so unless this seam runs the SAME deterministic
+// decision the command executor runs, the model receives the skill body and
+// decides for itself whether to call `team_create` (the host failure: minutes of
+// shell/read/glob probing, one pane, no team). This drives the real
+// `session.hook("prompt")` handler registered by `plugin.setup` against the real
+// `team_create` definition that same setup registers.
+const TEAM_MODE_PASTED_OBJECTIVE = '/team-mode team: host55check. members: scout=quick "Reply with exactly: scout-ready.", builder=unspecified-low "Reply with exactly: builder-ready.". worktree: no'
+
+function teamModeInvocationHarness() {
+  const promptHooks = []
+  const listed = []
+  const storage = new Map()
+  const spawns = []
+  const delivered = []
+  let created = 0
+  const context = {
+    location: { directory: "/native-v2" },
+    agent: {
+      list: async () => ({ data: [{ id: "Sisyphus-Junior", name: "Sisyphus-Junior", mode: "subagent" }] }),
+      transform: async () => ({ dispose() {} }),
+      reload: async () => {},
+    },
+    // One model per routed lane so both member categories resolve.
+    model: { list: async () => ({ data: [
+      { providerID: "openai", id: "gpt-6-luna-fast", enabled: true },
+      { providerID: "xiaomi", id: "mimo-v2.6-pro", enabled: true },
+    ] }) },
+    storage: {
+      async get(key) { return storage.get(key) },
+      async set(key, value) { storage.set(key, value) },
+      async remove(key) { storage.delete(key) },
+      async scan({ prefix = "" } = {}) {
+        return { entries: [...storage.entries()].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value })) }
+      },
+    },
+    session: {
+      hook: async (name, handler) => {
+        if (name === "prompt") promptHooks.push(handler)
+        return { dispose() {} }
+      },
+      get: async () => ({ data: { location: { directory: "/native-v2" } } }),
+      create: async (input) => { spawns.push(input); created += 1; return { data: { id: `ses_member_${created}` } } },
+      prompt: async (input) => { delivered.push(input); return { data: {} } },
+      wait: async () => {},
+      delete: async () => ({ data: {} }),
+      context: async () => [],
+    },
+    // Host command discovery doubles as the skill-expansion entry point: the
+    // bridge only reaches it after the native-command branch declines the name.
+    command: {
+      list: async () => { listed.push("list"); return { data: [] } },
+      transform: async () => ({ dispose() {} }),
+    },
+    tool: { transform: async (callback) => { callback({ add() {}, get: () => undefined }); return { dispose() {} } } },
+  }
+  return { context, promptHooks, listed, storage, spawns, delivered }
+}
+
+function teamRecord(storage) {
+  const entry = [...storage.entries()].find(([key]) => key.includes("host55check"))
+  return entry ? { key: entry[0], team: entry[1] } : undefined
+}
+
+test("native runtime executes a pasted /team-mode objective instead of expanding the same-named skill", async () => {
+  const originalMetadata = nativeManifest.metadata
+  nativeManifest.metadata = { global: { gates: { team_mode: true } } }
+  const harness = teamModeInvocationHarness()
+  try {
+    const dispose = await plugin.setup(harness.context)
+    // given: the exact literal paste that drifted on the host
+    const draft = { sessionID: "ses_lead", prompt: { text: TEAM_MODE_PASTED_OBJECTIVE } }
+    // `plugin.setup` registers more than one `prompt` hook; the slash-command
+    // admission seam is the last one registered (the same convention the other
+    // runtime tests use for `feed.promptHook`).
+    const promptSeam = harness.promptHooks.at(-1)
+    expect(typeof promptSeam).toBe("function")
+
+    // when: the prompt is admitted through the runtime's real hook
+    await promptSeam(draft)
+
+    // then: the team exists as durable state, one real member session per role
+    const record = teamRecord(harness.storage)
+    expect(record).toBeDefined()
+    expect(record.key).toContain("host55check")
+    expect(record.team.status).toBe("active")
+    expect(record.team.members.map((member) => member.name)).toEqual(["scout", "builder"])
+    expect(record.team.members.map((member) => member.category)).toEqual(["quick", "unspecified-low"])
+    expect(record.team.members.map((member) => member.sessionID)).toEqual(["ses_member_1", "ses_member_2"])
+    // and: `worktree: no` from the objective was honoured (no worktree provisioning)
+    expect(record.team.worktree).toBeUndefined()
+    // and: both members became real child sessions of the calling session
+    expect(harness.spawns).toHaveLength(2)
+    expect(harness.spawns.map((spawn) => spawn.parentID)).toEqual(["ses_lead", "ses_lead"])
+    expect(harness.delivered.map((entry) => entry.sessionID)).toEqual(["ses_member_1", "ses_member_2"])
+    // and: each member carried its OWN quoted assignment, not a guessed one
+    expect(harness.delivered[0].text).toContain("Reply with exactly: scout-ready.")
+    expect(harness.delivered[1].text).toContain("Reply with exactly: builder-ready.")
+    // and: the name was never offered to command discovery / skill expansion, so
+    // the `team-mode` skill body could not become the model's instructions
+    expect(harness.listed).toEqual([])
+    // and: the admitted turn states the outcome with the canonical create payload
+    expect(draft.prompt.text).toContain(JSON.stringify({
+      team_name: "host55check",
+      members: [
+        { name: "scout", category: "quick", prompt: "Reply with exactly: scout-ready." },
+        { name: "builder", category: "unspecified-low", prompt: "Reply with exactly: builder-ready." },
+      ],
+      worktree: false,
+    }))
+    await dispose()
+  } finally {
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+})
+
+test("native runtime leaves a pasted /team-mode prompt to the ordinary path when the team_mode gate is off", async () => {
+  const originalMetadata = nativeManifest.metadata
+  nativeManifest.metadata = { global: { gates: { team_mode: false } } }
+  const harness = teamModeInvocationHarness()
+  try {
+    const dispose = await plugin.setup(harness.context)
+    const draft = { sessionID: "ses_lead", prompt: { text: TEAM_MODE_PASTED_OBJECTIVE } }
+
+    await harness.promptHooks.at(-1)(draft)
+
+    // negative control: with the gate off the seam falls through to the ordinary
+    // discovery/skill path and creates nothing at all
+    expect(harness.listed).toEqual(["list"])
+    expect(teamRecord(harness.storage)).toBeUndefined()
+    expect(harness.spawns).toEqual([])
+    await dispose()
   } finally {
     if (originalMetadata === undefined) delete nativeManifest.metadata
     else nativeManifest.metadata = originalMetadata

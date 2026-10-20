@@ -138,8 +138,16 @@ function isMemberPaneTitle(title) {
  * on a failed query, the caller pane stays unresolved and the visualization
  * degrades with a recorded reason. This function never picks arbitrarily and
  * never guesses between two plausible callers.
+ *
+ * The ONE exception is not a guess: `preferredPaneId` is the pane this instance
+ * INHERITED (`TMUX_PANE` of the process that started the service). When such a
+ * pane is already one of the validated candidates - same project directory,
+ * running the OpenCode TUI, not dead, not a member pane - it IS the caller, and
+ * choosing it is what a second, stale TUI pane in the same project used to make
+ * impossible (retest 5: `%19` left over from an earlier session made `%26`
+ * unusable and the feature went dark with no log line anywhere).
  */
-export async function discoverCallerPane({ tmuxPath, directory, run, realpath, excludePaneIds = [] } = {}) {
+export async function discoverCallerPane({ tmuxPath, directory, run, realpath, excludePaneIds = [], preferredPaneId } = {}) {
   const normalizedDirectory = normalizePathValue(directory, realpath)
   if (!normalizedDirectory) {
     return { paneId: null, candidateCount: 0, reason: "caller project directory is unknown: cannot identify the caller pane" }
@@ -176,6 +184,19 @@ export async function discoverCallerPane({ tmuxPath, directory, run, realpath, e
 
   if (candidates.length === 1) {
     return { paneId: candidates[0], candidateCount: 1, reason: null }
+  }
+  // More than one candidate: only the inherited pane may break the tie, and only
+  // because it already passed every filter above (TUI, alive, this project, not a
+  // member pane). A pane belonging to a DIFFERENT project can never appear in
+  // `candidates`, so adopting the inherited pane cannot leak a member into a
+  // sibling project's tmux session.
+  if (
+    candidates.length > 1
+    && typeof preferredPaneId === "string"
+    && preferredPaneId.length > 0
+    && candidates.includes(preferredPaneId)
+  ) {
+    return { paneId: preferredPaneId, candidateCount: candidates.length, reason: null }
   }
   if (candidates.length === 0) {
     return { paneId: null, candidateCount: 0, reason: `no caller pane: no OpenCode TUI pane is running in ${normalizedDirectory}` }

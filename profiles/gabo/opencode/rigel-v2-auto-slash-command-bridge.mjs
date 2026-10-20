@@ -25,7 +25,7 @@ function eventKey(event, parsed) {
   return `${sessionID}:${messageID}:${parsed.command}`
 }
 
-export function createNativeAutoSlashCommandHook({ skills = [], listCommands, now } = {}) {
+export function createNativeAutoSlashCommandHook({ skills = [], listCommands, nativeCommands, now } = {}) {
   const processed = createProcessedCommandStore({ now })
 
   return {
@@ -36,6 +36,22 @@ export function createNativeAutoSlashCommandHook({ skills = [], listCommands, no
       if (!parsed) return
       const key = eventKey(event, parsed)
       if (processed.has(key)) return
+
+      // A native command owns its visible slash name. Without this branch a
+      // same-named skill wins the name (skills are consulted first), so the
+      // command is never executed and the model receives the skill body as an
+      // agentic prompt. Native commands are executed deterministically here,
+      // before host-command discovery or skill expansion is consulted.
+      const native = nativeCommands && typeof nativeCommands === "object" ? nativeCommands[parsed.command] : undefined
+      if (typeof native === "function") {
+        const result = await native({ command: parsed.command, args: parsed.args, sessionID: event?.sessionID })
+        const replacementText = typeof result === "string" ? result : result?.text
+        if (typeof replacementText === "string" && replacementText.trim()) {
+          processed.add(key)
+          event.prompt.text = `${AUTO_SLASH_COMMAND_TAG_OPEN}\n${replacementText}\n${AUTO_SLASH_COMMAND_TAG_CLOSE}`
+        }
+        return
+      }
 
       let hostCommands = []
       if (typeof listCommands === "function") {

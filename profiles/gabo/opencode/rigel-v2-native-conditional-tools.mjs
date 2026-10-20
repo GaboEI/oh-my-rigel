@@ -39,6 +39,7 @@ import { readNativeGates } from "./rigel-v2-native-config.mjs"
 import { normalizeToolDefinition } from "./rigel-v2-native-core.mjs"
 import { trimToolNamesToCap } from "./rigel-v2-native-tool-trimming.mjs"
 import { createTeamTools, TEAM_TOOL_NAMES } from "./tools/team.tools.mjs"
+import { mapTeamWorktreeToRepoRoot } from "./rigel-v2-team-worktrees.mjs"
 
 // F1 landed: the config adapter (`rigel-v2-native-config.mjs`) owns JSONC parsing
 // and `generate-v2-agents.mjs` materializes the resolved gates into
@@ -72,6 +73,8 @@ export function buildConditionalToolDefinitions({
   teamWorktrees,
   teamWorktreeReconciler,
   teamProjectKey,
+  teamStartMemberSession,
+  teamTerminateMemberSession,
   syncTodos,
   getSessionID,
   onUnavailable = () => {},
@@ -123,7 +126,7 @@ export function buildConditionalToolDefinitions({
 
   if (gates.team_mode === true) {
     if (teamStorage) {
-      const tools = createTeamTools({ storage: teamStorage, getSessionID, resolveScopeForSession: teamResolveScope, worktreeManager: teamWorktrees, worktreeReconciler: teamWorktreeReconciler, projectKey: teamProjectKey })
+      const tools = createTeamTools({ storage: teamStorage, getSessionID, resolveScopeForSession: teamResolveScope, worktreeManager: teamWorktrees, worktreeReconciler: teamWorktreeReconciler, projectKey: teamProjectKey, startMemberSession: teamStartMemberSession, terminateMemberSession: teamTerminateMemberSession })
       for (const name of TEAM_TOOL_NAMES) {
         definitions[name] = tools[name]
         names.push(name)
@@ -166,6 +169,8 @@ export async function registerConditionalNativeTools({
   teamWorktrees,
   teamWorktreeReconciler,
   teamProjectKey,
+  teamStartMemberSession,
+  teamTerminateMemberSession,
   teamScopeRegistry,
   existingToolNames = [],
   onRegistered,
@@ -203,8 +208,12 @@ export async function registerConditionalNativeTools({
     ? async (sessionID) => {
         if (typeof sessionID !== "string" || !sessionID) throw new Error("team tool requires a calling session id")
         const info = await context.session.get({ sessionID })
-        const directory = info?.data?.location?.directory ?? info?.location?.directory ?? info?.directory
-        if (!directory) throw new Error("team session location is unavailable")
+        const rawDirectory = info?.data?.location?.directory ?? info?.location?.directory ?? info?.directory
+        if (!rawDirectory) throw new Error("team session location is unavailable")
+        // A member session rooted in its own team worktree must still resolve the
+        // TEAM's repo root: otherwise it reads a different project key, loses its
+        // team record, and cannot see its own tasks or messages.
+        const directory = mapTeamWorktreeToRepoRoot(rawDirectory) ?? rawDirectory
         return teamScopeRegistry.forRepoRoot(directory)
       }
     : undefined
@@ -237,6 +246,8 @@ export async function registerConditionalNativeTools({
     teamWorktrees,
     teamWorktreeReconciler,
     teamProjectKey,
+    teamStartMemberSession,
+    teamTerminateMemberSession,
     goalController,
     syncTodos,
     getSessionID,

@@ -59,16 +59,40 @@ describe("tmux-viz manager", () => {
     await manager.cleanup()
   })
 
-  test("top-level sessions, duplicates and team members never spawn a pane", async () => {
+  test("top-level sessions and duplicates never spawn a pane", async () => {
     const overrides = managerOverrides()
-    const manager = createTmuxVizManager({ ...overrides, shouldSkipSession: (id) => id === "ses_member" })
+    const manager = createTmuxVizManager(overrides)
     await manager.onSessionCreated({ type: "session.created", properties: { info: { id: "ses_top", title: "lead" } } })
     await manager.onSessionCreated(CHILD_EVENT)
     await manager.onSessionCreated(CHILD_EVENT)
-    await manager.onSessionCreated({ type: "session.created", properties: { info: { id: "ses_member", parentID: "p", title: "m" } } })
-    expect(overrides.spawnCalls.some((call) => call.includes("split-window"))).toBe(true)
-    expect(manager.getTrackedPaneId("ses_member")).toBeNull()
+    expect(manager.getTrackedPaneId("ses_top")).toBeNull()
     expect(overrides.spawnCalls.filter((call) => call.includes("split-window"))).toHaveLength(1)
+    await manager.cleanup()
+  })
+
+  test("a session named by the skip predicate is not given a pane", async () => {
+    // given: the id the status fixture reports as attachable, so a missing pane
+    // can only be explained by the skip predicate, never by a deferred spawn
+    const overrides = managerOverrides()
+    const manager = createTmuxVizManager({ ...overrides, shouldSkipSession: (id) => id === "ses_child" })
+    await manager.onSessionCreated(CHILD_EVENT)
+    expect(manager.getTrackedPaneId("ses_child")).toBeNull()
+    expect(overrides.spawnCalls.filter((call) => call.includes("split-window"))).toHaveLength(0)
+    await manager.cleanup()
+  })
+
+  test("a team-member session gets exactly one pane and persistence does not suppress it", async () => {
+    // given: the composition marks team members persistent so the polling layer
+    // spares their pane across idle turns
+    const overrides = managerOverrides()
+    const manager = createTmuxVizManager({ ...overrides, isPersistentSession: (id) => id === "ses_child" })
+    // when: the member session is announced with its lead as the parent
+    await manager.onSessionCreated(CHILD_EVENT)
+    // then: a teammate is an ordinary child session at this boundary, so it gets
+    // its pane. Persistence changes when the pane may be CLOSED (covered by the
+    // polling suite); it must never mean "do not open one".
+    expect(overrides.spawnCalls.filter((call) => call.includes("split-window"))).toHaveLength(1)
+    expect(manager.getTrackedPaneId("ses_child")).toBe("%9")
     await manager.cleanup()
   })
 
@@ -620,5 +644,189 @@ describe("tmux-viz claim directory hardening", () => {
     expect(claim).not.toBeNull()
     expect(claim.file.startsWith(dir)).toBe(true)
     releaseOnDisk(claim)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// RETEST-4 status seam.
+//
+// The live host exposes session status PER SESSION (`session.status(id)`); it has
+// no aggregate. The pre-fix manager asked the seam a question it cannot answer
+// (`fetchSessionStatus()` with no id), so it always saw an EMPTY Map, treated the
+// container itself as a live signal, burned the whole 10s readiness budget, and
+// deferred the spawn - forever. These cases pin the seam's contract from the
+// manager's side: only an OBSERVED status may defer, a missing entry may not.
+// The clock and the sleep are injected, so the readiness loop is instant and the
+// same run deterministically proves both the attach and the fail-closed path.
+// ---------------------------------------------------------------------------
+describe("tmux-viz per-session status seam (retest 4)", () => {
+  let claimRoot
+  let previousRoot
+  let clock
+  let sleepCount
+
+  beforeEach(() => {
+    claimRoot = mkdtempSync(join(tmpdir(), "rigel-viz-status-seam-"))
+    previousRoot = process.env.RIGEL_TMUX_VIZ_CLAIM_DIR
+    process.env.RIGEL_TMUX_VIZ_CLAIM_DIR = claimRoot
+    clock = 0
+    sleepCount = 0
+  })
+
+  afterEach(() => {
+    if (previousRoot === undefined) delete process.env.RIGEL_TMUX_VIZ_CLAIM_DIR
+    else process.env.RIGEL_TMUX_VIZ_CLAIM_DIR = previousRoot
+    rmSync(claimRoot, { recursive: true, force: true })
+  })
+
+  // Every case owns a distinct session id: a failure here must never leave the
+  // process-wide claim of another case's id held, which would turn one real
+  // failure into five meaningless early returns.
+  function childEvent(sessionID) {
+    return { type: "session.created", properties: { info: { id: sessionID, parentID: "ses_parent", title: "scout" } } }
+  }
+
+  function seamOverrides({ fetchSessionStatus }) {
+    const spawnCalls = []
+    const logs = []
+    const overrides = {
+      config: { layout: "main-vertical", isolation: "inline" },
+      env: memoryEnv(),
+      serverUrl: "http://127.0.0.1:1",
+      directory: "/work",
+      fetchSessionStatus,
+      now: () => clock,
+      sleep: async () => {
+        sleepCount += 1
+        clock += 500
+      },
+      spawnImpl: (args) => {
+        spawnCalls.push(args.join(" "))
+        if (args[0] === "list-panes") return { exitCode: Promise.resolve(0), stdout: Promise.resolve("%0\t200\t40\t0\t0\t1\t200\t40\t1\t1\t\n"), stderr: Promise.resolve("") }
+        if (args[0] === "split-window") return { exitCode: Promise.resolve(0), stdout: Promise.resolve("%9\n"), stderr: Promise.resolve("") }
+        return { exitCode: Promise.resolve(0), stdout: Promise.resolve(""), stderr: Promise.resolve("") }
+      },
+      healthMarker: {},
+      logger: (line) => logs.push(line),
+    }
+    return { overrides, spawnCalls, logs }
+  }
+
+  test("RETEST-4 replay: the pre-fix empty aggregate still yields a pane instead of a wedged deferral", async () => {
+    // given: the exact pre-fix seam output - an aggregate call the per-session
+    // host answers with an empty Map, which the old manager read as "observed"
+    const { overrides, spawnCalls } = seamOverrides({ fetchSessionStatus: async () => new Map() })
+    const manager = createTmuxVizManager(overrides)
+    // when
+    await manager.onSessionCreated(childEvent("ses_child"))
+    // then
+    expect(spawnCalls.some((call) => call.includes("split-window"))).toBe(true)
+    expect(manager.getTrackedPaneId("ses_child")).toBe("%9")
+    await manager.cleanup()
+  })
+
+  test("a per-session accessor that reports a status for the child spawns the pane", async () => {
+    const { overrides, spawnCalls } = seamOverrides({
+      fetchSessionStatus: async (id) => (id === "ses_busy" ? "busy" : undefined),
+    })
+    const manager = createTmuxVizManager(overrides)
+    await manager.onSessionCreated(childEvent("ses_busy"))
+    expect(spawnCalls.some((call) => call.includes("split-window"))).toBe(true)
+    expect(manager.getTrackedPaneId("ses_busy")).toBe("%9")
+    await manager.cleanup()
+  })
+
+  test("a per-session accessor that reports a record status spawns the pane", async () => {
+    const { overrides, spawnCalls } = seamOverrides({ fetchSessionStatus: async () => ({ type: "running" }) })
+    const manager = createTmuxVizManager(overrides)
+    await manager.onSessionCreated(childEvent("ses_record"))
+    expect(spawnCalls.some((call) => call.includes("split-window"))).toBe(true)
+    expect(manager.getTrackedPaneId("ses_record")).toBe("%9")
+    await manager.cleanup()
+  })
+
+  test("an unobservable seam attaches at once instead of burning the readiness budget", async () => {
+    // given: a seam that exists but reports nothing for this session
+    const { overrides, spawnCalls } = seamOverrides({ fetchSessionStatus: async () => undefined })
+    const manager = createTmuxVizManager(overrides)
+    // when
+    await manager.onSessionCreated(childEvent("ses_unobserved"))
+    // then: the pane is spawned and no polling window was spent waiting
+    expect(spawnCalls.some((call) => call.includes("split-window"))).toBe(true)
+    expect(manager.getTrackedPaneId("ses_unobserved")).toBe("%9")
+    expect(sleepCount).toBeLessThanOrEqual(1)
+    await manager.cleanup()
+  })
+
+  test("FAIL-CLOSED CONTROL: an OBSERVED non-attachable status still defers and spawns nothing", async () => {
+    // given: the host really reports a status for this session, and it is one the
+    // pane cannot attach to
+    const { overrides, spawnCalls, logs } = seamOverrides({ fetchSessionStatus: async () => "errored" })
+    const manager = createTmuxVizManager(overrides)
+    // when
+    await manager.onSessionCreated(childEvent("ses_errored"))
+    // then: no pane, and the readiness loop really ran to its deadline (10s / 500ms)
+    expect(spawnCalls.some((call) => call.includes("split-window"))).toBe(false)
+    expect(manager.getTrackedPaneId("ses_errored")).toBeNull()
+    expect(sleepCount).toBeGreaterThanOrEqual(20)
+    expect(logs.some((line) => line.includes("deferred spawn for ses_errored"))).toBe(true)
+    await manager.cleanup()
+  })
+
+  test("a spawn that THROWS is re-queued and logged instead of escaping the event handler", async () => {
+    // given: a tmux call that throws (a runner failure, not a non-zero exit)
+    const { overrides, logs } = seamOverrides({
+      fetchSessionStatus: async (id) => (id === "ses_throwing" ? "busy" : undefined),
+    })
+    const innerSpawn = overrides.spawnImpl
+    overrides.spawnImpl = (args) => {
+      if (args[0] === "split-window") throw new Error("tmux disappeared mid-spawn")
+      return innerSpawn(args)
+    }
+    const manager = createTmuxVizManager(overrides)
+    // when: the creation event drives the drain
+    await manager.onSessionCreated(childEvent("ses_throwing"))
+    // then: the throw is reported once instead of becoming an unhandled rejection
+    // in the host's event handler, and no pane is tracked for that session
+    expect(manager.getTrackedPaneId("ses_throwing")).toBeNull()
+    expect(logs.some((line) => line.includes("spawn threw for ses_throwing"))).toBe(true)
+    await manager.cleanup()
+  })
+
+  test("a deferred entry that expires is logged and its claim released", async () => {
+    // given: the host reports a status the pane cannot attach to, so the spawn
+    // defers instead of attaching
+    const { overrides } = seamOverrides({ fetchSessionStatus: async () => "errored" })
+    let settle
+    const expired = new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("waited 5s for the deferred-expiry log; the TTL prune never ran")),
+        5000,
+      )
+      settle = (line) => {
+        clearTimeout(timer)
+        resolve(line)
+      }
+    })
+    const baseLogger = overrides.logger
+    overrides.logger = (line) => {
+      baseLogger(line)
+      if (line.includes("deferred spawn expired for ses_ttl")) settle(line)
+    }
+    const manager = createTmuxVizManager(overrides)
+    await manager.onSessionCreated(childEvent("ses_ttl"))
+    expect(manager.getTrackedPaneId("ses_ttl")).toBeNull()
+    // While the entry is deferred the claim is HELD, so the arbiter refuses a
+    // second claim for the same session.
+    expect(claimOnDisk("ses_ttl")).toBeNull()
+    // when: the deferred window is behind us and the deferred loop ticks
+    clock += 300_001
+    const line = await expired
+    // then: the drop is ANNOUNCED and the on-disk claim is released, instead of
+    // being dropped silently and blocking every later attempt for the session
+    expect(line).toContain("claim released")
+    // The arbiter accepts a claim again only if the deferred one was released.
+    expect(claimOnDisk("ses_ttl")).toBeTruthy()
+    await manager.cleanup()
   })
 })

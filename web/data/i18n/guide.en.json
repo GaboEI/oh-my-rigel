@@ -52,6 +52,7 @@
     "opencode-multi-auth-fix": { "funcion": "Diagnoses account errors from the Codex multi-auth plugin.", "uso": "Use it on messages such as no available accounts or an expired token." },
     "prompt-master": { "funcion": "Writes or improves copy-ready OpenCode prompts.", "uso": "Use it when asked for a prompt for an OpenCode agent or to improve an existing one." },
     "skill-creator": { "funcion": "Creates new skills, improves existing ones and measures their performance.", "uso": "Use it to create a skill from scratch, edit one or optimize its description." },
+    "team-mode": { "funcion": "Runs a lead plus coordinated member sessions with shared tasks and messages.", "uso": "Use it when the user asks for a team, several coordinated agents in parallel, or the /team-mode command." },
     "tui-design": { "funcion": "Designs, builds and reviews terminal user interfaces.", "uso": "Use it to create panels, explorers or interactive terminal views." }
   },
   "commands": {

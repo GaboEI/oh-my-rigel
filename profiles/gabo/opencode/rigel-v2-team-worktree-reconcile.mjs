@@ -23,6 +23,12 @@
  * set, and a durable freshness window (`bindingAt`, `bindingStaleMs`). A crashed
  * create ages out and is reclaimed on a later boot.
  *
+ * A third guard protects the other direction: a team record that still OWNS a
+ * member session is never reclaimed, only converted into the retry state an
+ * explicit `team_delete` finishes. Cleaning it would delete the worktree of a
+ * session that is still alive, and removing it would strand that session's
+ * persistent pane with nothing left to finish the teardown.
+ *
  * Legacy records written before scoping are migrated ONLY when their member
  * worktree paths prove they belong to this repo; a record owned by another repo
  * is never adopted or deleted. The module is storage-injected and pure, so the
@@ -157,7 +163,7 @@ export function createTeamWorktreeReconciler({ storage, worktrees, projectKey = 
     const teams = await listTeams()
     const pending = await listPending()
     const byName = new Map(teams.map((team) => [team.name, team]))
-    const summary = { cleaned: [], pending: [], removedTeams: [], swept: [], migrated, errors: [] }
+    const summary = { cleaned: [], pending: [], removedTeams: [], retained: [], swept: [], migrated, errors: [] }
 
     const protectedNames = new Set(inFlight)
     for (const entry of pending) {
@@ -183,6 +189,29 @@ export function createTeamWorktreeReconciler({ storage, worktrees, projectKey = 
       if (!RECONCILABLE_TEAM_STATUSES.has(team.status)) continue
       if (inFlight.has(team.name)) continue
       if (team.status === "binding" && isFresh(team.bindingAt)) continue
+      // Round-2 review R4 (crash window): a record that still OWNS a member
+      // session must never be reclaimed by the startup sweep. Cleaning it would
+      // delete the working directory of a session that is still alive, and
+      // removing it (`binding`/`failed` are removable) would strand that session's
+      // persistent pane with no `team_delete` left to finish the teardown - losing
+      // exactly the `remaining owned session ids` a recoverable record must keep.
+      // It is rewritten to the same retry state a failed delete keeps, which is in
+      // neither recovery set, so only an explicit `team_delete` can clear it.
+      const ownedLive = (team.members ?? []).filter((member) => member?.owned === true && typeof member?.sessionID === "string" && member.sessionID.length > 0)
+      if (ownedLive.length > 0) {
+        if (typeof storage.set === "function") {
+          await storage.set(teamKeyFor(team.name), {
+            ...team,
+            status: "cleanup-failed",
+            cleanupPending: ownedLive.map((member) => member.sessionID),
+            cleanupFailedAt: now(),
+            retainedBy: `reconcile:${team.status}`,
+          })
+        }
+        summary.retained.push(team.name)
+        log(`[oh-my-rigel] team ${team.name} still owns ${ownedLive.length} live session(s); retained for team_delete instead of reclaimed`)
+        continue
+      }
       const members = (team.members ?? []).filter((member) => member?.worktreePath || member?.worktreeBranch)
       if (members.length === 0) {
         if (REMOVABLE_FAILED_STATUSES.has(team.status) && typeof storage.remove === "function") {
