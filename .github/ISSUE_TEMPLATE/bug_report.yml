@@ -1,99 +1,111 @@
-name: Bug Report
-description: Report a bug or unexpected behavior in oh-my-openagent
+name: Bug report / Reporte de error
+description: Report a bug or unexpected behavior in Oh My Rigel (English or Spanish) / Reporta un error o comportamiento inesperado en Oh My Rigel (inglés o español)
 title: "[Bug]: "
 labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        **Please write your issue in English.** See our [Language Policy](https://github.com/code-yeongyu/oh-my-openagent/blob/dev/CONTRIBUTING.md#language-policy) for details.
+        **Write in English or Spanish. / Escribe en inglés o español.**
+
+        Oh My Rigel is a community fork of Oh My OpenAgent that runs on OpenCode V2. Read the [contributing guide](https://github.com/GaboEI/oh-my-rigel/blob/v2-mirror/CONTRIBUTING.md) for conduct, contribution, and QA expectations before submitting.
+
+        Oh My Rigel es un fork comunitario de Oh My OpenAgent que corre sobre OpenCode V2. Lee la [guía de contribución](https://github.com/GaboEI/oh-my-rigel/blob/v2-mirror/CONTRIBUTING.md) para conocer la conducta, la contribución y las expectativas de QA antes de enviar.
 
   - type: checkboxes
     id: prerequisites
     attributes:
-      label: Prerequisites
-      description: Please confirm the following before submitting
+      label: Prerequisites / Requisitos previos
+      description: Please confirm the following before submitting / Confirma lo siguiente antes de enviar
       options:
-        - label: I will write this issue in English (see our [Language Policy](https://github.com/code-yeongyu/oh-my-openagent/blob/dev/CONTRIBUTING.md#language-policy))
+        - label: I read the contributing guide and will keep this report respectful and on topic / Leí la guía de contribución y mantendré este reporte respetuoso y enfocado
           required: true
-        - label: I have searched existing issues to avoid duplicates
+        - label: I searched existing issues to avoid duplicates / Busqué en los issues existentes para evitar duplicados
           required: true
-        - label: I am using the latest version of oh-my-openagent
+        - label: I am using the current Oh My Rigel source on the v2-mirror branch, not the upstream OmO parent product / Uso el código actual de Oh My Rigel en la rama v2-mirror, no el producto padre OmO
           required: true
-        - label: I have read the [documentation](https://github.com/code-yeongyu/oh-my-openagent#readme) or asked an AI coding agent with this project's GitHub URL loaded and couldn't find the answer
+        - label: This is about Oh My Rigel on OpenCode V2, not about OpenCode core / Esto es sobre Oh My Rigel en OpenCode V2, no sobre el núcleo de OpenCode
           required: true
 
   - type: textarea
     id: description
     attributes:
-      label: Bug Description
-      description: A clear and concise description of what the bug is
-      placeholder: Describe the bug in detail...
+      label: Bug description / Descripción del error
+      description: A clear and concise description of the bug / Una descripción clara y concisa del error
+      placeholder: Describe the bug in detail... / Describe el error en detalle...
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: Steps to Reproduce
-      description: Steps to reproduce the behavior
+      label: Steps to reproduce / Pasos para reproducir
+      description: Exact, reproducible steps with the commands and configuration you used / Pasos exactos y reproducibles con los comandos y la configuración que usaste
       placeholder: |
-        1. Configure oh-my-openagent with...
-        2. Run command '...'
-        3. See error...
+        1. Install Oh My Rigel from the v2-mirror source... / Instala Oh My Rigel desde el origen v2-mirror...
+        2. Run command '...' / Ejecuta el comando '...'
+        3. See error... / Observa el error...
     validations:
       required: true
 
   - type: textarea
     id: expected
     attributes:
-      label: Expected Behavior
-      description: What did you expect to happen?
-      placeholder: Describe what should happen...
+      label: Expected behavior / Comportamiento esperado
+      description: What did you expect to happen? / ¿Qué esperabas que ocurriera?
+      placeholder: Describe what should happen... / Describe lo que debería ocurrir...
     validations:
       required: true
 
   - type: textarea
     id: actual
     attributes:
-      label: Actual Behavior
-      description: What actually happened?
-      placeholder: Describe what actually happened...
+      label: Actual behavior / Comportamiento real
+      description: What actually happened? / ¿Qué ocurrió realmente?
+      placeholder: Describe what actually happened... / Describe lo que ocurrió realmente...
     validations:
       required: true
 
   - type: textarea
-    id: doctor
+    id: environment
     attributes:
-      label: Doctor Output
-      description: |
-        **Required:** Run `bunx oh-my-openagent doctor` and paste the full output below.
-        This helps us diagnose your environment and configuration.
+      label: Environment / Entorno
+      description: Report the host and revision so the report is reproducible / Reporta el host y la revisión para que el reporte sea reproducible
       placeholder: |
-        Paste the output of: bunx oh-my-openagent doctor
-        
-        Example:
-        ✓ OpenCode version: 1.18.10
-        ✓ oh-my-openagent version: 1.2.3
-        ✓ Plugin loaded successfully
-        ...
+        OpenCode version: run `opencode --version` / versión de OpenCode: ejecuta `opencode --version`
+        Rigel revision: run `git rev-parse --short HEAD` in your checkout / revisión de Rigel: ejecuta `git rev-parse --short HEAD` en tu checkout
+        Install route: source checkout on v2-mirror, per OH-MY-RIGEL.md / ruta de instalación: checkout de origen en v2-mirror, según OH-MY-RIGEL.md
+        Bun and Node: run `bun --version` and `node --version` / Bun y Node: ejecuta `bun --version` y `node --version`
       render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / Sistema operativo
+      description: Which operating system are you using? / ¿Qué sistema operativo usas?
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other / Otro
     validations:
       required: true
 
   - type: textarea
     id: logs
     attributes:
-      label: Error Logs
-      description: If applicable, add any error messages or logs
-      placeholder: Paste error logs here...
+      label: Error logs / Registros de error
+      description: If applicable, add error messages or logs. Redact secrets, tokens, and credentials / Si aplica, agrega mensajes de error o registros. Redacta secretos, tokens y credenciales
+      placeholder: Paste error logs here... / Pega aquí los registros de error...
       render: shell
 
   - type: textarea
     id: config
     attributes:
-      label: Configuration
-      description: If relevant, share your oh-my-openagent configuration (remove sensitive data)
+      label: Configuration / Configuración
+      description: If relevant, share the Oh My Rigel or OpenCode V2 configuration with secrets removed / Si es relevante, comparte la configuración de Oh My Rigel u OpenCode V2 sin secretos
       placeholder: |
         {
           "agents": { ... },
@@ -104,28 +116,6 @@ body:
   - type: textarea
     id: context
     attributes:
-      label: Additional Context
-      description: Any other context about the problem
-      placeholder: Add any other context, screenshots, or information...
-
-  - type: dropdown
-    id: os
-    attributes:
-      label: Operating System
-      description: Which operating system are you using?
-      options:
-        - macOS
-        - Linux
-        - Windows
-        - Other
-    validations:
-      required: true
-
-  - type: input
-    id: opencode-version
-    attributes:
-      label: OpenCode Version
-      description: Run `opencode --version` to get your version
-      placeholder: "1.18.10"
-    validations:
-      required: true
+      label: Additional context / Contexto adicional
+      description: Any other context about the problem / Cualquier otro contexto sobre el problema
+      placeholder: Add any other context, screenshots, or information... / Agrega cualquier otro contexto, captura de pantalla o información...

@@ -1,8 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Discord Community
-    url: https://discord.gg/PUwSMR9XNk
-    about: Join our Discord server for real-time discussions and community support
-  - name: Documentation
-    url: https://github.com/code-yeongyu/oh-my-opencode#readme
-    about: Read the comprehensive documentation and guides
+  - name: Documentation / Documentación
+    url: https://github.com/GaboEI/oh-my-rigel/blob/v2-mirror/README.md
+    about: Read the README, install guide, and compatibility notes before opening an issue. / Lee el README, la guía de instalación y las notas de compatibilidad antes de abrir un issue.
+  - name: Contributing guide / Guía de contribución
+    url: https://github.com/GaboEI/oh-my-rigel/blob/v2-mirror/CONTRIBUTING.md
+    about: Code of conduct, language, contribution, and QA expectations. / Código de conducta, idioma, contribución y expectativas de QA.
+  - name: Direct maintainer contact / Contacto directo con el mantenedor
+    url: https://discord.com/users/1505932236430512128
+    about: Personal Discord contact for direct, non-public matters. Not a community server or a support channel. / Contacto personal por Discord para asuntos directos y no públicos. No es un servidor comunitario ni un canal de soporte.

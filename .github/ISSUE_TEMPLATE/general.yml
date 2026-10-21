@@ -1,85 +1,85 @@
-name: Question or Discussion
-description: Ask a question or start a discussion about oh-my-opencode
+name: Question / Pregunta
+description: Ask a question about using Oh My Rigel (English or Spanish) / Haz una pregunta sobre cómo usar Oh My Rigel (inglés o español)
 title: "[Question]: "
 labels: ["question", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        **Please write your issue in English.** See our [Language Policy](https://github.com/code-yeongyu/oh-my-opencode/blob/dev/CONTRIBUTING.md#language-policy) for details.
+        **Write in English or Spanish. / Escribe en inglés o español.**
+
+        This form is for questions about using Oh My Rigel on OpenCode V2. For bugs, use the bug report form. Read the [contributing guide](https://github.com/GaboEI/oh-my-rigel/blob/v2-mirror/CONTRIBUTING.md) for conduct and community expectations.
+
+        Este formulario es para preguntas sobre cómo usar Oh My Rigel en OpenCode V2. Para errores, usa el formulario de reporte de error. Lee la [guía de contribución](https://github.com/GaboEI/oh-my-rigel/blob/v2-mirror/CONTRIBUTING.md) para conocer la conducta y las expectativas de la comunidad.
 
   - type: checkboxes
     id: prerequisites
     attributes:
-      label: Prerequisites
-      description: Please confirm the following before submitting
+      label: Prerequisites / Requisitos previos
+      description: Please confirm the following before submitting / Confirma lo siguiente antes de enviar
       options:
-        - label: I will write this issue in English (see our [Language Policy](https://github.com/code-yeongyu/oh-my-opencode/blob/dev/CONTRIBUTING.md#language-policy))
+        - label: I read the contributing guide and will keep this question respectful and on topic / Leí la guía de contribución y mantendré esta pregunta respetuosa y enfocada
           required: true
-        - label: I have searched existing issues and discussions
+        - label: I searched existing issues for an answer / Busqué una respuesta en los issues existentes
           required: true
-        - label: I have read the [documentation](https://github.com/code-yeongyu/oh-my-opencode#readme) or asked an AI coding agent with this project's GitHub URL loaded and couldn't find the answer
-          required: true
-        - label: This is a question (not a bug report or feature request)
+        - label: This is a question about Oh My Rigel, not a bug report or feature request / Esto es una pregunta sobre Oh My Rigel, no un reporte de error ni una solicitud de funcionalidad
           required: true
 
   - type: textarea
     id: question
     attributes:
-      label: Question
-      description: What would you like to know or discuss?
+      label: Question / Pregunta
+      description: What would you like to know? / ¿Qué te gustaría saber?
       placeholder: |
-        Ask your question in detail...
-        
-        Examples:
-        - How do I configure agent X to do Y?
-        - What's the best practice for Z?
-        - Why does feature A work differently than B?
+        Ask your question in detail... / Formula tu pregunta en detalle...
+        Examples: / Ejemplos:
+        - How do I configure agent X to do Y? / ¿Cómo configuro el agente X para hacer Y?
+        - What is the recommended approach for Z? / ¿Cuál es el enfoque recomendado para Z?
+        - Why does feature A behave differently from B? / ¿Por qué la funcionalidad A se comporta distinto de B?
     validations:
       required: true
 
   - type: textarea
     id: context
     attributes:
-      label: Context
-      description: Provide any relevant context or background
+      label: Context / Contexto
+      description: Provide any relevant context or background / Proporciona el contexto o los antecedentes relevantes
       placeholder: |
-        What have you tried so far?
-        What's your use case?
-        Any relevant configuration or setup details?
+        What have you tried so far? / ¿Qué has intentado hasta ahora?
+        What is your use case? / ¿Cuál es tu caso de uso?
+        Any relevant configuration or setup details? / ¿Algún detalle relevante de configuración o instalación?
 
   - type: textarea
-    id: doctor
+    id: environment
     attributes:
-      label: Doctor Output (Optional)
-      description: |
-        If your question is about configuration or setup, run `bunx oh-my-opencode doctor` and paste the output.
+      label: Environment (optional) / Entorno (opcional)
+      description: If your question is about setup or configuration, share the host and revision / Si tu pregunta es sobre instalación o configuración, comparte el host y la revisión
       placeholder: |
-        Paste the output of: bunx oh-my-opencode doctor
-        (Optional for questions)
+        OpenCode version: run `opencode --version` / versión de OpenCode: ejecuta `opencode --version`
+        Rigel revision: run `git rev-parse --short HEAD` in your checkout / revisión de Rigel: ejecuta `git rev-parse --short HEAD` en tu checkout
       render: shell
 
   - type: dropdown
     id: category
     attributes:
-      label: Question Category
-      description: What is your question about?
+      label: Question category / Categoría de la pregunta
+      description: What is your question about? / ¿Sobre qué es tu pregunta?
       options:
-        - Configuration
-        - Agent Usage
-        - Hook Behavior
-        - Tool Usage
-        - Installation/Setup
-        - Best Practices
-        - Performance
-        - Integration
-        - Other
+        - Configuration / Configuración
+        - Agent usage / Uso de agentes
+        - Hook behavior / Comportamiento de hooks
+        - Tool usage / Uso de herramientas
+        - Installation and setup / Instalación y configuración inicial
+        - Best practices / Buenas prácticas
+        - Performance / Rendimiento
+        - Integration / Integración
+        - Other / Otro
     validations:
       required: true
 
   - type: textarea
     id: additional
     attributes:
-      label: Additional Information
-      description: Any other information that might be helpful
-      placeholder: Links, screenshots, examples, etc.
+      label: Additional information / Información adicional
+      description: Any other information that might help / Cualquier otra información que pueda ayudar
+      placeholder: Links, screenshots, examples, etc. / Enlaces, capturas, ejemplos, etc.
