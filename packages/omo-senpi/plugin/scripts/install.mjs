@@ -44,6 +44,159 @@ function resolveAgentHome(options) {
 import { chmodSync, existsSync as existsSync2, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname, join as join2, resolve as resolve2 } from "node:path";
+
+// packages/omo-senpi/src/install/senpi-engine.ts
+var SENPI_ENGINE_PACKAGE = "@code-yeongyu/senpi";
+var MAX_ANCESTOR_DEPTH = 12;
+function senpiEngineSearchPaths(context) {
+  const paths = [];
+  for (const path of [context.pluginPath, context.repoRoot]) {
+    if (paths.includes(path))
+      continue;
+    paths.push(path);
+  }
+  return paths;
+}
+var SENPI_ENGINE_RUNTIME_SOURCE = `function senpiEngineIsExactVersion(spec) {
+  return /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/.test(spec);
+}
+
+function senpiEngineRuntime(options) {
+  const enginePackage = ${JSON.stringify(SENPI_ENGINE_PACKAGE)};
+  const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
+  const maxAncestorDepth = ${MAX_ANCESTOR_DEPTH};
+
+  function readJson(path) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8"));
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+      return parsed;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function ancestors(startPath) {
+    const directories = [];
+    let current = resolve(startPath);
+    const root = parse(current).root;
+    for (let depth = 0; depth < maxAncestorDepth; depth += 1) {
+      directories.push(current);
+      if (current === root) return directories;
+      current = dirname(current);
+    }
+    return directories;
+  }
+
+  // The engine package under one of the search paths, found by walking up to the dependency tree.
+  function enginePackageRoot(searchPaths) {
+    for (const searchPath of searchPaths) {
+      for (const directory of ancestors(searchPath)) {
+        const candidate = join(directory, "node_modules", enginePackage);
+        if (existsSync(join(candidate, "package.json"))) return candidate;
+      }
+    }
+    return undefined;
+  }
+
+  // The engine CLI: the pre-linked bundle the engine ships, else its unbundled entry.
+  function engineCli(packageRoot) {
+    const candidates = [join(packageRoot, "dist", "bundle", "cli.js"), join(packageRoot, "dist", "cli.js")];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return undefined;
+  }
+
+  // The engine package that owns an explicit CLI path, found by walking up to its manifest.
+  function owningPackageRoot(cliPath) {
+    for (const directory of ancestors(dirname(resolve(cliPath)))) {
+      const manifest = readJson(join(directory, "package.json"));
+      if (manifest === undefined || manifest.name !== enginePackage) continue;
+      return directory;
+    }
+    return undefined;
+  }
+
+  function engineVersion(packageRoot) {
+    const manifest = readJson(join(packageRoot, "package.json"));
+    return manifest !== undefined && typeof manifest.version === "string" ? manifest.version : undefined;
+  }
+
+  // The version the nearest declaring manifest pins, read from the manifest that declares it.
+  function pinnedVersion(searchPaths) {
+    for (const searchPath of searchPaths) {
+      for (const directory of ancestors(searchPath)) {
+        const manifest = readJson(join(directory, "package.json"));
+        if (manifest === undefined) continue;
+        for (const field of dependencyFields) {
+          const declared = manifest[field];
+          if (declared === null || typeof declared !== "object" || Array.isArray(declared)) continue;
+          const spec = declared[enginePackage];
+          if (typeof spec === "string") return spec;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  function describePaths(paths) {
+    return paths.length === 0 ? "(no search path)" : paths.join(", ");
+  }
+
+  const searchPaths = options.searchPaths;
+  const pinned = pinnedVersion(searchPaths);
+  const override = (options.env.OMO_SENPI_CLI_PATH || "").trim();
+  if (override.length > 0) {
+    if (!existsSync(override)) {
+      return {
+        error: "the senpi engine override OMO_SENPI_CLI_PATH points at " + override + ", which does not exist; " +
+          "point it at the installed " + enginePackage + " CLI or unset it so the pinned engine is used",
+      };
+    }
+    const owner = owningPackageRoot(override);
+    const version = owner === undefined ? undefined : engineVersion(owner);
+    return {
+      cliPath: override,
+      packageRoot: owner,
+      version,
+      pinnedVersion: pinned,
+      mismatch: pinned !== undefined && version !== undefined && senpiEngineIsExactVersion(pinned) && version !== pinned,
+      source: "override",
+    };
+  }
+
+  const packageRoot = enginePackageRoot(searchPaths);
+  if (packageRoot === undefined) {
+    return {
+      error: "no " + enginePackage + " engine is installed: the launcher looked for node_modules/" + enginePackage +
+        " under " + describePaths(searchPaths) + ". Install the pinned engine (" +
+        (pinned === undefined ? "bun add " + enginePackage : "bun add " + enginePackage + "@" + pinned) + ") " +
+        "or point OMO_SENPI_CLI_PATH at an existing senpi CLI",
+    };
+  }
+  const cliPath = engineCli(packageRoot);
+  if (cliPath === undefined) {
+    return {
+      error: "the " + enginePackage + " engine at " + packageRoot + " ships no CLI: expected dist/bundle/cli.js or dist/cli.js",
+    };
+  }
+  const version = engineVersion(packageRoot);
+  // A differently versioned engine is a different engine, but the install is not broken by it: the
+  // consumer legitimately carries its own engine, so the launcher warns and starts it anyway.
+  const mismatch = pinned !== undefined && version !== undefined && senpiEngineIsExactVersion(pinned) && version !== pinned;
+  return {
+    cliPath,
+    packageRoot,
+    version,
+    pinnedVersion: pinned,
+    mismatch,
+    source: "dependency",
+  };
+}
+`;
+
+// packages/omo-senpi/src/install/local-launcher.ts
 var MARKER = "omo-local-launcher";
 function localLauncherPath(homeDir = homedir2()) {
   return join2(homeDir, ".local", "bin", "omo");
@@ -79,25 +232,20 @@ function renderLocalLauncher(options) {
   return `#!/usr/bin/env node
 // ${MARKER}: generated by the omo-senpi installer. Delete this file to remove the local launcher.
 import { spawn } from "node:child_process"
+import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join, parse, resolve } from "node:path"
+
+${SENPI_ENGINE_RUNTIME_SOURCE}
 
 const brand = ${JSON.stringify(brand)}
-const cli = process.env.OMO_SENPI_CLI_PATH ?? ${JSON.stringify(options.senpiCliPath)}
+const releaseVersion = ${JSON.stringify(options.version ?? null)}
+const searchPaths = ${JSON.stringify(options.engineSearchPaths ?? [])}
 const plugin = process.env.OMO_PLUGIN_ROOT ?? ${JSON.stringify(options.pluginPath)}
 // The same directory the published launcher pins, so a local install shares one state location
 // with the published one and with anything either of them spawns.
 const agentDir = process.env.OMO_CODING_AGENT_DIR ?? process.env.SENPI_CODING_AGENT_DIR
   ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".omo", "agent")
-const env = {
-  ...process.env,
-  SENPI_BRAND: JSON.stringify(brand),
-  OMO_NATIVE: "1",
-  OMO_CODING_AGENT_DIR: agentDir,
-  SENPI_CODING_AGENT_DIR: agentDir,
-}
-// Anything resolving the product by name must re-enter through this launcher, never the engine.
-env.OMO_BIN = process.argv[1]
 const selfUpdate = process.argv[2] === "update"
   && process.argv.slice(3).every((arg) => arg.startsWith("-") || ["self", "senpi", "omo"].includes(arg))
   && !process.argv.slice(3).some((arg) => arg === "--extensions" || arg === "--models")
@@ -105,10 +253,36 @@ if (selfUpdate) {
   console.log(${JSON.stringify(`omo is updated via bun: ${updateCommand}`)})
   process.exit(0)
 }
+// The engine is resolved when the launcher starts: the install must not need it, because a packed
+// plugin tree ships without the dependency tree the engine lives in. An engine that cannot be
+// resolved is named here, never surfaced as the engine host's module-resolution error.
+const engine = senpiEngineRuntime({ searchPaths, env: process.env })
+if (engine.error !== undefined) {
+  process.stderr.write("omo: " + engine.error + "\\n")
+  process.exit(1)
+}
+// A differently versioned engine is not a broken install: the consumer legitimately carries its
+// own engine, so the launcher warns and starts it anyway.
+if (engine.mismatch === true) {
+  process.stderr.write("omo: warning: the installed ${SENPI_ENGINE_PACKAGE} engine is version "
+    + engine.version + ", but this edition pins " + engine.pinnedVersion + "; continuing with the installed engine.\\n")
+}
+// The brand reports the version of the engine this launcher actually starts, which is only
+// knowable once the engine is resolved.
+const displayVersion = releaseVersion ?? (engine.version === undefined ? "local" : "local (senpi " + engine.version + ")")
+const env = {
+  ...process.env,
+  SENPI_BRAND: JSON.stringify({ ...brand, displayVersion }),
+  OMO_NATIVE: "1",
+  OMO_CODING_AGENT_DIR: agentDir,
+  SENPI_CODING_AGENT_DIR: agentDir,
+}
+// Anything resolving the product by name must re-enter through this launcher, never the engine.
+env.OMO_BIN = process.argv[1]
 // windowsHide-exempt: this is the interactive foreground CLI, spawned with inherited stdio.
 // CREATE_NO_WINDOW would suppress the console a console-less launch needs to render the TUI,
 // so the launcher keeps the user's console instead of hiding it (#8501).
-const child = spawn(process.execPath, [cli, "--extension", plugin, ...process.argv.slice(2)], {
+const child = spawn(process.execPath, [engine.cliPath, "--extension", plugin, ...process.argv.slice(2)], {
   env,
   stdio: "inherit",
 })
@@ -425,7 +599,7 @@ async function runSenpiInstaller(options = {}) {
   const backupPath = await writeSettingsAtomically(context.settingsPath, settings);
   const launcherPath = installLocalLauncher({
     pluginPath: context.pluginPath,
-    senpiCliPath: join5(context.repoRoot, "packages", "coding-agent", "dist", "cli.js"),
+    engineSearchPaths: senpiEngineSearchPaths({ pluginPath: context.pluginPath, repoRoot: context.repoRoot }),
     homeDir: context.homeDir
   });
   return {

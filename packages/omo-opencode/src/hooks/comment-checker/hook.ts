@@ -9,6 +9,7 @@ import {
   processApplyPatchEditsWithCli,
 } from "./cli-runner"
 import { extractApplyPatchEdits } from "@oh-my-opencode/comment-checker-core"
+import { appendCommentCheckerUnavailableNotice } from "./cli"
 import {
   registerPendingCall,
   startPendingCallCleanup,
@@ -139,6 +140,7 @@ export function createCommentCheckerHooks(
           const cliPath = await runner.getCommentCheckerCliPathPromise()
           if (!runner.isCliPathUsable(cliPath)) {
             debugLog("CLI not available, skipping comment check")
+            appendCommentCheckerUnavailableNotice(output, input.sessionID)
             return
           }
 
@@ -169,6 +171,7 @@ export function createCommentCheckerHooks(
         const cliPath = await runner.getCommentCheckerCliPathPromise()
         if (!runner.isCliPathUsable(cliPath)) {
           debugLog("CLI not available, skipping comment check")
+          appendCommentCheckerUnavailableNotice(output, input.sessionID)
           return
         }
 

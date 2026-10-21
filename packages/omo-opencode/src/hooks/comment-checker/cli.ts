@@ -8,6 +8,7 @@ import {
   resolveCommentCheckerBinary,
   runCommentChecker as runCommentCheckerCore,
   sendAndCloseStdin,
+  type CheckFailure,
   type CheckResult,
   type HookInput,
 } from "@oh-my-opencode/comment-checker-core"
@@ -15,6 +16,21 @@ import { getCachedBinaryPath, ensureCommentCheckerBinary } from "./downloader"
 
 const DEBUG = process.env.COMMENT_CHECKER_DEBUG === "1"
 const DEBUG_FILE = join(tmpdir(), "comment-checker-debug.log")
+
+const FAILURE_NOTICE_MARKER = "[comment-checker] Comment review did not run."
+
+const BINARY_UNAVAILABLE_DETAIL =
+  'The comment-checker binary is unavailable (not installed, not on PATH, and the runtime download did not succeed). Install @code-yeongyu/comment-checker or put "comment-checker" on PATH to enable comment review.'
+
+/**
+ * A checker that cannot run keeps failing for the whole session, so the notice is emitted at most
+ * once per session. Without that bound a broken binary would repeat the same warning on every
+ * single edit (#8850).
+ */
+const failureNotifiedSessions = new Set<string>()
+
+/** Sessions whose checker failed to start: re-running it would fail the same way (#8850). */
+const inertSessions = new Set<string>()
 
 function debugLog(...args: unknown[]) {
   if (DEBUG) {
@@ -129,6 +145,49 @@ export function startBackgroundInit(): void {
 export type { HookInput, CheckResult }
 
 /**
+ * Turns a checker failure into a sentence the agent can act on.
+ */
+export function formatCommentCheckerFailureDetail(failure: CheckFailure): string {
+  const reason = failure.exitCode === null
+    ? "the checker never started"
+    : `the checker exited with code ${failure.exitCode}`
+  const stderr = failure.stderr.trim()
+  const detail = stderr.length > 0 ? `: ${stderr}` : ""
+  return `The comment-checker binary could not complete the check (${reason}${detail}). Fix or reinstall @code-yeongyu/comment-checker to enable comment review.`
+}
+
+/**
+ * Appends the "comment review did not run" notice to the tool output. The notice never changes the
+ * tool status: the edit already happened, and the only honest signal left is the tool output itself.
+ * Returns false when this session was already notified.
+ */
+export function appendCommentCheckerFailureNotice(
+  output: { output: string },
+  sessionID: string,
+  detail: string,
+): boolean {
+  if (failureNotifiedSessions.has(sessionID)) return false
+  failureNotifiedSessions.add(sessionID)
+  output.output += `\n\n${FAILURE_NOTICE_MARKER} AI-slop comments in this edit were NOT checked. ${detail}`
+  return true
+}
+
+export function appendCommentCheckerUnavailableNotice(
+  output: { output: string },
+  sessionID: string,
+): boolean {
+  return appendCommentCheckerFailureNotice(output, sessionID, BINARY_UNAVAILABLE_DETAIL)
+}
+
+export function markCommentCheckerInertForSession(sessionID: string): void {
+  inertSessions.add(sessionID)
+}
+
+export function isCommentCheckerInertForSession(sessionID: string): boolean {
+  return inertSessions.has(sessionID)
+}
+
+/**
  * Run comment-checker CLI with given input.
  * @param input Hook input to check
  * @param cliPath Optional explicit path to CLI binary
@@ -137,9 +196,13 @@ export type { HookInput, CheckResult }
 export async function runCommentChecker(input: HookInput, cliPath?: string, customPrompt?: string): Promise<CheckResult> {
   const binaryPath = cliPath ?? resolvedCliPath ?? getCommentCheckerPathSync()
 
-  if (!binaryPath) {
+  if (!binaryPath || !existsSync(binaryPath)) {
     debugLog("comment-checker binary not found")
-    return { hasComments: false, message: "" }
+    return {
+      hasComments: false,
+      message: "",
+      failure: { exitCode: null, stderr: BINARY_UNAVAILABLE_DETAIL },
+    }
   }
 
   try {
@@ -166,7 +229,14 @@ export async function runCommentChecker(input: HookInput, cliPath?: string, cust
     return result
   } catch (error) {
     debugLog("failed to run comment-checker:", error)
-    return { hasComments: false, message: "" }
+    return {
+      hasComments: false,
+      message: "",
+      failure: {
+        exitCode: null,
+        stderr: error instanceof Error ? error.message : String(error),
+      },
+    }
   }
 }
 

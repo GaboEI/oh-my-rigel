@@ -83,6 +83,8 @@ async function makePackagedPlugin(): Promise<string> {
   await writeFixtureFile(join(pluginPath, "runtime", "lsp-daemon", "dist", "daemon-client.d.ts"), "export {}\n")
   await writeFixtureFile(join(pluginPath, "runtime", "lsp-daemon", "dist", "package.json"), JSON.stringify({ version: "0.1.0" }))
   await writeFixtureFile(join(pluginPath, "runtime", "lsp-daemon", "dist", ".omo-runtime-manifest.json"), "{}\n")
+  // The packaged plugin tree carries the plugin artifacts only: the engine lives in the
+  // dependency tree of whoever installs it, and the install must not need it.
   await buildInstaller(pluginPath)
   return pluginPath
 }
