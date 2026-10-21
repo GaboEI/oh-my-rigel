@@ -128,3 +128,57 @@ describe("comment-checker mutation tool routing", () => {
     expect(processWithCli).toHaveBeenCalledTimes(0)
   })
 })
+
+describe("comment-checker unavailable binary notice", () => {
+  const NOTICE_MARKER = "[comment-checker] Comment review did not run."
+  const unavailableCliRunner = { ...cliRunner, isCliPathUsable: () => false }
+
+  beforeEach(() => {
+    processWithCli.mockClear()
+    stopPendingCallCleanup()
+    _resetCommentCheckerInitializationForTesting()
+  })
+
+  afterEach(() => {
+    stopPendingCallCleanup()
+    _resetCommentCheckerInitializationForTesting()
+  })
+
+  it("#given no usable comment-checker binary #when the after hook runs #then it appends a visible notice", async () => {
+    // given
+    const hooks = createCommentCheckerHooks(undefined, unavailableCliRunner)
+    const input = { tool: "write", sessionID: "ses_unavailable_notice", callID: "call_unavailable" }
+    const output = { title: "ok", output: "Success", metadata: {} }
+
+    // when
+    await hooks["tool.execute.before"](input, {
+      args: { filePath: "/repo/src/write.ts", content: "// write comment\nconst a = 1\n" },
+    })
+    await hooks["tool.execute.after"](input, output)
+
+    // then
+    expect(processWithCli).toHaveBeenCalledTimes(0)
+    expect(output.output.startsWith("Success")).toBe(true)
+    expect(output.output).toContain(NOTICE_MARKER)
+  })
+
+  it("#given no usable comment-checker binary #when the same session edits again #then the notice is not repeated", async () => {
+    // given
+    const sessionID = "ses_unavailable_bounded"
+    const hooks = createCommentCheckerHooks(undefined, unavailableCliRunner)
+    const first = { tool: "write", sessionID, callID: "call_bounded_1" }
+    const second = { tool: "write", sessionID, callID: "call_bounded_2" }
+    const firstOutput = { title: "ok", output: "Success", metadata: {} }
+    const secondOutput = { title: "ok", output: "Success", metadata: {} }
+
+    // when
+    await hooks["tool.execute.before"](first, { args: { filePath: "/repo/src/a.ts", content: "// c\n" } })
+    await hooks["tool.execute.after"](first, firstOutput)
+    await hooks["tool.execute.before"](second, { args: { filePath: "/repo/src/b.ts", content: "// c\n" } })
+    await hooks["tool.execute.after"](second, secondOutput)
+
+    // then
+    expect(firstOutput.output).toContain(NOTICE_MARKER)
+    expect(secondOutput.output).toBe("Success")
+  })
+})

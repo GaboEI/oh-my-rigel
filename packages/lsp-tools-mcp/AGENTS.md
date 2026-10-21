@@ -14,6 +14,7 @@ Vendored, Node-targeted MCP-layer package (`@code-yeongyu/lsp-tools-mcp`). Serve
 - `lsp_symbols`
 - `lsp_prepare_rename`
 - `lsp_rename`
+- `lsp_format`
 - `lsp_status`
 - `lsp_install_decision`
 

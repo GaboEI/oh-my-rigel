@@ -1,0 +1,11 @@
+{
+	"session_id": "01a15e40-f461-7513-b23f-3514523f5354",
+	"turn_id": "01a15e40-f523-7932-8eed-56617f81bf0e",
+	"transcript_path": "/tmp/opencode/row70/codex/sessions/2026/10/21/rollout-2026-10-21T14-37-57-01a15e40-f461-7513-b23f-3514523f5354.jsonl",
+	"cwd": "/tmp/opencode/row70/proj",
+	"hook_event_name": "Stop",
+	"model": "mock-model",
+	"permission_mode": "bypassPermissions",
+	"stop_hook_active": false,
+	"last_assistant_message": null
+}
