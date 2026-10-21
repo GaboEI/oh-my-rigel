@@ -160,7 +160,10 @@ export async function delegateNamedAgent({ client, location, agent, prompt, back
     ...(model ? { model } : {}),
   })
   const sessionID = sessionIdFrom(created)
-  onChildSession?.(sessionID, { model, agent: agent.id ?? agent.name })
+  // The hook is AWAITED: the team path binds a member into its worktree here, and a
+  // member's FIRST prompt must not be sent before that bind completed (a hook that is
+  // fired but not awaited lets that whole turn run in the wrong directory).
+  await onChildSession?.(sessionID, { model, agent: agent.id ?? agent.name })
   await sessions.prompt({
     sessionID,
     // Plugin V2's SessionDomain takes PromptInput fields directly. The SDK

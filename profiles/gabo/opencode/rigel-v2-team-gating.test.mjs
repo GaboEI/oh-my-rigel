@@ -3,6 +3,7 @@ import {
   createNativeTeamGatingRule,
   createNativeTeamMailboxInjector,
   createNativeTeamStatusInjector,
+  createTeamMemberSessionResolver,
   resolveNativeTeamParticipant,
 } from "./rigel-v2-team-gating.mjs"
 
@@ -55,6 +56,29 @@ describe("native team gating", () => {
     expect(resolveNativeTeamParticipant(TEAM, "lead-session")).toBe("lead")
     expect(resolveNativeTeamParticipant(TEAM, "member-scout")).toBe("member")
     expect(resolveNativeTeamParticipant(TEAM, "outsider")).toBe("neither")
+  })
+
+  test("team membership resolves from the DURABLE record, not from one process's memory", async () => {
+    // given: the record the team tools wrote, read by a process that never spawned it
+    const isTeamMemberSession = createTeamMemberSessionResolver({ storage: seededStorage() })
+    // when / then
+    expect(await isTeamMemberSession("member-scout")).toBe(true)
+    expect(await isTeamMemberSession("outsider")).toBe(false)
+  })
+
+  test("a storage without the scan surface degrades to 'not a member' instead of failing", async () => {
+    const isTeamMemberSession = createTeamMemberSessionResolver({ storage: { get: async () => undefined } })
+    expect(await isTeamMemberSession("member-scout")).toBe(false)
+  })
+
+  test("#given a storage whose scan fails #when the membership is resolved #then the failure is reported instead of answering 'not a member'", async () => {
+    // given: the durable source cannot be read
+    const isTeamMemberSession = createTeamMemberSessionResolver({
+      storage: { scan: async () => { throw new Error("storage offline") } },
+    })
+    // when / then: an unreadable source must NOT be reported as "not a member", or a
+    // member's pane would be closed like an ordinary child's
+    await expect(isTeamMemberSession("member-scout")).rejects.toThrow("storage offline")
   })
 
   test("team_create is denied for any existing participant and open for outsiders", async () => {

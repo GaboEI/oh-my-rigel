@@ -94,6 +94,38 @@ describe("Rigel native OpenCode V2 delegation", () => {
     expect(taskResult(delegated)).toMatchObject({ content: expect.stringContaining("SPECIALIST_EVIDENCE"), metadata: { sessionID: "ses_child", agent: "Explore", background: false } })
   })
 
+  // The team path binds a member into its worktree BETWEEN the session creation and
+  // its first prompt, so the prompt must wait for that bind. A hook that is fired but
+  // not awaited lets the first turn run in the wrong directory.
+  test("#given a child hook that binds the session #when the child is delegated #then the prompt waits for the bind", async () => {
+    const calls = []
+    let releaseBind
+    const bindReleased = new Promise((resolve) => { releaseBind = resolve })
+    let bindStarted
+    const bindStartedPromise = new Promise((resolve) => { bindStarted = resolve })
+    const client = {
+      session: {
+        create: async () => { calls.push("create"); return { data: { id: "ses_child" } } },
+        prompt: async () => { calls.push("prompt") },
+      },
+    }
+    const delegation = delegateNamedAgent({
+      client,
+      location: { directory: "/isolated/project" },
+      agent: { id: "explore", name: "Explore", mode: "subagent" },
+      prompt: "Work.",
+      background: true,
+      onChildSession: async () => { calls.push("bind"); bindStarted(); await bindReleased },
+    })
+    // when: the bind is still in flight
+    await bindStartedPromise
+    // then: the prompt has NOT been sent yet
+    expect(calls).toEqual(["create", "bind"])
+    releaseBind()
+    await delegation
+    expect(calls).toEqual(["create", "bind", "prompt"])
+  })
+
   // V2's session.create/model contract is a Model.Ref (`{ providerID, id }`), not
   // a raw `"provider/id"` string. A pinned agent model must be forwarded verbatim
   // as that object; an agent with no pinned model must omit the key so V2 inherits

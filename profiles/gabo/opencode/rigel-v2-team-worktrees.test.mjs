@@ -254,6 +254,17 @@ describe("Rigel native V2 team worktree manager", () => {
     expect(logs.some((line) => line.includes("bind failed") && line.includes("bad"))).toBe(true)
   })
 
+  test("#given a host that cannot move a session #when binding a member #then the bind fails loudly instead of leaving the member in the shared tree", async () => {
+    // given: a manager built without the session-move seam (a host that cannot bind)
+    const { runGit } = recordingRunner()
+    const manager = createTeamWorktreeManager({ repoRoot: "/repo", runGit, removeDir: noRemoveDir, removeEmptyDir: async () => {} })
+    // when / then: a member whose first turn would run in the shared tree must NOT be
+    // reported as bound, so the create fails instead of pretending the team is isolated
+    await expect(manager.bindSessions({ members: [{ name: "scout", sessionID: "ses_1", worktreePath: "/w/scout" }] })).rejects.toThrow("cannot bind a member session")
+    // and: the per-session bind the team tool uses before the first prompt refuses too
+    await expect(manager.bindSession({ sessionID: "ses_1", directory: "/w/scout" })).rejects.toThrow("cannot bind a member session")
+  })
+
   test("#given an orphan rigel-team worktree #when sweeping with the live paths referenced #then only the unreferenced worktree is removed", async () => {
     const removed = []
     const { runGit } = recordingRunner((args) => {

@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { execFileSync } from "node:child_process"
 import { join } from "node:path"
 import plugin from "./rigel-v2-native.mjs"
 import * as nativeRuntime from "./rigel-v2-native.mjs"
@@ -1531,12 +1532,17 @@ test("native runtime registers the /team-mode front door only when the team_mode
 // `team_create` definition that same setup registers.
 const TEAM_MODE_PASTED_OBJECTIVE = '/team-mode team: host55check. members: scout=quick "Reply with exactly: scout-ready.", builder=unspecified-low "Reply with exactly: builder-ready.". worktree: no'
 
-function teamModeInvocationHarness() {
+function teamModeInvocationHarness({ leadDirectory = "/native-v2", deleteFails = false } = {}) {
+  const registeredTools = new Map()
   const promptHooks = []
   const listed = []
   const storage = new Map()
   const spawns = []
+  const moves = []
+  const events = []
   const delivered = []
+  const deletes = []
+  const sessionDirectories = new Map()
   let created = 0
   const context = {
     location: { directory: "/native-v2" },
@@ -1563,11 +1569,15 @@ function teamModeInvocationHarness() {
         if (name === "prompt") promptHooks.push(handler)
         return { dispose() {} }
       },
-      get: async () => ({ data: { location: { directory: "/native-v2" } } }),
-      create: async (input) => { spawns.push(input); created += 1; return { data: { id: `ses_member_${created}` } } },
-      prompt: async (input) => { delivered.push(input); return { data: {} } },
+      // A host answers each session with ITS OWN directory: a session that was moved
+      // reports the new one. A host that answered every session with the same directory
+      // would make a verification leg vacuous.
+      get: async ({ sessionID } = {}) => ({ data: { location: { directory: sessionDirectories.get(sessionID) ?? leadDirectory, workspaceID: "ws-lead" } } }),
+      create: async (input) => { spawns.push(input); events.push("create"); created += 1; return { data: { id: `ses_member_${created}` } } },
+      prompt: async (input) => { delivered.push(input); events.push("prompt"); return { data: {} } },
+      move: async (input) => { moves.push(input); events.push("move"); if (input?.sessionID) sessionDirectories.set(input.sessionID, input.directory); return { data: {} } },
       wait: async () => {},
-      delete: async () => ({ data: {} }),
+      delete: async (input) => { deletes.push(input?.sessionID); if (deleteFails) throw new Error("host refused the session delete"); return { data: {} } },
       context: async () => [],
     },
     // Host command discovery doubles as the skill-expansion entry point: the
@@ -1576,20 +1586,22 @@ function teamModeInvocationHarness() {
       list: async () => { listed.push("list"); return { data: [] } },
       transform: async () => ({ dispose() {} }),
     },
-    tool: { transform: async (callback) => { callback({ add() {}, get: () => undefined }); return { dispose() {} } } },
+    tool: { transform: async (callback) => { callback({ add(definition) { registeredTools.set(definition.name, definition) }, get: () => undefined }); return { dispose() {} } } },
   }
-  return { context, promptHooks, listed, storage, spawns, delivered }
+  return { context, promptHooks, listed, storage, spawns, delivered, moves, events, registeredTools, deletes }
 }
 
-function teamRecord(storage) {
-  const entry = [...storage.entries()].find(([key]) => key.includes("host55check"))
+function teamRecord(storage, name = "host55check") {
+  const entry = [...storage.entries()].find(([key]) => key.includes(name))
   return entry ? { key: entry[0], team: entry[1] } : undefined
 }
 
 test("native runtime executes a pasted /team-mode objective instead of expanding the same-named skill", async () => {
   const originalMetadata = nativeManifest.metadata
   nativeManifest.metadata = { global: { gates: { team_mode: true } } }
-  const harness = teamModeInvocationHarness()
+  // the lead works in its own project directory, which is NOT the plugin instance's
+  // static location: a member must be created where its lead works
+  const harness = teamModeInvocationHarness({ leadDirectory: "/lead-project" })
   try {
     const dispose = await plugin.setup(harness.context)
     // given: the exact literal paste that drifted on the host
@@ -1616,6 +1628,12 @@ test("native runtime executes a pasted /team-mode objective instead of expanding
     // and: both members became real child sessions of the calling session
     expect(harness.spawns).toHaveLength(2)
     expect(harness.spawns.map((spawn) => spawn.parentID)).toEqual(["ses_lead", "ses_lead"])
+    // and: each member session was created in the LEAD's directory
+    // and: each member session was created in the LEAD's location (directory AND workspace)
+    expect(harness.spawns.map((spawn) => spawn.location)).toEqual([
+      { directory: "/lead-project", workspaceID: "ws-lead" },
+      { directory: "/lead-project", workspaceID: "ws-lead" },
+    ])
     expect(harness.delivered.map((entry) => entry.sessionID)).toEqual(["ses_member_1", "ses_member_2"])
     // and: each member carried its OWN quoted assignment, not a guessed one
     expect(harness.delivered[0].text).toContain("Reply with exactly: scout-ready.")
@@ -1634,6 +1652,137 @@ test("native runtime executes a pasted /team-mode objective instead of expanding
     }))
     await dispose()
   } finally {
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+})
+
+// An isolated member must be bound into its OWN worktree BEFORE its first prompt: the
+// prompt is what makes the member work, so a bind that happens later leaves that first
+// turn in the shared tree. Driven through the real runtime over a real git worktree.
+test("native runtime binds an isolated member into its worktree before that member's first prompt", async () => {
+  const originalMetadata = nativeManifest.metadata
+  nativeManifest.metadata = { global: { gates: { team_mode: true } } }
+  const repo = mkdtempSync(join(tmpdir(), "rigel-team-worktree-"))
+  execFileSync("git", ["init", "-q", repo])
+  execFileSync("git", ["-C", repo, "-c", "user.email=qa@example.invalid", "-c", "user.name=qa", "commit", "-q", "--allow-empty", "-m", "init"])
+  const harness = teamModeInvocationHarness({ leadDirectory: repo })
+  try {
+    const dispose = await plugin.setup(harness.context)
+    const promptSeam = harness.promptHooks.at(-1)
+    const draft = { sessionID: "ses_lead", prompt: { text: '/team-mode team: wtcheck. members: scout=quick "Reply with exactly: scout-ready.". worktree: yes' } }
+    // when
+    await promptSeam(draft)
+    // then: create -> bind -> prompt, in that order
+    expect(harness.events).toEqual(["create", "move", "prompt"])
+    const record = teamRecord(harness.storage, "wtcheck")
+    const member = record.team.members[0]
+    expect(member.worktreePath).toContain(".omo/team-worktrees/wtcheck")
+    expect(harness.moves[0]).toMatchObject({ sessionID: member.sessionID, directory: member.worktreePath })
+    await dispose()
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+})
+
+// A member session that could not be terminated is still alive, so its worktree is
+// still its working directory: reclaiming it first would delete the tree under a live
+// session. Driven through the real runtime over a real git worktree.
+test("native runtime keeps a member worktree whose session could not be terminated", async () => {
+  const originalMetadata = nativeManifest.metadata
+  nativeManifest.metadata = { global: { gates: { team_mode: true } } }
+  const repo = mkdtempSync(join(tmpdir(), "rigel-team-delete-"))
+  execFileSync("git", ["init", "-q", repo])
+  execFileSync("git", ["-C", repo, "-c", "user.email=qa@example.invalid", "-c", "user.name=qa", "commit", "-q", "--allow-empty", "-m", "init"])
+  const harness = teamModeInvocationHarness({ leadDirectory: repo, deleteFails: true })
+  try {
+    const dispose = await plugin.setup(harness.context)
+    const promptSeam = harness.promptHooks.at(-1)
+    await promptSeam({ sessionID: "ses_lead", prompt: { text: '/team-mode team: wtdel. members: scout=quick "Reply with exactly: scout-ready.". worktree: yes' } })
+    const worktreePath = teamRecord(harness.storage, "wtdel").team.members[0].worktreePath
+    expect(existsSync(worktreePath)).toBe(true)
+    // when: the member session cannot be terminated
+    const deleteTool = harness.registeredTools.get("team_delete")
+    const result = JSON.parse((await deleteTool.execute({ team_name: "wtdel" }, { sessionID: "ses_lead" })).content)
+    // then: no deletion was claimed, the record keeps its retry state, and the live
+    // session's working directory was not reclaimed
+    expect(result.deleted).toBe(false)
+    expect(existsSync(worktreePath)).toBe(true)
+    expect(teamRecord(harness.storage, "wtdel").team.status).toBe("cleanup-failed")
+    await dispose()
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+})
+
+// A FOREIGN (adopted) member session is never terminated by this team, so its
+// worktree is the working directory of a live session this team does not own: the
+// tree can only be reclaimed after that session was moved out of it AND the move was
+// VERIFIED. Driven through the real runtime over a real git worktree, with a host
+// that answers a session as `{data:{location:{directory}}}` - the shape the scope
+// seam reads to verify the move.
+test("native runtime releases an adopted member's worktree only after moving the foreign session out and verifying it", async () => {
+  const originalMetadata = nativeManifest.metadata
+  nativeManifest.metadata = { global: { gates: { team_mode: true } } }
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "rigel-team-adopted-")))
+  execFileSync("git", ["init", "-q", repo])
+  execFileSync("git", ["-C", repo, "-c", "user.email=qa@example.invalid", "-c", "user.name=qa", "commit", "-q", "--allow-empty", "-m", "init"])
+  const harness = teamModeInvocationHarness({ leadDirectory: repo })
+  try {
+    const dispose = await plugin.setup(harness.context)
+    const createTool = harness.registeredTools.get("team_create")
+    await createTool.execute({ team_name: "adopted", worktree: true, members: [{ name: "scout", sessionID: "ses_foreign" }] }, { sessionID: "ses_lead" })
+    const worktreePath = teamRecord(harness.storage, "adopted").team.members[0].worktreePath
+    expect(existsSync(worktreePath)).toBe(true)
+    // when
+    const deleteTool = harness.registeredTools.get("team_delete")
+    const result = JSON.parse((await deleteTool.execute({ team_name: "adopted" }, { sessionID: "ses_lead" })).content)
+    // then: the foreign session was moved OUT of the tree and the move verified, so the
+    // tree could be reclaimed - and the foreign session itself was never deleted
+    expect(harness.moves.some((move) => move.sessionID === "ses_foreign" && move.directory !== worktreePath)).toBe(true)
+    expect(result.deleted).toBe(true)
+    expect(result.sessionsDetached).toEqual(["ses_foreign"])
+    expect(existsSync(worktreePath)).toBe(false)
+    expect(harness.deletes).toEqual([])
+    await dispose()
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+  }
+})
+
+// The member's session id must be PERSISTED before the session is bound into its
+// worktree: the create rollback decides which trees it may reclaim from that record,
+// so a reorder of these two awaited calls would silently reopen that hole.
+test("native runtime persists a member's session id before binding it into its worktree", async () => {
+  const originalMetadata = nativeManifest.metadata
+  nativeManifest.metadata = { global: { gates: { team_mode: true } } }
+  const repo = mkdtempSync(join(tmpdir(), "rigel-team-order-"))
+  execFileSync("git", ["init", "-q", repo])
+  execFileSync("git", ["-C", repo, "-c", "user.email=qa@example.invalid", "-c", "user.name=qa", "commit", "-q", "--allow-empty", "-m", "init"])
+  const harness = teamModeInvocationHarness({ leadDirectory: repo })
+  const snapshots = []
+  const hostMove = harness.context.session.move
+  harness.context.session.move = async (input) => {
+    snapshots.push(JSON.stringify([...harness.storage.entries()]))
+    return hostMove(input)
+  }
+  try {
+    const dispose = await plugin.setup(harness.context)
+    const promptSeam = harness.promptHooks.at(-1)
+    await promptSeam({ sessionID: "ses_lead", prompt: { text: '/team-mode team: order. members: scout=quick "Reply with exactly: scout-ready.". worktree: yes' } })
+    const member = teamRecord(harness.storage, "order").team.members[0]
+    // then: at the moment of the bind, the record already carried the member's id
+    expect(snapshots.length).toBeGreaterThan(0)
+    expect(snapshots.at(-1)).toContain(member.sessionID)
+    await dispose()
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
     if (originalMetadata === undefined) delete nativeManifest.metadata
     else nativeManifest.metadata = originalMetadata
   }

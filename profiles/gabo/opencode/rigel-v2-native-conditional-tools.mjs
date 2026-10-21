@@ -208,13 +208,39 @@ export async function registerConditionalNativeTools({
     ? async (sessionID) => {
         if (typeof sessionID !== "string" || !sessionID) throw new Error("team tool requires a calling session id")
         const info = await context.session.get({ sessionID })
-        const rawDirectory = info?.data?.location?.directory ?? info?.location?.directory ?? info?.directory
+        const rawLocation = info?.data?.location ?? info?.location ?? (typeof info?.directory === "string" ? { directory: info.directory } : undefined)
+        const rawDirectory = rawLocation?.directory
         if (!rawDirectory) throw new Error("team session location is unavailable")
         // A member session rooted in its own team worktree must still resolve the
         // TEAM's repo root: otherwise it reads a different project key, loses its
         // team record, and cannot see its own tasks or messages.
         const directory = mapTeamWorktreeToRepoRoot(rawDirectory) ?? rawDirectory
-        return teamScopeRegistry.forRepoRoot(directory)
+        const scope = await teamScopeRegistry.forRepoRoot(directory)
+        // The LEAD's own location travels with the scope: the member sessions are
+        // created there, so a member works in the same tree (and the same project
+        // and the same WORKSPACE) as the session that asked for the team. The whole
+        // LocationRef travels, not just its directory: a member created in the right
+        // directory but the default workspace is a different project.
+        return {
+          ...scope,
+          directory: rawDirectory,
+          location: {
+            directory: rawDirectory,
+            ...(typeof rawLocation?.workspaceID === "string" && rawLocation.workspaceID.length > 0 ? { workspaceID: rawLocation.workspaceID } : {}),
+          },
+          // The directory a session currently works in. The delete path needs it to
+          // VERIFY that a foreign session really left a team worktree before that
+          // tree is reclaimed under it (gate 2026-10-20, blocker B2). Every shape the
+          // SIBLING scope seam above reads is read here too, so a host that answers the
+          // session as `{location:{directory}}` is verifiable instead of unreadable.
+          sessionDirectory: async (sessionID) => {
+            const info = await context.session.get({ sessionID })
+            return info?.data?.directory
+              ?? info?.data?.location?.directory
+              ?? info?.directory
+              ?? info?.location?.directory
+          },
+        }
       }
     : undefined
   // The task list id must follow the active project directory, not the service

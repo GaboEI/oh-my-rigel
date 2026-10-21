@@ -45,6 +45,10 @@ export function createTmuxVizPolling({
   intervalMs = POLL_INTERVAL_BACKGROUND_MS,
   timeouts = {},
   onPoll,
+  // Re-resolves whether a session is a team MEMBER from the shared/durable state,
+  // right before a close is decided. The durable record can land AFTER the pane was
+  // claimed, so a member must never be closed like an ordinary child.
+  resolvePersistentSession,
 } = {}) {
   const limits = {
     sessionTimeout: SESSION_TIMEOUT_MS,
@@ -114,7 +118,12 @@ export function createTmuxVizPolling({
         const unavailable = lookup.kind === "unavailable"
         const statusValue = lookup.kind === "value" ? lookup.status : null
         const age = now - (tracked.createdAt ?? now)
-        const isTimedOut = !tracked.persistent && age > limits.sessionTimeout
+        // A member's persistence is re-resolved from the shared/durable state at
+        // CLOSE time: the record can land after the pane was claimed, and a member must
+        // never be closed like an ordinary child. An answer that could not be resolved
+        // also spares the pane (the same rule the status seam follows).
+        const persistent = tracked.persistent === true || (typeof resolvePersistentSession === "function" ? (await resolvePersistentSession(tracked.sessionID)) === true : false)
+        const isTimedOut = !persistent && age > limits.sessionTimeout
         if (!tracked.attachActivated && !statusValue) {
           if (age > limits.sessionTimeout) {
             tracked.closePending = true
@@ -151,7 +160,7 @@ export function createTmuxVizPolling({
           tracked.stablePolls = 0
         }
         const stableFor = age
-        const isStableIdle = !tracked.persistent && statusValue === "idle" && (tracked.stablePolls ?? 0) >= limits.stablePolls && stableFor >= limits.minStability
+        const isStableIdle = !persistent && statusValue === "idle" && (tracked.stablePolls ?? 0) >= limits.stablePolls && stableFor >= limits.minStability
         if (isStableIdle || missingTooLong || isTimedOut) {
           tracked.closePending = true
           logger(`[oh-my-rigel] tmux-viz: closing pane for ${tracked.sessionID} (stable=${isStableIdle}, missing=${missingTooLong}, timedOut=${isTimedOut})`)
