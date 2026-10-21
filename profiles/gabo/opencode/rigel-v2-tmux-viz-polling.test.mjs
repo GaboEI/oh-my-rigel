@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { createTmuxVizPolling, STABLE_POLLS_REQUIRED, MIN_STABILITY_TIME_MS } from "./rigel-v2-tmux-viz-polling.mjs"
 
-function harness({ tracked, status = null, runner, fetchSessionStatus, timeouts } = {}) {
+function harness({ tracked, status = null, runner, fetchSessionStatus, timeouts, resolvePersistentSession } = {}) {
   const sessions = new Map(tracked ?? [])
   const closes = []
   const logs = []
@@ -15,6 +15,7 @@ function harness({ tracked, status = null, runner, fetchSessionStatus, timeouts 
     fetchSessionStatus: fetchSessionStatus ?? (async () => statuses),
     logger: (line) => { logs.push(line) },
     timeouts,
+    resolvePersistentSession,
   })
   return {
     sessions, closes, logs, polling,
@@ -175,6 +176,22 @@ describe("tmux-viz polling", () => {
     await harness1.polling.pollOnce(t1 + 1_001)
     // the safety net is retained: persistence is not a licence to leak panes
     expect(harness1.closes).toEqual(["ses_child"])
+  })
+
+  test("a session that BECOMES a team member after the pane was claimed is not stability-closed", async () => {
+    // given: the member's durable record only lands AFTER the pane was claimed, so the
+    // claim-time answer could not know it was a member
+    const created = Date.now() - MIN_STABILITY_TIME_MS - 1000
+    const harness1 = harness({
+      tracked: [["ses_child", trackedSession({ createdAt: created, lastSeenAt: created })]],
+      resolvePersistentSession: async (sessionID) => sessionID === "ses_child",
+    })
+    harness1.setStatus(new Map([["ses_child", "idle"]]))
+    for (let index = 0; index < STABLE_POLLS_REQUIRED; index += 1) await harness1.polling.pollOnce(Date.now() + 1000 * (index + 1))
+    await harness1.polling.pollOnce(Date.now() + 10_000)
+    // then: the member's pane survives, because the persistence is re-resolved from the
+    // durable state at CLOSE time
+    expect(harness1.closes).toEqual([])
   })
 
   test("a poll re-entered while one is in flight is a no-op", async () => {

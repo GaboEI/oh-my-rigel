@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -93,6 +94,58 @@ describe("tmux-viz manager", () => {
     // polling suite); it must never mean "do not open one".
     expect(overrides.spawnCalls.filter((call) => call.includes("split-window"))).toHaveLength(1)
     expect(manager.getTrackedPaneId("ses_child")).toBe("%9")
+    await manager.cleanup()
+  })
+
+  test("the persistence answer is resolved BEFORE the pane is claimed", async () => {
+    // given: the durable state answers whether this session is a team member, and
+    // that answer must be known BEFORE the pane is claimed (a claim taken on stale
+    // knowledge is what lets a member pane be closed as if it were an ordinary child)
+    // a fresh session id, so no claim epoch file of an earlier run can be observed
+    const sessionID = `ses_persist_${randomUUID()}`
+    const overrides = managerOverrides()
+    const resolved = []
+    let claimExistedAtResolve
+    const manager = createTmuxVizManager({
+      ...overrides,
+      fetchSessionStatus: async () => new Map([[sessionID, "running"]]),
+      isPersistentSession: () => { resolved.push("sync"); return false },
+      resolvePersistentSession: async (id) => {
+        resolved.push("async")
+        claimExistedAtResolve = existsSync(claimPath(id, 0))
+        return true
+      },
+    })
+    // when
+    await manager.onSessionCreated({ type: "session.created", properties: { info: { id: sessionID, parentID: "ses_parent", title: "scout" } } })
+    // then: the answer arrived before the claim existed, and it was not looked up a
+    // second time afterwards (the claim and the pane must agree on one answer)
+    // the local set is consulted first (it is authoritative for the members THIS process
+    // spawned, and the durable record can land after the session was created), then the
+    // durable source answers for a session this process does not know; BOTH happen before
+    // the claim, and neither is consulted again afterwards
+    expect(resolved).toEqual(["sync", "async"])
+    expect(claimExistedAtResolve).toBe(false)
+    expect(existsSync(claimPath(sessionID, 0))).toBe(true)
+    await manager.cleanup()
+  })
+
+  test("#given a durable source that cannot be read #when a pane is claimed #then the claim is NOT taken on ignorance", async () => {
+    // given: the membership of this session is UNKNOWN (the durable source failed)
+    const sessionID = `ses_unknown_${randomUUID()}`
+    const overrides = managerOverrides()
+    const manager = createTmuxVizManager({
+      ...overrides,
+      fetchSessionStatus: async () => new Map([[sessionID, "running"]]),
+      isPersistentSession: () => false,
+      resolvePersistentSession: async () => { throw new Error("storage offline") },
+    })
+    // when
+    await manager.onSessionCreated({ type: "session.created", properties: { info: { id: sessionID, parentID: "ses_parent", title: "scout" } } })
+    // then: no pane is claimed, because "cannot read" is not "not a member" and a pane
+    // claimed on ignorance would later be closed like an ordinary child's
+    expect(existsSync(claimPath(sessionID, 0))).toBe(false)
+    expect(manager.getTrackedPaneId(sessionID)).toBeNull()
     await manager.cleanup()
   })
 

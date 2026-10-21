@@ -39,6 +39,30 @@ export function resolveNativeTeamParticipant(team, sessionID) {
   return participantOf(team, sessionID) ?? "neither"
 }
 
+/**
+ * Resolve, from the DURABLE team records, whether a session is a member of a team.
+ *
+ * A member session's pane has to outlive its idle turns, and that decision is taken
+ * by whichever process ends up owning the pane. The daemon that spawned the member
+ * and the TUI that draws it are SEPARATE plugin instances, so a per-instance set
+ * answers only for the process that happened to create the member. The team record is
+ * the shared fact both of them can read.
+ *
+ * A source that cannot be READ is NOT the same answer as "not a member": the caller
+ * must be able to tell "this session is not a member" from "I could not find out", or a
+ * member's pane would be closed like an ordinary child's. A storage that exposes no
+ * scan surface at all is a missing source (the caller keeps its own fallback); a scan
+ * that FAILS is reported to the caller.
+ */
+export function createTeamMemberSessionResolver({ storage } = {}) {
+  return async (sessionID) => {
+    if (typeof sessionID !== "string" || sessionID.length === 0) return false
+    if (!storage || typeof storage.scan !== "function") return false
+    const entries = await scanTeamEntries(storage)
+    return entries.some((entry) => (entry.team.members ?? []).some((member) => member?.sessionID === sessionID))
+  }
+}
+
 function isRealUserMessage(message) {
   return message?.role === "user" && message.synthetic !== true && message.internal !== true
 }

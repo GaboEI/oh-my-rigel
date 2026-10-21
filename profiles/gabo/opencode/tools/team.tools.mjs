@@ -1,3 +1,4 @@
+import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { DEFAULT_PROJECT_KEY, teamRecordKey, teamRecordsPrefix } from "../rigel-v2-team-project-scope.mjs"
 
@@ -6,7 +7,7 @@ const TEAM_TOOL_DESCRIPTIONS = Object.freeze({
   // canonical call shape and the upstream boundary are restated here as well as
   // in the `team-mode` skill.
   team_create: "Create a team run whose members work as coordinated sessions. Native contract: team_create({ team_name, members: [{ name, agent | category, prompt, model? }], worktree? }). Every member without an adopted sessionID gets a real delegated child session, which is what makes its tmux pane appear. `name` is accepted as a DEPRECATED alias of team_name. Omit `worktree` and the legacy default applies (a per-member worktree when the project has a worktree manager); pass worktree: false to share one working tree. On a NON-git root that default cannot provision: the call fails loudly and does NOT authorise a policy change - switching worktree: true to worktree: false is the user's decision, so report the failure and ask the user to confirm explicitly before trying again. This runtime does NOT accept the upstream OmO shape (inline_spec, teamName, lead, loadSkills); there is exactly one create API.",
-  team_delete: "Delete a team and its recorded state, terminating the member sessions THIS team spawned (that is what closes their panes). A session adopted from elsewhere - including one in a record written before ownership existed - is detached, never deleted, and is reported in sessionsDetached. `sessionsTerminated` lists only VERIFIED closes, and sessionsUnverified reports a close whose proof was unavailable (sessionsUnverifiedReasons carries the exact cause). If an owned session cannot be terminated the record is KEPT with retry state and the call returns deleted: false - call it again to finish.",
+  team_delete: "Delete a team and its recorded state, terminating the member sessions THIS team spawned (that is what closes their panes). A session adopted from elsewhere - including one in a record written before ownership existed - is detached, never deleted, and is reported in sessionsDetached. `sessionsTerminated` lists only VERIFIED closes, and sessionsUnverified reports a close whose proof was unavailable (sessionsUnverifiedReasons carries the exact cause). A member worktree is that session's WORKING DIRECTORY, so it is released only when the team can prove the session no longer uses it: a close whose absence could not be VERIFIED, and a foreign session that still works in a tree this team provisioned, both keep their directory and the record is KEPT with retry state, and the call returns deleted: false - call team_delete again to finish. The same holds when an owned session cannot be terminated at all.",
   team_shutdown_request: "Request a coordinated shutdown of the team.",
   team_approve_shutdown: "Approve a pending team shutdown request.",
   team_reject_shutdown: "Reject a pending team shutdown request.",
@@ -263,11 +264,20 @@ export function createTeamTools({
         return {
           projectKey: scope.projectKey,
           repoRoot: scope.repoRoot,
+          // The LEAD's own location: the member sessions are created there, not in
+          // the plugin instance's static location. The whole LocationRef travels
+          // (directory AND workspace), so a member lands in the lead's project.
+          directory: scope.directory,
+          location: scope.location ?? (scope.directory ? { directory: scope.directory } : undefined),
           worktreeManager: scope.worktrees ?? scope.worktreeManager,
+          // The directory a session currently works in. The delete path needs it to
+          // VERIFY that a foreign session really left a worktree before that tree is
+          // reclaimed under it.
+          sessionDirectory: scope.sessionDirectory,
           worktreeReconciler: scope.reconciler ?? scope.worktreeReconciler,
         }
       }
-    : async () => ({ projectKey, repoRoot: undefined, worktreeManager, worktreeReconciler })
+    : async () => ({ projectKey, repoRoot: undefined, directory: undefined, location: undefined, worktreeManager, worktreeReconciler })
 
   const keyFor = (scope, name) => teamRecordKey(scope.projectKey, name)
   const sidFor = (toolContext) => (typeof toolContext?.sessionID === "string" && toolContext.sessionID) || getSessionID()
@@ -321,6 +331,58 @@ export function createTeamTools({
     return results
   }
 
+  // An ADOPTED session belongs to another owner: this team never terminates it, so
+  // its working directory may still be in use. The tree is reclaimed ONLY after the
+  // foreign session was moved to a safe directory AND that move was VERIFIED;
+  // otherwise the directory is PRESERVED (and the record is kept, so the directory
+  // stays referenced and the orphan sweep cannot delete it under a live session).
+  const relocateAdoptedMembers = async (scope, members) => {
+    const relocated = []
+    const preserved = []
+    for (const member of members ?? []) {
+      const sessionID = member?.sessionID
+      const worktreePath = member?.worktreePath
+      if (!sessionID || !worktreePath) continue
+      const safeDirectory = scope.repoRoot ?? scope.directory
+      const preserve = (reason) => preserved.push({ sessionID, worktreePath, reason })
+      if (typeof safeDirectory !== "string" || safeDirectory.length === 0) {
+        preserve("no safe directory is available to move the foreign session into")
+        continue
+      }
+      // A "safe" directory INSIDE the tree it is supposed to release would not free
+      // it: the reclaim would still delete the foreign session's working directory.
+      const from = path.resolve(worktreePath)
+      const to = path.resolve(safeDirectory)
+      if (to === from || to.startsWith(`${from}${path.sep}`)) {
+        preserve("the safe directory is inside the worktree it was supposed to release")
+        continue
+      }
+      if (typeof scope.worktreeManager?.bindSession !== "function" || typeof scope.sessionDirectory !== "function") {
+        preserve("this host cannot move or read a session, so the foreign session's directory cannot be released")
+        continue
+      }
+      try {
+        await scope.worktreeManager.bindSession({ sessionID, directory: safeDirectory })
+      } catch (error) {
+        preserve(`the foreign session could not be moved out of its worktree: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+      let current
+      try {
+        current = await scope.sessionDirectory(sessionID)
+      } catch (error) {
+        preserve(`the move of the foreign session could not be verified: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+      if (typeof current !== "string" || path.resolve(current) !== path.resolve(safeDirectory)) {
+        preserve("the move of the foreign session could not be verified")
+        continue
+      }
+      relocated.push({ sessionID, worktreePath, safeDirectory })
+    }
+    return { relocated, preserved }
+  }
+
   // Blocker 2 (transactional create): reconcile the durable create journal after a
   // provisioning exception. `runPending` clears the entry on success and KEEPS it
   // with attempt state when the cleanup itself fails, so a kept entry is never
@@ -357,7 +419,21 @@ export function createTeamTools({
     // a manager means provision. `worktree: false` is the only bypass, and
     // /team-mode always emits an explicit boolean, so the shared-pane path is
     // unaffected.
-    const wantsWorktrees = input?.worktree !== false && Boolean(scope.worktreeManager)
+    // The worktree policy is a THREE-STATE contract, not a boolean gate: `true` REQUIRES
+    // per-member worktrees, `false` is the explicit shared-tree bypass, and an OMITTED key
+    // keeps the legacy default (provision whenever the project has a worktree manager).
+    // `worktree: true` without a manager must fail BEFORE any side effect: degrading to a
+    // shared tree would run every member in the caller's tree while the caller asked for
+    // isolation, and it would do so silently.
+    const requestedWorktree = input?.worktree
+    if (requestedWorktree === true && !scope.worktreeManager) {
+      throw new Error(
+        `team_create requires worktree: true but this project has no worktree manager, so the team was NOT created. ` +
+          `Do not switch the worktree policy on your own: worktree: false is a different policy, and choosing it is the user's decision, not yours. ` +
+          `Report this failure and ask the user to confirm explicitly; create the team again only after they confirm.`,
+      )
+    }
+    const wantsWorktrees = requestedWorktree === true ? true : requestedWorktree === false ? false : Boolean(scope.worktreeManager)
     const spawning = typeof startMemberSession === "function"
     // Fail before any side effect. Without a spawn seam this is record-only
     // binding, so members may legitimately carry nothing but a name.
@@ -391,7 +467,52 @@ export function createTeamTools({
     await storage.set(keyFor(scope, name), pending)
 
     const createdSessionIDs = []
+    // Every session bound into a member worktree, PER WORKTREE. A bound tree is the
+    // LIVE working directory of that session; a tree nobody was bound into holds
+    // nothing and is free to reclaim. A client fallback can leave an ORPHAN bound into
+    // the same tree as the effective child, and that orphan may still be alive there: the
+    // reclaim must count every id bound into the tree, not only the member's effective
+    // one (gate 2026-10-21, manifestation 2).
+    // The sessions this create CREATED for a member, whether or not they were bound into
+    // its tree: a client fallback's ORPHAN whose bind failed never entered the tree, but it
+    // is still OUR child and the retry must be able to terminate it.
+    const boundByDirectory = new Map()
+    const noteBound = (directory, sessionID) => {
+      if (typeof directory !== "string" || typeof sessionID !== "string") return
+      if (!boundByDirectory.has(directory)) boundByDirectory.set(directory, new Set())
+      boundByDirectory.get(directory).add(sessionID)
+      // The ids bound into a tree are DURABLE state: the roster only carries the
+      // effective child, so without this the delete path could not know that an ORPHAN
+      // still holds that tree, and its retry would reclaim it (gate 2026-10-21).
+      for (const member of members) {
+        if (member?.worktreePath !== directory) continue
+        const ids = Array.isArray(member.boundSessionIDs) ? member.boundSessionIDs : []
+        if (!ids.includes(sessionID)) member.boundSessionIDs = [...ids, sessionID]
+      }
+    }
     try {
+      // An ADOPTED member is an ALREADY RUNNING session: it gets no prompt from here,
+      // but it must sit in its worktree BEFORE the team starts working (and before any
+      // spawned member's first prompt), or it would run the team's work in the caller's
+      // tree while the team claims per-member isolation.
+      const adoptedMembers = members.filter((member) => member.provenance === "adopted")
+      if (wantsWorktrees && scope.worktreeManager && adoptedMembers.length > 0) {
+        // Bound ONE BY ONE, so this create knows exactly which foreign session ended
+        // up living in which tree: a rollback may only reclaim a tree that holds
+        // nothing, and a failed bind leaves its session in the shared tree.
+        const failures = []
+        for (const member of adoptedMembers) {
+          if (!member?.sessionID || !member?.worktreePath) continue
+          try {
+            await scope.worktreeManager.bindSession({ sessionID: member.sessionID, directory: member.worktreePath })
+            noteBound(member.worktreePath, member.sessionID)
+            log(`[oh-my-rigel] team "${name}": adopted session ${member.sessionID} bound into ${member.worktreePath}`)
+          } catch (error) {
+            failures.push(`member=${member.name}: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+        if (failures.length > 0) throw new Error(`team member session bind failed for ${failures.length} member(s): ${failures.join("; ")}`)
+      }
       // Sequential on purpose: a bounded, observable spawn order keeps the
       // member/session mapping deterministic and never fans out at the model.
       for (let index = 0; index < members.length; index += 1) {
@@ -399,13 +520,65 @@ export function createTeamTools({
         if (!spawning || member.sessionID) continue
         const delegated = await startMemberSession(
           { name: member.name, agent: member.agent, category: member.category, prompt: member.prompt, model: member.model },
-          { teamName: name, leadSessionID },
+          {
+            teamName: name,
+            leadSessionID,
+            // The member session is created in the LEAD's location: the plugin's own
+            // static location is a different tree whenever the plugin instance serves
+            // several projects, and a member must work where its lead works. The whole
+            // LocationRef travels (directory AND workspace), so the member lands in the
+            // lead's project and not in the default workspace of that directory.
+            location: scope.location ?? { directory: scope.directory ?? scope.repoRoot },
+            // When the team is isolated, the member is bound into its OWN worktree
+            // BEFORE its first prompt. The seam owns that ordering because the prompt
+            // is sent from inside it; a post-prompt bind is too late for that turn.
+            ...(wantsWorktrees && member.worktreePath
+              ? {
+                  worktreePath: member.worktreePath,
+                  bindSession: async (bind) => {
+                    await scope.worktreeManager.bindSession(bind)
+                    noteBound(bind?.directory, bind?.sessionID)
+                    // The binding is durable state: persist it before the session can
+                    // work in that tree, so a crash cannot leave a live session there
+                    // with no record of it.
+                    await storage.set(keyFor(scope, name), { ...pending, members })
+                  },
+                }
+              : {}),
+            // The seam reports EVERY child it creates, at creation time: a client
+            // fallback can create a child whose prompt then fails, and that child
+            // EXISTS even though the caller never receives its id. Registering it here
+            // is what makes it owned (and therefore terminable) instead of an orphan
+            // no lifecycle call could ever reach.
+            onSessionCreated: async (createdSessionID) => {
+              const created = trimmedString(createdSessionID)
+              if (!created) return
+              createdSessionIDs.push(created)
+              members[index] = {
+                ...members[index],
+                sessionID: created,
+                owned: true,
+                provenance: "spawned",
+                status: "running",
+                // Every child this create created for this member, bound or not: the
+                // retry must be able to reach an ORPHAN whose bind failed (it never
+                // entered the tree, but it is still our child).
+                createdSessionIDs: [...(Array.isArray(members[index].createdSessionIDs) ? members[index].createdSessionIDs : []), created],
+              }
+              await storage.set(keyFor(scope, name), { ...pending, members })
+            },
+          },
         )
         const sessionID = trimmedString(delegated?.sessionID)
         if (!sessionID) throw new Error(`member "${member.name}" was not given a session id by the delegation seam`)
-        createdSessionIDs.push(sessionID)
+        // The seam already reported this child when it was created, so it is only
+        // added here when the seam reported nothing: the rollback set must hold every
+        // id ONCE, or the terminator is called twice for the same session.
+        if (!createdSessionIDs.includes(sessionID)) createdSessionIDs.push(sessionID)
         members[index] = {
-          ...member,
+          // The LIVE entry, not the pre-spawn snapshot: it carries the ids bound into
+          // this member's worktree, which the delete path needs to know the tree is not free.
+          ...members[index],
           sessionID,
           // Blocker 3: this session was spawned BY THIS TEAM, so it is owned and may
           // be terminated. An adopted sessionID never receives this stamp.
@@ -418,24 +591,89 @@ export function createTeamTools({
         // Durable per member, before the next spawn.
         await storage.set(keyFor(scope, name), { ...pending, members })
       }
-      if (wantsWorktrees && scope.worktreeManager) await scope.worktreeManager.bindSessions({ members })
+      // A client fallback can leave a child behind: the first attempt created a
+      // session whose prompt failed, the second one produced the effective child.
+      // The leftover is owned by this team, so it is terminated instead of running the
+      // same assignment a second time in a tree nobody tracks.
+      const effectiveSessionIDs = new Set(members.map((member) => member.sessionID).filter(Boolean))
+      const leftoverSessionIDs = createdSessionIDs.filter((sessionID) => !effectiveSessionIDs.has(sessionID))
+      if (leftoverSessionIDs.length > 0) {
+        const terminatedLeftovers = await terminateSessions(leftoverSessionIDs.map((sessionID) => ({ sessionID })), "create-leftover", sidFor(toolContext))
+        // A leftover whose close resolved but whose absence could NOT be proven may
+        // still be alive: that is not a success. The create must not go live with an
+        // unowned, possibly-live child, so the leftover forces the rollback - which
+        // keeps the record with that session pending (gate 2026-10-21, manifestation 1).
+        const unresolvedLeftovers = terminatedLeftovers.filter((entry) => !entry.deleted || entry.unverified)
+        if (unresolvedLeftovers.length > 0) {
+          throw new Error(`team member session(s) ${unresolvedLeftovers.map((entry) => entry.sessionID).join(", ")} could not be terminated (or their absence could not be verified) after a failed spawn attempt`)
+        }
+      }
+      // A member this create SPAWNED was already bound by the seam, before its first
+      // prompt; an ADOPTED one was bound before the spawn loop. Nothing is bound here.
     } catch (error) {
       // Transactional rollback: terminate ONLY what THIS create spawned (blocker 3 —
       // an adopted session must never reach the terminator, not even in a rollback),
       // reclaim worktrees, then drop the record. A rollback that cannot prove a
       // spawned session gone KEEPS a recoverable record carrying the remaining owned
       // session ids (blocker 2) so a later team_delete can finish the teardown.
-      const rolledBack = members.filter((member) => member.owned === true && createdSessionIDs.includes(member.sessionID))
+      // Every child this create spawned is owned by this team, so the rollback
+      // terminates ALL of them: the ids the seam reported, including a child whose
+      // prompt failed before the caller received its id. An ADOPTED session never
+      // reaches the terminator (blocker 3): it was never spawned here.
+      const rolledBack = createdSessionIDs.map((sessionID) => ({ sessionID }))
       const terminated = await terminateSessions(rolledBack, "create-rollback", sidFor(toolContext))
       const failed = terminated.filter((entry) => !entry.deleted)
+      const unproven = terminated.filter((entry) => entry.deleted && entry.unverified)
+      const proven = new Set(terminated.filter((entry) => entry.deleted && !entry.unverified).map((entry) => entry.sessionID))
+      // A member worktree is the WORKING DIRECTORY of a session, and a member is bound
+      // into its tree BEFORE its first prompt (and an ADOPTED one before the spawn loop),
+      // so that tree is LIVE while this rollback runs. It is reclaimed ONLY when this
+      // create can PROVE that no session uses it: EVERY session bound into that tree must
+      // be proven gone, and a tree nobody was bound into holds nothing (its spawn failed
+      // before a session existed). An ADOPTED member's session is not ours and was bound
+      // into this tree by this very create: reclaiming it would delete a live foreign
+      // session's working directory (gate 2026-10-20, blocker B2). A spawned member whose
+      // close could not be VERIFIED may still be alive: its directory is preserved
+      // (blocker B1), and so is an ORPHAN left by a client fallback in the same tree
+      // (gate 2026-10-21, manifestation 2).
+      const created = new Set(createdSessionIDs)
+      const reclaimable = []
+      const preserved = []
+      for (const member of members ?? []) {
+        if (!member?.worktreePath) continue
+        // EVERY session bound into this tree counts, not only the member's effective
+        // one: a client fallback can leave an ORPHAN bound into the same tree, and that
+        // orphan may still be working there (gate 2026-10-21, manifestation 2).
+        const bound = boundByDirectory.get(member.worktreePath)
+        if (!bound || bound.size === 0) {
+          // A tree nobody was bound into holds nothing: it is free to reclaim.
+          reclaimable.push(member)
+          continue
+        }
+        const unprovenHere = [...bound].filter((sessionID) => !proven.has(sessionID))
+        if (unprovenHere.length === 0) {
+          reclaimable.push(member)
+          continue
+        }
+        const foreign = unprovenHere.filter((sessionID) => !created.has(sessionID))
+        preserved.push({
+          member,
+          sessions: unprovenHere,
+          reason: foreign.length > 0
+            ? "this member adopts a session this create does not own, so its working directory is not reclaimed"
+            : unproven.some((entry) => unprovenHere.includes(entry.sessionID))
+              ? "the close of this member session could not be verified"
+              : "the member session could not be terminated",
+        })
+      }
       let reclaimed = "skipped"
-      if (wantsWorktrees) {
+      if (wantsWorktrees && reclaimable.length > 0) {
         try {
           if (scope.worktreeReconciler) {
-            await scope.worktreeReconciler.runPending({ teamName: name, members, reason: "bind-failed" })
+            await scope.worktreeReconciler.runPending({ teamName: name, members: reclaimable, reason: "bind-failed" })
             reclaimed = "ok"
           } else if (scope.worktreeManager) {
-            await scope.worktreeManager.cleanup({ members })
+            await scope.worktreeManager.cleanup({ members: reclaimable })
             reclaimed = "ok"
           }
         } catch (cleanupError) {
@@ -443,23 +681,27 @@ export function createTeamTools({
         }
       }
       let retained = "dropped"
-      if (failed.length > 0) {
+      if (failed.length > 0 || unproven.length > 0 || preserved.length > 0) {
+        const pendingIds = [...failed.map((entry) => entry.sessionID), ...unproven.map((entry) => entry.sessionID)]
         await storage.set(keyFor(scope, name), {
           ...pending,
           members,
           status: "cleanup-failed",
           cleanupFailedAt: Date.now(),
-          cleanupPending: failed.map((entry) => entry.sessionID),
+          cleanupPending: pendingIds,
           cleanupErrors: failed.map((entry) => ({ sessionID: entry.sessionID, error: entry.error ?? "unknown" })),
+          ...(preserved.length > 0
+            ? { worktreesPreserved: preserved.map((entry) => ({ sessionID: entry.sessions?.[0] ?? entry.member.sessionID, sessions: entry.sessions, worktreePath: entry.member.worktreePath, reason: entry.reason })) }
+            : {}),
         })
-        retained = `kept (cleanup-failed; owned sessions pending: ${failed.map((entry) => entry.sessionID).join(", ")})`
+        retained = `kept (cleanup-failed; owned sessions pending: ${pendingIds.join(", ") || "none"}; preserved worktrees: ${preserved.map((entry) => entry.member.worktreePath).join(", ") || "none"})`
       } else if (typeof storage.remove === "function") {
         await storage.remove(keyFor(scope, name))
       }
       const base = error instanceof Error ? error.message : String(error)
       const sessionReport = terminated.length === 0
         ? "none created"
-        : terminated.map((entry) => `${entry.sessionID}=${entry.deleted ? "terminated" : `kept(${entry.error ?? "unknown"})`}`).join(", ")
+        : terminated.map((entry) => `${entry.sessionID}=${entry.unverified ? "closed(unverified)" : entry.deleted ? "terminated" : `kept(${entry.error ?? "unknown"})`}`).join(", ")
       throw new Error(`${base}. Rolled back: sessions [${sessionReport}], worktrees ${reclaimed}, record ${retained}.`)
     }
     if (scope.worktreeReconciler) { try { await scope.worktreeReconciler.clear({ teamName: name }) } catch { /* journal cleared best-effort */ } }
@@ -498,14 +740,12 @@ export function createTeamTools({
       let sessionsDetached = []
       let sessionsUnverified = []
       let sessionsUnverifiedReasons = []
+      let worktreesPreserved = []
+      // The member worktrees this delete may release: only those whose every bound
+      // session is proven gone (or whose foreign session was moved out and verified).
+      let reclaimableMembers = []
       const team = await storage.get(keyFor(scope, name))
       if (team) {
-        if (scope.worktreeReconciler) {
-          await scope.worktreeReconciler.record({ teamName: name, members: team.members, reason: "delete" })
-          await scope.worktreeReconciler.runPending({ teamName: name, members: team.members, reason: "delete" })
-        } else if (scope.worktreeManager) {
-          try { await scope.worktreeManager.cleanup({ members: team.members }) } catch (error) { log(`[oh-my-rigel] team worktree cleanup failed on delete: ${error instanceof Error ? error.message : String(error)}`) }
-        }
         // Blocker 3: adopted sessions are DETACHED (the team stops referencing
         // them) and never terminated; only sessions this team spawned are owned.
         sessionsDetached = adoptedSessions(team.members).map((member) => member.sessionID)
@@ -515,13 +755,31 @@ export function createTeamTools({
         // Terminate owned members BEFORE dropping the record: `session.deleted` is
         // what closes each member pane, and the record must survive a partial
         // failure so a retry can finish the job.
-        const terminated = await terminateSessions(ownedSessions(team.members), `delete ${name}`, sidFor(toolContext))
+        // Terminate the sessions THIS TEAM created: the roster's effective children AND
+        // every id bound into their worktrees. A client fallback's ORPHAN is not in the
+        // roster, but it is ours and it still holds that tree: without it the retry
+        // could not prove its absence and would release the tree under a live session
+        // (gate 2026-10-21).
+        const toTerminate = []
+        for (const member of ownedSessions(team.members)) {
+          const bound = [
+            member.sessionID,
+            ...(Array.isArray(member.boundSessionIDs) ? member.boundSessionIDs : []),
+            ...(Array.isArray(member.createdSessionIDs) ? member.createdSessionIDs : []),
+          ]
+          for (const sessionID of bound) {
+            if (typeof sessionID === "string" && sessionID && !toTerminate.includes(sessionID)) toTerminate.push(sessionID)
+          }
+        }
+        const terminated = await terminateSessions(toTerminate.map((sessionID) => ({ sessionID })), `delete ${name}`, sidFor(toolContext))
         // Honest seam (round-2 review R1): `sessionsTerminated` lists ONLY proven
         // closes. An unverified resolution is reported in `sessionsUnverified`
         // instead, so the returned `deleted: true` is never backed by a list that
-        // mixes proven and unproven deletions. Unverified still counts as RESOLVED
-        // (never as `sessionsFailed`), so it cannot wedge a record into retry
-        // forever - the delete call did resolve, only its proof is missing.
+        // mixes proven and unproven deletions. An UNVERIFIED close is not a proven
+        // absence either: the session may still be alive, so its working directory
+        // is NOT released and the record is KEPT until the absence is proven (gate
+        // 2026-10-20, blocker B1). It stays out of `sessionsFailed`, which reports a
+        // close that did NOT happen.
         sessionsTerminated = terminated.filter((entry) => entry.deleted && !entry.unverified).map((entry) => entry.sessionID)
         sessionsFailed = terminated.filter((entry) => !entry.deleted).map((entry) => ({ sessionID: entry.sessionID, error: entry.error ?? "unknown" }))
         sessionsUnverified = terminated.filter((entry) => entry.deleted && entry.unverified).map((entry) => entry.sessionID)
@@ -535,6 +793,59 @@ export function createTeamTools({
           .map((entry) => ({ sessionID: entry.sessionID, reason: entry.reason ?? entry.error ?? "unknown" }))
         for (const entry of sessionsFailed) {
           log(`[oh-my-rigel] team "${name}": member session ${entry.sessionID} was not terminated (${entry.error})`)
+        }
+        // A foreign session is never terminated, so the tree it works in is freed
+        // ONLY if that session was moved out of it AND the move was verified;
+        // otherwise the directory is preserved (gate 2026-10-20, blocker B2).
+        const relocation = await relocateAdoptedMembers(scope, adoptedSessions(team.members))
+        worktreesPreserved = relocation.preserved
+        // Which worktrees this delete may release: a tree is free only when EVERY
+        // session bound into it is proven gone, and the ids come from the DURABLE record
+        // (the roster carries only the effective child; an ORPHAN lives in the member's
+        // boundSessionIDs). A foreign member's tree is free only if its session was moved
+        // out AND that move was verified.
+        const proven = new Set(terminated.filter((entry) => entry.deleted && !entry.unverified).map((entry) => entry.sessionID))
+        const relocated = new Set(relocation.relocated.map((entry) => entry.sessionID))
+        reclaimableMembers = []
+        for (const member of team.members ?? []) {
+          if (!member?.worktreePath) continue
+          const bound = [...new Set([member.sessionID, ...(Array.isArray(member.boundSessionIDs) ? member.boundSessionIDs : [])].filter(Boolean))]
+          // A tree nobody holds is free: no session ever lived there.
+          if (bound.length === 0) {
+            reclaimableMembers.push(member)
+            continue
+          }
+          if (member.owned === true) {
+            // OURS: every session bound into that tree must be proven gone.
+            const unprovenHere = bound.filter((sessionID) => !proven.has(sessionID))
+            if (unprovenHere.length === 0) {
+              reclaimableMembers.push(member)
+              continue
+            }
+            worktreesPreserved.push({
+              sessionID: unprovenHere[0],
+              worktreePath: member.worktreePath,
+              reason: terminated.some((entry) => entry.deleted && entry.unverified && unprovenHere.includes(entry.sessionID))
+                ? "the close of this member session could not be verified"
+                : "the member session could not be terminated",
+            })
+            continue
+          }
+          // A FOREIGN session: its tree is free only if the session was moved out of it
+          // AND that move was verified.
+          if (relocated.has(member.sessionID)) {
+            reclaimableMembers.push(member)
+            continue
+          }
+          if (!worktreesPreserved.some((entry) => entry.sessionID === member.sessionID)) {
+            worktreesPreserved.push({ sessionID: member.sessionID, worktreePath: member.worktreePath, reason: "this member adopts a session this team does not own, so its working directory is not reclaimed" })
+          }
+        }
+        for (const entry of relocation.relocated) {
+          log(`[oh-my-rigel] team "${name}": adopted session ${entry.sessionID} moved out of ${entry.worktreePath} into ${entry.safeDirectory} (verified); its worktree can be reclaimed`)
+        }
+        for (const entry of relocation.preserved) {
+          log(`[oh-my-rigel] team "${name}": adopted session ${entry.sessionID} keeps its working directory ${entry.worktreePath} (${entry.reason})`)
         }
       }
       if (sessionsFailed.length > 0) {
@@ -562,12 +873,62 @@ export function createTeamTools({
           warning: `team "${name}": ${sessionsFailed.length} owned member session(s) could not be terminated, so their panes may still be open. The team record was KEPT with retry state: call team_delete again to finish.`
         }
       }
+      if (sessionsUnverified.length > 0 || worktreesPreserved.length > 0) {
+        // An unproven close and a foreign session that still works in a tree this
+        // team provisioned both keep their working directory, so the record is KEPT
+        // with retry state and `deleted` stays false: nothing is claimed that was not
+        // proven.
+        const preservedList = worktreesPreserved.map((entry) => ({ sessionID: entry.sessionID, worktreePath: entry.worktreePath, reason: entry.reason }))
+        const causes = []
+        if (sessionsUnverified.length > 0) causes.push(`${sessionsUnverified.length} member session(s) were deleted but deletion could not be VERIFIED`)
+        if (worktreesPreserved.length > 0) causes.push(`${worktreesPreserved.length} foreign session(s) still work in a directory this team provisioned and it could not be moved out of it`)
+        // What the caller can do next differs per cause: a close that could not be
+        // verified converges on a retry, while a foreign session that cannot be moved
+        // out of its directory keeps it until the HOST can move it.
+        const nextStep = sessionsUnverified.length > 0
+          ? "call team_delete again once the absence can be proven"
+          : "call team_delete again once the host can move that session out of its directory"
+        await storage.set(keyFor(scope, name), {
+          ...(team ?? { name, projectKey: scope.projectKey }),
+          name,
+          status: "cleanup-failed",
+          deleteRequestedAt: Date.now(),
+          cleanupFailedAt: Date.now(),
+          cleanupPending: sessionsUnverified,
+          cleanupErrors: sessionsFailed,
+          ...(preservedList.length > 0 ? { worktreesPreserved: preservedList } : {}),
+        })
+        return {
+          name,
+          deleted: false,
+          retained: true,
+          sessionsTerminated,
+          sessionsFailed,
+          sessionsDetached,
+          sessionsUnverified,
+          ...(sessionsUnverifiedReasons.length > 0 ? { sessionsUnverifiedReasons } : {}),
+          ...(preservedList.length > 0 ? { worktreesPreserved: preservedList } : {}),
+          warning: `team "${name}": ${causes.join("; ")}. Their working directories were PRESERVED and the team record was KEPT with retry state: ${nextStep}.`
+        }
+      }
+      // A member worktree is the WORKING DIRECTORY of a session, so it is reclaimed
+      // only when the team can PROVE that session no longer uses it: an owned member
+      // whose close was VERIFIED, or a foreign member whose session was moved out of
+      // the tree AND that move was verified. Two cases prove nothing and keep their
+      // directory (gate 2026-10-20): a close whose absence could not be verified, and
+      // a foreign session this team must never terminate. The record is KEPT in both
+      // cases: the directory stays referenced (so the orphan sweep cannot delete it
+      // under a live session) and a later team_delete can finish the job.
+      if (team && reclaimableMembers.length > 0) {
+        if (scope.worktreeReconciler) {
+          await scope.worktreeReconciler.record({ teamName: name, members: reclaimableMembers, reason: "delete" })
+          await scope.worktreeReconciler.runPending({ teamName: name, members: reclaimableMembers, reason: "delete" })
+        } else if (scope.worktreeManager) {
+          try { await scope.worktreeManager.cleanup({ members: reclaimableMembers }) } catch (error) { log(`[oh-my-rigel] team worktree cleanup failed on delete: ${error instanceof Error ? error.message : String(error)}`) }
+        }
+      }
       await storage.remove(keyFor(scope, name))
       const result = { name, deleted: true, sessionsTerminated, sessionsFailed, sessionsDetached, sessionsUnverified }
-      if (sessionsUnverified.length > 0) {
-        result.sessionsUnverifiedReasons = sessionsUnverifiedReasons
-        result.warning = `team "${name}": ${sessionsUnverified.length} member session(s) were deleted but deletion could not be VERIFIED (the presence proof was unavailable or failed), so a pane may still be open. See sessionsUnverifiedReasons for the exact cause.`
-      }
       return result
     }, TEAM_NAME_ONLY_INPUT),
     team_shutdown_request: definition("team_shutdown_request", async (input, toolContext) => {

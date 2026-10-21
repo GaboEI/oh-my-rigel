@@ -88,7 +88,7 @@ import { createTeamModePromptHandler, registerTeamModeCommand, teamCreatePortFro
 import { createNativeContextLimitRecovery, createNativeIdleContinuations, createNativeIdleGate } from "./rigel-v2-native-phase4-events.mjs"
 import { createNativeTeamEventHandlers } from "./rigel-v2-team-events.mjs"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
-import { createNativeTeamGatingRule, createNativeTeamMailboxInjector, createNativeTeamStatusInjector } from "./rigel-v2-team-gating.mjs"
+import { createNativeTeamGatingRule, createNativeTeamMailboxInjector, createNativeTeamStatusInjector, createTeamMemberSessionResolver } from "./rigel-v2-team-gating.mjs"
 import { createGitWorktreeRunner } from "./rigel-v2-team-worktrees.mjs"
 import { createTeamScopeRegistry } from "./rigel-v2-team-scope-registry.mjs"
 import { createNativeMonitorStatusInjector } from "./rigel-v2-monitor-status.mjs"
@@ -954,7 +954,7 @@ export default {
     // nothing itself. Sequential spawns keep the member/session mapping
     // deterministic and never fan out at the model.
     const teamStartMemberSession = nativeGates.team_mode === true
-      ? async (assignment, { leadSessionID } = {}) => {
+      ? async (assignment, { leadSessionID, location: leadLocation, worktreePath, bindSession, onSessionCreated } = {}) => {
           if (isCoordinatorAgent(assignment.agent)) {
             throw new Error(`Cannot make coordinator agent "${String(assignment.agent).trim()}" a team member. Select a worker agent or a category instead.`)
           }
@@ -966,15 +966,23 @@ export default {
           const agent = category
             ? resolveNamedAgent(agents, "Sisyphus-Junior")
             : resolveNamedAgent(agents, assignment.agent)
+          // The member session is created in the LEAD's location, not in the plugin
+          // instance's static location: one plugin instance can serve several
+          // projects, and a member must work in the tree (and project) of its lead.
+          // The whole LocationRef travels, so the member keeps the lead's workspace too.
+          const memberLocation = typeof leadLocation?.directory === "string" && leadLocation.directory.length > 0 ? { ...leadLocation } : location
+          // instance's static location: one plugin instance can serve several
+          // projects, and a member must work in the tree (and project) of its lead.
+          // projects, and a member must work in the tree (and project) of its lead.
           const delegated = await delegateNamedAgentFromClients({
             clients,
-            location,
+            location: memberLocation,
             agent,
             prompt: category ? categoryTaskPrompt(assignment.prompt, category) : assignment.prompt,
             background: true,
             model: assignment.model ?? await resolveDelegationModel(category, agent),
             ...(leadSessionID ? { parentSessionID: leadSessionID } : {}),
-            onChildSession: (sessionID, child) => {
+            onChildSession: async (sessionID, child) => {
               teamMemberSessionIDs.add(sessionID)
               childSessionIDs.add(sessionID)
               if (category) {
@@ -985,6 +993,20 @@ export default {
                 })
               }
               seedChildFallback(sessionID, child)
+              // EVERY child this seam creates is reported to the tool: a client
+              // fallback can create a child whose prompt then fails, and that child
+              // exists although the caller never receives its id. Reporting it here is
+              // what makes it owned (and therefore terminable) instead of an orphan.
+              await onSessionCreated?.(sessionID)
+              // An isolated member is bound into its OWN worktree BEFORE its first
+              // prompt: the prompt is sent right after this hook returns, so a bind
+              // that happened later would leave that first turn in the shared tree.
+              if (worktreePath) {
+                if (typeof bindSession !== "function") {
+                  throw new Error("team_create requires a per-member worktree but this host cannot move a member session into it")
+                }
+                await bindSession({ sessionID, directory: worktreePath })
+              }
             },
           })
           return { sessionID: delegated.sessionID, agent: agent.name }
@@ -1037,6 +1059,10 @@ export default {
       ? context.serverUrl
       : tmuxVizServiceTarget?.url
     const tmuxVizAttachEnv = buildAttachAuthEnv({ password: tmuxVizServiceTarget?.password })
+    // The DURABLE answer to "is this session a team member": read from the team
+    // records in the shared V2 storage, so a plugin instance that did not spawn the
+    // member still knows it (the TUI owns member panes as often as the daemon does).
+    const isDurableTeamMemberSession = createTeamMemberSessionResolver({ storage: context?.storage })
     const tmuxVizProjects = createTmuxVizProjectRegistry({
       manifest,
       env: tmuxVizEnv,
@@ -1082,8 +1108,14 @@ export default {
           discoveredPaneId,
           discoveryReason,
           attachEnv: tmuxVizAttachEnv,
-          // A team member's pane must outlive its idle turns. Only team members
-          // are persistent, so no other session's close behavior changes.
+          // A team member's pane must outlive its idle turns, and the answer has to be
+          // the same for EVERY process that may own that pane: the daemon that spawned
+          // the member and the TUI that draws it are separate plugin instances. The
+          // DURABLE team record is the shared fact; this instance's set is the same
+          // fact cached locally, so a member whose record write has not landed yet is
+          // still known here.
+          resolvePersistentSession: async (sessionID) => teamMemberSessionIDs.has(sessionID) || (await isDurableTeamMemberSession(sessionID)),
+          // Only team members are persistent, so no other session's close behavior changes.
           isPersistentSession: (sessionID) => teamMemberSessionIDs.has(sessionID),
           logger: tmuxVizLog,
           // The host exposes status PER SESSION (`session.status(id)`) and has no

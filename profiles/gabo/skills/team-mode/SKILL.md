@@ -102,25 +102,30 @@ timeout. It still closes when the session genuinely disappears, and on deletion.
 5. **Wind down** — `team_shutdown_request({ team_name })`; a member approves with
    `team_approve_shutdown`, or the lead approves on their behalf. `team_reject_shutdown`
    cancels a pending request.
-6. **Delete** — `team_delete({ team_name })`. Deletion cleans up worktrees, then
-   terminates **only the sessions this team spawned** (that is what closes their
-   panes); a session adopted from elsewhere is **detached, never deleted**, and so
-   is a record written before ownership existed — a session the team cannot PROVE
-   it spawned is never deleted, and `sessionsDetached` reports it. The stored
-   record is removed **last**. If even one owned session cannot be terminated, the
+6. **Delete** — `team_delete({ team_name })`. Deletion terminates **only the sessions
+   this team spawned** (that is what closes their panes) and **verifies** each close
+   BEFORE any worktree is reclaimed: a member worktree is that session's working
+   directory, so it is released only when the team can PROVE the session no longer
+   uses it. A session adopted from elsewhere is **detached, never deleted** — and so
+   is a record written before ownership existed — a session the team cannot PROVE it
+   spawned is never deleted, and `sessionsDetached` reports it; its worktree is
+   reclaimed only after that foreign session was moved out of it AND the move was
+   verified, and otherwise the directory is preserved and the record is kept. The
+   stored record is removed **last**. If an owned session cannot be terminated, the
    call keeps the record with retry state (`cleanupPending`), reports
    `sessionsFailed`, and returns `deleted: false` — call `team_delete` again to
    finish. `sessionsTerminated` lists **only proven** closes: a deletion that
    resolved but could not be *verified* is reported in `sessionsUnverified` with a
-   warning instead, never presented as a verified close. The record is still
-   dropped then, because the delete call itself did resolve — a retry would repeat
-   the same unverifiable call forever. A host that rejects deleting an
-   already-gone session is not a failure either: when the presence probe proves
+   warning, never presented as a verified close — and because the absence was never
+   proven, its working directory is PRESERVED and the record is KEPT, so call
+   `team_delete` again once the absence can be proven. A host that rejects deleting
+   an already-gone session is not a failure either: when the presence probe proves
    the session is absent, the close is a verified deletion.
 
 A startup reconciliation never strands a live member: a team record that still
-**owns** a session is not reclaimed by the worktree sweep, even when it is stale —
-it is kept as retry state for `team_delete`. On a non-git root, per-member
+**owns** a session — or that still keeps a working directory which could not be
+released — is not reclaimed by the worktree sweep, even when it is stale: it is
+kept as retry state for `team_delete`. On a non-git root, per-member
 worktrees are impossible, so `team_create` fails loudly. That failure does not
 authorise a policy change: switching `worktree: true` to `worktree: false` is the
 user's decision, so report the failure and ask the user to confirm explicitly

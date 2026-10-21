@@ -350,6 +350,17 @@ export function createTeamWorktreeManager({ repoRoot, baseDir, runGit, removeDir
     return { removed, errors }
   }
 
+  // A member session is bound into its worktree BEFORE its first prompt, so a host
+  // that cannot move a session must fail loudly here: a member that silently stayed
+  // in the shared tree would run that whole turn in the wrong directory while the
+  // team claims it is isolated.
+  async function bindOne({ sessionID, directory }) {
+    if (typeof bindSession !== "function") {
+      throw new Error("team worktree manager cannot bind a member session into its worktree: this host exposes no session move")
+    }
+    await bindSession({ sessionID, directory })
+  }
+
   return {
     async provision({ teamName, members }) {
       if (typeof teamName !== "string" || !teamName.trim()) throw new Error("team worktree manager needs a team name")
@@ -365,19 +376,24 @@ export function createTeamWorktreeManager({ repoRoot, baseDir, runGit, removeDir
     resolveTeamDirectory,
     sweepOrphans,
     /**
+     * Bind ONE member session into its worktree, before that member's first prompt.
+     */
+    async bindSession({ sessionID, directory }) {
+      await bindOne({ sessionID, directory })
+    },
+    /**
      * STRICT: moves every member session into its worktree; if any bind fails it
      * throws after attempting all members, so the caller can roll the team create
      * back instead of persisting a team whose sessions are not bound.
      */
     async bindSessions({ members }) {
-      if (typeof bindSession !== "function") return
       const failures = []
       for (const member of members ?? []) {
         const sessionID = typeof member?.sessionID === "string" ? member.sessionID : undefined
         const directory = typeof member?.worktreePath === "string" ? member.worktreePath : undefined
         if (!sessionID || !directory) continue
         try {
-          await bindSession({ sessionID, directory })
+          await bindOne({ sessionID, directory })
           log(`[oh-my-rigel] team member session bound to worktree: member=${member.name}; session=${sessionID}; path=${directory}`)
         } catch (error) {
           failures.push(`member=${member.name}: ${error instanceof Error ? error.message : String(error)}`)

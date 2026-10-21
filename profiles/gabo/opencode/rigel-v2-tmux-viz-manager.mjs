@@ -355,6 +355,11 @@ export function createTmuxVizManager({
   // creation. Persistence is a per-session property, default off, so ordinary
   // delegated children keep their existing close behavior byte for byte.
   isPersistentSession = () => false,
+  // The DURABLE source of that answer. It is consulted BEFORE the pane claim, so
+  // the claim and the pane agree on ONE answer, and a process that did not spawn the
+  // member (the TUI that draws the pane) can still know it is one. A failing resolver
+  // degrades to the synchronous answer instead of taking the claim on stale knowledge.
+  resolvePersistentSession = undefined,
   managerPid = process.pid,
   healthMarker = globalThis,
   logger = console.error,
@@ -399,6 +404,21 @@ export function createTmuxVizManager({
   let deferredLoopStopped = false
 
   const log = (line) => logger(`[oh-my-rigel] tmux-viz: ${line}`)
+
+  // One answer, resolved once: the local fact when THIS process spawned the member,
+  // the durable source otherwise. A durable source that cannot be read leaves the answer
+  // UNKNOWN (undefined): "I could not find out" is not "not a member", and a pane claimed
+  // on ignorance would later be closed like an ordinary child's.
+  async function resolvePersistence(sessionID) {
+    if (isPersistentSession(sessionID) === true) return true
+    if (typeof resolvePersistentSession !== "function") return false
+    try {
+      return (await resolvePersistentSession(sessionID)) === true
+    } catch (error) {
+      log(`persistent-session resolution failed for ${sessionID}: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+  }
 
   async function applyLayoutEnforcement() {
     await runner.run(buildApplyLayoutArgs(resolved.layout, resolved.mainPaneSize))
@@ -503,7 +523,7 @@ export function createTmuxVizManager({
     return false
   }
 
-  async function spawnPendingSession({ sessionID, description }) {
+  async function spawnPendingSession({ sessionID, description, persistent }) {
     const serverAlive = await health.isServerRunning(serverUrl)
     if (!serverAlive) return { ok: false, error: "opencode server is not reachable", deferred: true }
     const ready = await waitForSessionReady(sessionID)
@@ -518,7 +538,7 @@ export function createTmuxVizManager({
       isolated: Boolean(result.isolated),
       cmux: environment.cmux,
       createdAt: Date.now(),
-      persistent: isPersistentSession(sessionID) === true,
+      persistent: persistent === true,
       activityVersion: 0,
       stablePolls: 0,
       attachActivated: environment.cmux && !result.isolated,
@@ -672,6 +692,11 @@ export function createTmuxVizManager({
       log(`close failed for ${sessionID}: ${result.reason}; pending retry`)
     },
     onPoll: (now) => retryPendingCloses(now),
+    // The persistence of a member pane is re-resolved from the shared/durable state
+    // right before a close is decided: the durable record can land AFTER the pane was
+    // claimed, and a member must never be closed like an ordinary child. An answer that
+    // could not be resolved also spares the pane (the status seam's own rule).
+    resolvePersistentSession: async (sessionID) => (await resolvePersistence(sessionID)) !== false,
     runner: enabled ? runner : createTmuxVizRunner({ tmuxPath: "/nonexistent-tmux-viz", spawnImpl: () => ({ exitCode: Promise.resolve(1), stdout: Promise.resolve(""), stderr: Promise.resolve("") }) }),
     serverUrl,
     directory,
@@ -698,6 +723,19 @@ export function createTmuxVizManager({
       const sessionID = info?.id ?? info?.sessionID
       if (typeof sessionID !== "string" || !info?.parentID) return
       if (pendingSessions.has(sessionID) || sessions.has(sessionID)) return
+      if (claimedSessions.has(sessionID)) return
+      // Whether this session is a TEAM MEMBER decides if its pane survives the
+      // member's idle turns, and it is resolved BEFORE the pane claim: a claim taken
+      // on stale knowledge lets a member pane be closed like an ordinary child's, and
+      // the process that wins the claim is not necessarily the one that spawned it.
+      const persistent = await resolvePersistence(sessionID)
+      if (persistent === undefined) {
+        // The membership of this session could not be resolved, so the claim is NOT
+        // taken: a pane claimed on ignorance would be closed like an ordinary child's,
+        // and another instance (whose durable source works) may own it instead.
+        log(`not claiming a pane for ${sessionID}: team membership could not be resolved`)
+        return
+      }
       if (claimedSessions.has(sessionID)) return
       claimedSessions.add(sessionID)
       claimedByThisManager.add(sessionID)
@@ -730,7 +768,7 @@ export function createTmuxVizManager({
         }
       }
       pendingSessions.add(sessionID)
-      spawnQueue.push({ sessionID, description: String(info.title ?? sessionID).slice(0, 20) })
+      spawnQueue.push({ sessionID, description: String(info.title ?? sessionID).slice(0, 20), persistent })
       startDeferredLoop()
       await drainSpawnQueue().catch((error) => log(`spawn queue drain failed: ${error instanceof Error ? error.message : String(error)}`))
       pendingSessions.delete(sessionID)
