@@ -8,6 +8,7 @@ import { promisify } from "node:util"
 import { resolveAgentHome } from "../components/agent-home/resolve-agent-home"
 import { installLocalLauncher, uninstallLocalLauncher } from "./local-launcher"
 import { ensurePluginArtifacts } from "./plugin-artifacts"
+import { senpiEngineSearchPaths } from "./senpi-engine"
 import {
   dedupePackages,
   readPackages,
@@ -64,9 +65,14 @@ export async function runSenpiInstaller(options: SenpiInstallOptions = {}): Prom
   // The local route runs the user's own engine checkout, so it needs the same launcher the
   // published package ships; without it this install would boot unbranded. A launcher this
   // installer did not write (another product's `omo`) is left alone and reported as absent.
+  //
+  // The launcher resolves the engine when it starts: a packed plugin tree ships the plugin
+  // artifacts only, so the install must not demand the dependency tree the engine lives in. The
+  // paths it walks are baked in, because the tree that carries the engine is not reachable from
+  // the launcher's own directory.
   const launcherPath = installLocalLauncher({
     pluginPath: context.pluginPath,
-    senpiCliPath: join(context.repoRoot, "packages", "coding-agent", "dist", "cli.js"),
+    engineSearchPaths: senpiEngineSearchPaths({ pluginPath: context.pluginPath, repoRoot: context.repoRoot }),
     homeDir: context.homeDir,
   })
 

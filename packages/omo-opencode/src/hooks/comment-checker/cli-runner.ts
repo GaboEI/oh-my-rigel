@@ -1,7 +1,16 @@
 import type { PendingCall } from "./types"
 import { existsSync } from "fs"
 
-import { runCommentChecker, getCommentCheckerPath, startBackgroundInit, type HookInput } from "./cli"
+import {
+  appendCommentCheckerFailureNotice,
+  formatCommentCheckerFailureDetail,
+  getCommentCheckerPath,
+  isCommentCheckerInertForSession,
+  markCommentCheckerInertForSession,
+  runCommentChecker,
+  startBackgroundInit,
+  type HookInput,
+} from "./cli"
 
 let cliPathPromise: Promise<string | null> | null = null
 let isRunning = false
@@ -84,6 +93,11 @@ export async function processWithCli(
     void input
     debugLog("using CLI mode with path:", cliPath)
 
+    if (isCommentCheckerInertForSession(pendingCall.sessionID)) {
+      debugLog("comment-checker is inert for this session; skipping the check")
+      return
+    }
+
     const hookInput: HookInput = {
       session_id: pendingCall.sessionID,
       tool_name: pendingCall.tool.charAt(0).toUpperCase() + pendingCall.tool.slice(1),
@@ -116,6 +130,13 @@ export async function processWithCli(
 
     const result = await (deps.runCommentChecker ?? runCommentChecker)(hookInput, cliPath, customPrompt)
 
+    if (result.failure !== undefined) {
+      debugLog("comment-checker could not complete the check:", result.failure)
+      markCommentCheckerInertForSession(pendingCall.sessionID)
+      appendCommentCheckerFailureNotice(output, pendingCall.sessionID, formatCommentCheckerFailureDetail(result.failure))
+      return
+    }
+
     if (result.hasComments && result.message) {
       debugLog("CLI detected comments, appending message")
       output.output += `\n\n${result.message}`
@@ -143,6 +164,11 @@ export async function processApplyPatchEditsWithCli(
 
   for (const edit of edits) {
     await withCommentCheckerLock(async () => {
+      if (isCommentCheckerInertForSession(sessionID)) {
+        debugLog("comment-checker is inert for this session; skipping the check")
+        return
+      }
+
       const hookInput: HookInput = {
         session_id: sessionID,
         tool_name: "Edit",
@@ -157,6 +183,13 @@ export async function processApplyPatchEditsWithCli(
       }
 
       const result = await runCommentChecker(hookInput, cliPath, customPrompt)
+
+      if (result.failure !== undefined) {
+        debugLog("comment-checker could not complete the check:", result.failure)
+        markCommentCheckerInertForSession(sessionID)
+        appendCommentCheckerFailureNotice(output, sessionID, formatCommentCheckerFailureDetail(result.failure))
+        return
+      }
 
       if (result.hasComments && result.message) {
         debugLog("CLI detected comments for apply_patch file:", edit.filePath)

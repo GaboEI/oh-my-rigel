@@ -28,7 +28,7 @@ const CONTEXT_PRESSURE_MARKERS = [
 interface StopPayload {
 	readonly session_id: string;
 	readonly cwd: string;
-	readonly transcript_path: string;
+	readonly transcript_path: string | null;
 	readonly stop_hook_active: boolean;
 }
 
@@ -163,7 +163,8 @@ function boulderContinuationWillFire(cwd: string, sessionId: string): boolean {
 	}
 }
 
-function transcriptShowsContextPressure(transcriptPath: string): boolean {
+function transcriptShowsContextPressure(transcriptPath: string | null): boolean {
+	if (transcriptPath === null) return false;
 	try {
 		const transcript = readFileSync(transcriptPath, "utf8").toLowerCase();
 		return CONTEXT_PRESSURE_MARKERS.some((marker) => transcript.includes(marker));
@@ -196,25 +197,28 @@ function boulderPlanHasChecklist(cwd: string, entry: Record<string, unknown>): b
 	return false;
 }
 
+// Codex types `transcript_path` and `last_assistant_message` as nullable in its
+// own `stop.command.input` schema, and a real Codex turn that ends without an
+// assistant message sends `last_assistant_message: null`. Rejecting those
+// payloads left the auto-resume loop silent on real turns.
 function parseStopPayload(value: unknown): StopPayload | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
 	const record = value as Record<string, unknown>;
+	if (record["hook_event_name"] !== "Stop") return null;
+	if (typeof record["session_id"] !== "string") return null;
+	if (typeof record["turn_id"] !== "string") return null;
+	if (typeof record["cwd"] !== "string") return null;
+	if (typeof record["model"] !== "string") return null;
+	if (typeof record["permission_mode"] !== "string") return null;
+	if (typeof record["stop_hook_active"] !== "boolean") return null;
+	const transcriptPath = record["transcript_path"];
+	if (transcriptPath !== null && typeof transcriptPath !== "string") return null;
 	const optionalMessage = record["last_assistant_message"];
-	const valid =
-		record["hook_event_name"] === "Stop" &&
-		typeof record["session_id"] === "string" &&
-		typeof record["turn_id"] === "string" &&
-		typeof record["transcript_path"] === "string" &&
-		typeof record["cwd"] === "string" &&
-		typeof record["model"] === "string" &&
-		typeof record["permission_mode"] === "string" &&
-		typeof record["stop_hook_active"] === "boolean" &&
-		(optionalMessage === undefined || typeof optionalMessage === "string");
-	if (!valid) return null;
+	if (optionalMessage !== undefined && optionalMessage !== null && typeof optionalMessage !== "string") return null;
 	return {
 		session_id: record["session_id"] as string,
 		cwd: record["cwd"] as string,
-		transcript_path: record["transcript_path"] as string,
+		transcript_path: transcriptPath,
 		stop_hook_active: record["stop_hook_active"] as boolean,
 	};
 }

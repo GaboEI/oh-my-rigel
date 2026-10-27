@@ -9,6 +9,8 @@ import { processWithCli } from "./cli-runner"
 import type { PendingCall } from "./types"
 import { unsafeTestValue } from "../../../../../test-support/unsafe-test-value"
 
+const FAILURE_NOTICE_MARKER = "[comment-checker] Comment review did not run."
+
 function createMockInput() {
   return {
     session_id: "test",
@@ -221,6 +223,167 @@ exit /b 2
       await processWithCli({ tool: "write", sessionID: "ses-second", callID: "call-2" }, secondPendingCall, { output: "" }, "/fake", undefined, () => {}, { runCommentChecker: cliMocks.runCommentChecker })
       // then
       expect(callCount).toBe(2)
+    })
+  })
+
+  describe("comment review failure notice", () => {
+    test("#given a checker that cannot start #when processWithCli runs #then it appends a visible notice", async () => {
+      // given
+      const pendingCall: PendingCall = {
+        tool: "write",
+        sessionID: "ses-failure-visible",
+        filePath: "/tmp/a.ts",
+        newString: "// new comment",
+        timestamp: Date.now(),
+      }
+      const output = { output: "Success" }
+
+      // when
+      await processWithCli(
+        { tool: "write", sessionID: pendingCall.sessionID, callID: "call-failure" },
+        pendingCall,
+        output,
+        "/fake",
+        undefined,
+        () => {},
+        {
+          runCommentChecker: async () => ({
+            hasComments: false,
+            message: "",
+            failure: { exitCode: null, stderr: "spawn EACCES" },
+          }),
+        },
+      )
+
+      // then
+      expect(output.output.startsWith("Success")).toBe(true)
+      expect(output.output).toContain(FAILURE_NOTICE_MARKER)
+      expect(output.output).toContain("spawn EACCES")
+      expect(output.output).toContain("NOT checked")
+    })
+
+    test("#given a checker that cannot start #when the same session edits again #then the notice is not repeated", async () => {
+      // given
+      const sessionID = "ses-failure-bounded"
+      const pendingCall: PendingCall = {
+        tool: "write",
+        sessionID,
+        filePath: "/tmp/a.ts",
+        newString: "// new comment",
+        timestamp: Date.now(),
+      }
+      const first = { output: "Success" }
+      const second = { output: "Success" }
+      const failingChecker = async () => ({
+        hasComments: false,
+        message: "",
+        failure: { exitCode: null, stderr: "spawn EACCES" },
+      })
+
+      // when
+      await processWithCli({ tool: "write", sessionID, callID: "call-bounded-1" }, pendingCall, first, "/fake", undefined, () => {}, { runCommentChecker: failingChecker })
+      await processWithCli({ tool: "write", sessionID, callID: "call-bounded-2" }, pendingCall, second, "/fake", undefined, () => {}, { runCommentChecker: failingChecker })
+
+      // then
+      expect(first.output).toContain(FAILURE_NOTICE_MARKER)
+      expect(second.output).toBe("Success")
+    })
+
+    test("#given a checker that finds comments #when processWithCli runs #then the findings message is appended unchanged", async () => {
+      // given
+      const pendingCall: PendingCall = {
+        tool: "write",
+        sessionID: "ses-findings-found",
+        filePath: "/tmp/a.ts",
+        newString: "// new comment",
+        timestamp: Date.now(),
+      }
+      const output = { output: "Success" }
+
+      // when
+      await processWithCli(
+        { tool: "write", sessionID: pendingCall.sessionID, callID: "call-found" },
+        pendingCall,
+        output,
+        "/fake",
+        undefined,
+        () => {},
+        {
+          runCommentChecker: async () => ({ hasComments: true, message: "found comments" }),
+        },
+      )
+
+      // then
+      expect(output.output).toBe("Success\n\nfound comments")
+    })
+
+    test("#given a checker that finds nothing #when processWithCli runs #then no failure notice is appended", async () => {
+      // given
+      const pendingCall: PendingCall = {
+        tool: "write",
+        sessionID: "ses-findings-clean",
+        filePath: "/tmp/a.ts",
+        newString: "// new comment",
+        timestamp: Date.now(),
+      }
+      const output = { output: "Success" }
+
+      // when
+      await processWithCli(
+        { tool: "write", sessionID: pendingCall.sessionID, callID: "call-clean" },
+        pendingCall,
+        output,
+        "/fake",
+        undefined,
+        () => {},
+        {
+          runCommentChecker: async () => ({ hasComments: false, message: "" }),
+        },
+      )
+
+      // then
+      expect(output.output).toBe("Success")
+    })
+
+    test("#given the comment-checker binary cannot be resolved #when runCommentChecker runs #then it reports a failure", async () => {
+      // given
+      const { runCommentChecker } = await import("./cli")
+      const missingBinaryPath = join(tmpdir(), "comment-checker-missing-binary", "comment-checker")
+
+      // when
+      const result = await runCommentChecker(createMockInput(), missingBinaryPath)
+
+      // then
+      expect(result.hasComments).toBe(false)
+      expect(result.failure).toBeDefined()
+      expect(result.failure?.exitCode).toBeNull()
+      expect(result.failure?.stderr.length).toBeGreaterThan(0)
+    })
+
+    test("#given a checker that exits outside its protocol #when runCommentChecker runs #then it reports the exit code as a failure", async () => {
+      // given
+      const { runCommentChecker } = await import("./cli")
+      const binaryPath = createScriptBinary(`#!/bin/sh
+if [ "$1" != "check" ]; then
+  exit 1
+fi
+cat >/dev/null
+echo "checker exploded" 1>&2
+exit 3
+`, `@echo off
+if "%~1" neq "check" exit /b 1
+more > nul
+1>&2 echo(checker exploded
+exit /b 3
+`)
+
+      // when
+      const result = await runCommentChecker(createMockInput(), binaryPath)
+
+      // then
+      expect(result.hasComments).toBe(false)
+      expect(result.failure?.exitCode).toBe(3)
+      expect(result.failure?.stderr).toContain("checker exploded")
     })
   })
 })

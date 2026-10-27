@@ -34,6 +34,26 @@ function sessionDir(): string {
 	return join(workDir, ".omo", "ulw-loop", "s1");
 }
 
+// The Stop payload Codex 0.162.1 really sends, captured from a live
+// `codex app-server` turn in an isolated CODEX_HOME. `last_assistant_message`
+// is null there because the turn ended without an assistant message, and
+// Codex declares both it and `transcript_path` as NullableString in its own
+// embedded `stop.command.input` schema.
+function realCodexStopPayload(): Record<string, unknown> {
+	const captured = JSON.parse(readFileSync("test/fixtures/codex-stop-payload.json", "utf8")) as Record<
+		string,
+		unknown
+	>;
+	// Only the three workspace-bound fields are re-pointed at the temp fixture;
+	// every other field stays exactly as Codex sent it.
+	return {
+		...captured,
+		session_id: "s1",
+		cwd: workDir,
+		transcript_path: join(workDir, "transcript.jsonl"),
+	};
+}
+
 function writeGoals(goals: readonly Record<string, unknown>[], planOverrides: Record<string, unknown> = {}): void {
 	mkdirSync(sessionDir(), { recursive: true });
 	writeFileSync(
@@ -97,6 +117,24 @@ describe("runStopResumeHook", () => {
 		writeGoals([pendingGoal()]);
 
 		expect(runStopResumeHook({ hook_event_name: "Stop" })).toBe("");
+	});
+
+	it("#given the real Codex Stop payload with a null last_assistant_message #when the hook runs #then blocks with a resume directive", () => {
+		writeGoals([pendingGoal()]);
+
+		const output = runStopResumeHook(realCodexStopPayload());
+
+		const parsed = JSON.parse(output);
+		expect(parsed.decision).toBe("block");
+		expect(parsed.reason).toContain("omo-agent-toolkit ulw-loop status");
+	});
+
+	it("#given a Stop payload with a null transcript_path #when the hook runs #then blocks with a resume directive", () => {
+		writeGoals([pendingGoal()]);
+
+		const output = runStopResumeHook({ ...realCodexStopPayload(), transcript_path: null });
+
+		expect(JSON.parse(output).decision).toBe("block");
 	});
 
 	it("#given an active boulder work with remaining plan tasks #when the hook runs #then defers to ulw-execute-continuation", () => {

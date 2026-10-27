@@ -26,14 +26,14 @@ Harness-neutral LSP engine (`@oh-my-opencode/lsp-core`). Manages language server
 | `src/lsp/fixtures/` | Test-only LSP servers/probes (workspace-edit server, diagnostics-freshness contract probe) |
 | `src/post-edit/orchestration.ts` | Post-edit diagnostics blocks (capped concurrency, not-configured cache) via `./post-edit` subpath |
 | `src/missing-dependency-result.ts` | Shared missing-dependency MCP result shape via `./missing-dependency-result` subpath |
-| `src/tools/definitions.ts` | `LSP_MCP_TOOLS`: 8 tool schemas exported to MCP |
+| `src/tools/definitions.ts` | `LSP_MCP_TOOLS`: 9 tool schemas exported to MCP |
 | `src/tools/runtime.ts` | `executeLspTool()` + `coerceToolArguments()` dispatch |
 | `src/request-context.ts` | `runWithRequestContext()` / `contextCwd()` / `contextEnv()` via `AsyncLocalStorage` |
 | `src/mcp.ts` | `handleLspMcpRequest()` + `runMcpStdioServer()`: MCP entry over `mcp-stdio-core` |
 
 ## NOTES
 
-- **Tool surface:** 8 tools: `lsp_diagnostics`, `lsp_goto_definition`, `lsp_find_references`, `lsp_symbols`, `lsp_prepare_rename`, `lsp_rename`, `lsp_status`, and `lsp_install_decision`. Pinned by `src/tool-surface.test.ts`.
+- **Tool surface:** 9 tools: `lsp_status`, `lsp_diagnostics`, `lsp_goto_definition`, `lsp_find_references`, `lsp_symbols`, `lsp_prepare_rename`, `lsp_rename`, `lsp_format`, and `lsp_install_decision`. Pinned by `src/tool-surface.test.ts`.
 - **Subpath exports:** `.`, `./tools`, `./request-context`, `./missing-dependency-result`, `./mcp`, `./post-edit`, and wildcard `./lsp/*` — all point at source `.ts`, no dist build.
 - **RequestContext seam:** `request-context.ts` uses `AsyncLocalStorage` so the MCP proxy can thread `cwd` and `env` through shared daemon sessions.
 - **Config priority:** project `.codex/lsp-client.json` beats user `~/.codex/lsp-client.json` beats `BUILTIN_SERVERS`.

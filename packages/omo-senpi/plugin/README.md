@@ -28,25 +28,23 @@ The plugin ships 19 skills by default:
 
 ## Install
 
-Build the plugin artifacts before installing:
+Build the plugin artifacts from the repository root:
 
 ```sh
-bun run --cwd packages/omo-senpi build
+bun run build:senpi-plugin
 ```
 
-Then install the built local path:
+Then install the built local path with the installer the plugin ships:
 
 ```sh
-senpi install /absolute/path/to/omo/packages/omo-senpi/plugin
+node /absolute/path/to/omo/packages/omo-senpi/plugin/scripts/install.mjs install
 ```
 
-The OMO installer will also support the Senpi target:
+That installer registers the plugin path in the Senpi settings and writes the `omo` launcher, which starts the pinned `@code-yeongyu/senpi` engine (the engine resolves from that dependency; set `OMO_SENPI_CLI_PATH` to point the launcher at a different engine CLI).
 
-```sh
-omo install --platform=senpi
-```
+`omo install --platform=<target>` installs the other editions (`opencode`, `codex`, `both`, `native`); the Senpi edition has no platform flag, it installs through its own installer.
 
-Only local-path installs are supported in v1. `git:` and `npm:` installs are not supported because `extensions/` and `skills/` are generated build outputs, not checked-in source trees.
+Only local-path installs are supported in v1. `git:` and `npm:` installs are not supported because `extensions/` and `skills/` are generated build outputs, not authored source trees.
 
 ## Bundled MCP servers
 

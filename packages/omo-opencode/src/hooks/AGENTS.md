@@ -55,7 +55,7 @@ Hook name allowlist for `disabled_hooks`: all configurable hook names enumerated
 
 | Hook | Event | Purpose |
 |------|-------|---------|
-| `commentChecker` | tool.execute.after | Block AI-slop comment patterns (binary: `@code-yeongyu/comment-checker`) |
+| `commentChecker` | tool.execute.after | Flag AI-slop comment patterns in the tool output; never blocks (binary: `@code-yeongyu/comment-checker`) |
 | `toolOutputTruncator` | tool.execute.after | Truncate oversized tool output |
 | `directoryAgentsInjector` | tool.execute.before | Inject dir-local AGENTS.md into context |
 | `directoryReadmeInjector` | tool.execute.before | Inject dir-local README.md into context |
