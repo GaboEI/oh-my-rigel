@@ -7,7 +7,7 @@
     "judge": "profiles/gabo/opencode/agents/judge.v2.json",
     "skillsOmo": "packages/shared-skills/skills/*/SKILL.md",
     "skillsBeta": "profiles/gabo/skills/*/SKILL.md",
-    "commands": "packages/omo-opencode/src/cli/* + packages/omo-opencode/src/features/builtin-commands/commands.ts + profiles/gabo/cli/commands/*.mjs"
+    "commands": "packages/omo-opencode/src/cli/* + packages/omo-opencode/src/features/builtin-commands/commands.ts + profiles/gabo/cli/commands/*.mjs + profiles/gabo/opencode/rigel-v2-native-mcp-oauth-command.mjs"
   },
   "agents": [
     {
@@ -495,6 +495,13 @@
       "name": "side",
       "queHace": "Alias de la conversación lateral.",
       "queToca": "Igual que la conversación lateral: sesión aislada sin tocar el hilo principal."
+    },
+    {
+      "id": "slash:mcp-oauth",
+      "surface": "slash",
+      "name": "mcp-oauth",
+      "queHace": "Gestiona el inicio, consulta y cierre de autorización OAuth para un servidor MCP.",
+      "queToca": "Guarda o elimina tokens OAuth en el almacenamiento del anfitrión; nunca los imprime."
     }
   ]
 }

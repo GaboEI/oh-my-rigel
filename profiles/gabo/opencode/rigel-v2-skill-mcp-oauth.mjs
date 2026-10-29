@@ -372,12 +372,24 @@ export function createNativeOAuthProvider({
 } = {}) {
   if (!serverUrl || typeof serverUrl !== "string") throw new Error("OAuth provider requires a server URL")
   let tokens = null
+  let tokensHydrated = false
   let clientCredentials = typeof clientId === "string" && clientId ? { clientId } : null
   let cachedMetadata = null
   let currentScopes = [...scopes]
 
+  async function hydrateTokens() {
+    if (tokensHydrated) return tokens
+    tokensHydrated = true
+    if (storage && typeof storage.get === "function") {
+      const stored = await storage.get(tokenStorageKey(serverUrl))
+      tokens = stored && typeof stored.accessToken === "string" ? stored : null
+    }
+    return tokens
+  }
+
   async function persistTokens(next) {
     tokens = next
+    tokensHydrated = true
     if (storage && typeof storage.set === "function") {
       await storage.set(tokenStorageKey(serverUrl), tokens)
     }
@@ -446,11 +458,16 @@ export function createNativeOAuthProvider({
       client_id: credentials.clientId,
       ...(credentials.clientSecret ? { client_secret: credentials.clientSecret } : {}),
     }, fetchImpl)
-    await persistTokens(tokenData)
-    return tokenData
+    // RFC 6749 allows a refresh response to omit `refresh_token`. In that case
+    // the existing grant remains authoritative; dropping it would force an
+    // unnecessary interactive login on the next expiry or resource-server 401.
+    const persisted = { ...tokenData, refreshToken: tokenData.refreshToken ?? refreshToken }
+    await persistTokens(persisted)
+    return persisted
   }
 
   async function getValidToken() {
+    await hydrateTokens()
     if (tokens && !isTokenExpired(tokens)) return tokens.accessToken
     if (tokens?.refreshToken) {
       try {
@@ -465,6 +482,13 @@ export function createNativeOAuthProvider({
     tokens = null
   }
 
+  function invalidateAccessToken() {
+    // A resource-server 401 rejects the bearer, not the refresh grant. Keep the
+    // refresh token long enough for getValidToken() to try the non-interactive
+    // refresh path before falling back to a full authorization-code login.
+    tokens = tokens ? { ...tokens, expiresAt: 0 } : null
+  }
+
   return {
     get serverUrl() { return serverUrl },
     get scopes() { return [...currentScopes] },
@@ -473,7 +497,7 @@ export function createNativeOAuthProvider({
     refresh,
     getValidToken,
     stepUp,
-    invalidate: () => { tokens = null },
+    invalidateAccessToken,
   }
 }
 
@@ -555,7 +579,7 @@ export function createOAuthHttpMcpClient({ url, oauth, headers = {}, fetchImpl =
       }
       if (status !== 401 && status !== 403) throw error
       // Force a fresh token (refresh first, full login as fallback) and retry once.
-      provider.invalidate()
+      provider.invalidateAccessToken()
       return attempt(await provider.getValidToken())
     }
   }

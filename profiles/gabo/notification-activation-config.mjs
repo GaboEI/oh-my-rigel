@@ -1,21 +1,21 @@
 /**
- * Activation-time resolution for Oh My Rigel session notifications.
+ * Activation-time resolution for the Rigel companion CLI plugin entry.
  *
- * The V2 companion CLI plugin is inert unless its config is present and
- * `enabled` is true. This module owns that resolution so the activation script
- * stays a thin file copier and the decision is unit-testable without touching
- * the laboratory.
+ * Session notification is host-owned (row 57): Rigel composes no notifier
+ * surface and never suppresses the host builtin notifier. What remains here is
+ * the resolution of the profile's inert notification options (carried as data in
+ * the `cli.json` entry) and the family/marker bookkeeping that keeps `cli.json`
+ * free of Rigel-owned duplicates and of the retired
+ * `-opencode.notifications` marker.
  *
- * V1 gate, ported: the hook is created only when `session-notification` is not
- * in `disabled_hooks`, and an external notifier conflict suppresses it unless
- * `notification.force_enable` is true.
+ * V1 gate, ported: the hook would be created only when `session-notification` is
+ * not in `disabled_hooks`, and an external notifier conflict suppresses it
+ * unless `notification.force_enable` is true.
  */
 
 import { isGoalEngineEntry } from "./rigel-v2-goal-registration.mjs"
 
-export const NOTIFICATION_PLUGIN_ID = "oh-my-rigel.notification"
-
-/** `cli.json` plugin entry that disables the always-on host notifier. */
+/** Historical `cli.json` entry that suppressed the host's builtin notifier. Rigel never writes it; upgrade and uninstall only remove it. */
 export const DISABLED_BUILTIN_NOTIFICATION = "-opencode.notifications"
 
 /** V1 default, from `createSessionNotification`'s merged config. */
@@ -161,52 +161,27 @@ function isOurRuntimeEntry(entry, { runtimeDir, familyRoot }) {
 }
 
 /**
- * Return a new `cli.json` with our companion plugin registered exactly once
- * (object form carrying the resolved options) and the host's built-in notifier
- * disabled so the two never double-announce - ONLY when the notification config
- * is explicitly present and enabled.
+ * Register the composed companion CLI plugin (`./tui`) exactly once in
+ * `cli.json`.
  *
- * When it is absent or disabled, any previous registration and the builtin
- * disable marker are removed, so an unconfigured profile leaves `cli.json`
- * without our entry and with `opencode.notifications` untouched. Idempotent:
- * re-running yields the same array, and unrelated plugins keep their position.
- */
-export function registerNotificationCliPlugin(cliConfig, { runtimeDir, familyRoot = runtimeDir, options, disableBuiltin = true } = {}) {
-  const next = { ...(cliConfig && typeof cliConfig === "object" ? cliConfig : {}) }
-  const current = Array.isArray(next.plugins) ? next.plugins : []
-  const plugins = current.filter((entry) => {
-    if (isOurRuntimeEntry(entry, { runtimeDir, familyRoot })) return false
-    if (entry === DISABLED_BUILTIN_NOTIFICATION) return false
-    return true
-  })
-  if (options?.enabled === true) {
-    plugins.push({ package: runtimeDir, options: { notification: options } })
-    if (disableBuiltin) plugins.push(DISABLED_BUILTIN_NOTIFICATION)
-  }
-  next.plugins = plugins
-  return next
-}
-
-/**
- * Register the composed companion CLI plugin (`./tui`) exactly once and, when
- * the notification config is enabled, disable the host's always-on builtin
- * notifier so the two never double-announce.
+ * The package always registers: the companion composes several independent
+ * surfaces (legacy-name notice, native-edition nudge, task toasts, the visual
+ * panel), and each surface applies its own gate. Session notification is
+ * host-owned (row 57), so this function composes no notification surface and
+ * never writes the host builtin notifier disable marker
+ * (`-opencode.notifications`).
  *
- * Unlike {@link registerNotificationCliPlugin}, this always registers the
- * package: the companion now composes several independent surfaces (notification,
- * legacy-name notice, native-edition nudge, task toasts), and the
- * non-notification surfaces are default-on. Each surface applies its own gate, so
- * registering the package while the notification block is disabled is not a
- * double-announce risk.
+ * A marker left behind by an older Rigel version is removed here so an upgrade
+ * converges on the host-owned state instead of keeping the suppression. That
+ * removal is the only remaining marker handling: the marker is never added.
  *
  * Family identity: `familyRoot` is the stable, version-independent Rigel state
  * root. Every entry whose package sits under it belongs to the same family, so a
  * version transition replaces the existing family entry IN PLACE with the active
  * `runtimeDir` instead of appending a second one. Exactly one family entry
- * survives; foreign plugins keep their position; the host builtin disable marker
- * is present if and only if the notification surface is enabled. Idempotent.
+ * survives; foreign plugins keep their position. Idempotent.
  */
-export function registerCompanionCliPlugin(cliConfig, { runtimeDir, familyRoot = runtimeDir, options, notificationEnabled = false, disableBuiltin = true } = {}) {
+export function registerCompanionCliPlugin(cliConfig, { runtimeDir, familyRoot = runtimeDir, options } = {}) {
   const next = { ...(cliConfig && typeof cliConfig === "object" ? cliConfig : {}) }
   const current = Array.isArray(next.plugins) ? next.plugins : []
   const entry = { package: runtimeDir, options: { notification: options } }
@@ -224,7 +199,6 @@ export function registerCompanionCliPlugin(cliConfig, { runtimeDir, familyRoot =
     plugins.push(candidate)
   }
   if (!placed) plugins.push(entry)
-  if (notificationEnabled && disableBuiltin) plugins.push(DISABLED_BUILTIN_NOTIFICATION)
   next.plugins = plugins
   return next
 }

@@ -207,7 +207,7 @@ export function createOpenclawInbound({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: normalized.telegramChatId,
-          text: "Injected into Codex CLI session.",
+          text: "Injected into OpenCode V2 session.",
           reply_to_message_id: messageId,
         }),
       })

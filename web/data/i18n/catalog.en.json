@@ -728,9 +728,9 @@
     },
     "notificacion-al-terminar-o-pedir-permiso": {
       "nombre": "Notification on completion or permission request",
-      "que_es": "Alerts you outside the chat when the agent finishes or needs something.",
-      "modo_de_activacion": "Setting",
-      "como_se_usa": "Setting: enable session alerts in the `notification` section of your configuration; if you also use the host program's native alert, choose only one of the two routes to avoid double alerts.",
+      "que_es": "The OpenCode V2 host alerts you outside the chat when the agent finishes or needs permission.",
+      "modo_de_activacion": "Automatic",
+      "como_se_usa": "Automatic: OpenCode V2 delivers the native alert. Rigel does not enable, suppress, or duplicate it.",
       "cuando_sirve": "You go to another window with music and the system alert brings you back right when the agent asks permission to run something.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
@@ -782,20 +782,20 @@
     },
     "integracion-con-discord-telegram-servicios-web-y-comandos-del-sistema": {
       "nombre": "Integration with Discord, Telegram, web services, and system commands",
-      "que_es": "Sends alerts outside the chat and lets you reply from another channel, a web address, or a system command.",
+      "que_es": "Sends events to a configured HTTP gateway or system command and, when an authorized bot is configured, routes Discord or Telegram replies into the chat.",
       "modo_de_activacion": "Setting",
-      "como_se_usa": "Setting: in the `openclaw` section of your configuration turn on `enabled: true`, set the outbound channel and the credentials (Discord or Telegram bot token, a web address, or a system command), and restart. After that, alerts go to the channel and you can answer from it.",
-      "cuando_sirve": "You go out: the alert reaches your phone via Telegram and you reply from there without going back to the terminal.",
-      "requisitos": "It activates when you configure an external integration.",
+      "como_se_usa": "Setting: in `openclaw`, enable `enabled: true`, define HTTP or command `gateways`, and bind each alert in `hooks` to its gateway and instruction. For replies, the gateway must return `messageId` and `platform`. Discord requires a token, channel, and authorized user IDs; Telegram requires a token and chat. Replies use the host session. Apply the configuration again and restart; no alert is sent when configuration is absent.",
+      "cuando_sirve": "With an approved gateway you receive alerts outside the chat and, if you enabled an authorized bot, reply from that channel without returning to the terminal.",
+      "requisitos": "Requires `openclaw.enabled`, an HTTP or command gateway, an event hook, and `messageId` plus `platform` metadata to correlate replies; Discord and Telegram require every field of their authorized listener configuration.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "autorizacion-de-servicios-externos": {
       "nombre": "External service authorization",
       "que_es": "Signs in and out of services that require it.",
-      "modo_de_activacion": "Terminal",
-      "como_se_usa": "Terminal: `omo mcp oauth login <service> --server-url <url>` to sign in (the authorization page opens outside the chat); it may ask for a client identifier and permissions if the service needs them; `omo mcp oauth status [service]` checks the status and `omo mcp oauth logout <service> --server-url <url>` signs out.",
-      "cuando_sirve": "You connect an external service for the first time without pasting tokens by hand or touching secret files.",
-      "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
+      "modo_de_activacion": "Visible command",
+      "como_se_usa": "Visible command: `/mcp-oauth login <service> --server-url <url>` starts OAuth with PKCE and dynamic registration when the server supports it; add `--client-id` or scopes only when the server requires them. `/mcp-oauth status [service]` checks status and `/mcp-oauth logout <service> --server-url <url>` removes the token. On a host without a browser it shows the URL for manual completion; tokens are never printed.",
+      "cuando_sirve": "You connect an OAuth MCP server for the first time without pasting tokens by hand or touching secret files.",
+      "requisitos": "Requires the HTTP(S) URL of an MCP server that supports OAuth; no client identifier is invented and dynamic registration is used only when the server supports it.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "servicio-alternativo-de-inteligencia-artificial": {
@@ -827,11 +827,11 @@
     },
     "conexiones-opcionales": {
       "nombre": "Optional connections",
-      "que_es": "Lets you connect, only if you decide to, services for repositories, databases, isolated environments, or security analysis.",
+      "que_es": "Lets you add MCP connections for repositories, databases, isolated environments, or security analysis only by your own choice.",
       "modo_de_activacion": "Setting",
-      "como_se_usa": "Setting: in your configuration you add only the connections you want (repositories, databases, isolated environments, security analysis) with their credentials; without configuring anything, none appears.",
-      "cuando_sirve": "You need to query your real database: you add that connection and it activates; the rest of the catalog stays untouched.",
-      "requisitos": "It only activates when you pick and configure one of those connections.",
+      "como_se_usa": "Setting: Docker, GitHub, Postgres, and Tide are optional connections and are not embedded in the portable profile. Add only the chosen MCP configuration and its own requirements; if it uses environment variables, allow their names in the user `mcp_env_allowlist`. `grep_app`, `lsp`, `context7`, and bundled SSH are built in; Playwright and Obsidian are core external connections, not optional connections in this row.",
+      "cuando_sirve": "You need to query your real database: you add that connection and it activates; the remaining optional connections stay untouched.",
+      "requisitos": "Each optional connection requires its MCP configuration and the chosen service's requirements; environment variables are allowed only from the user `mcp_env_allowlist`.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "programa-controlado-con-ordenes-escritas": {

@@ -100,7 +100,7 @@ try {
   check("A03.upgradeProbe.absentInV1", !fs.existsSync(path.join(v1Runtime, "rigel-v2-upgrade-probe.mjs")))
   const cliAfterInstall = readCli(cliFile)
   check("A04.install.cliSingleFamilyEntry", cliFamily(cliAfterInstall).length === 1 && cliFamily(cliAfterInstall)[0].package === v1Runtime)
-  check("A04.install.cliMarkerPresent", cliMarkerCount(cliAfterInstall) === 1)
+  check("A04.install.cliNoBuiltinNotifierSuppression", cliMarkerCount(cliAfterInstall) === 0)
   check("A04.install.cliPreservesForeign", (cliAfterInstall.plugins ?? []).includes("rigel-foreign-cli-plugin"))
 
   // ------------------------------------------------------- first operation
@@ -151,7 +151,7 @@ try {
   check("A04.rollback.logged", Array.isArray(stateAfterRollback.rollbackLog) && stateAfterRollback.rollbackLog.at(-1)?.byteIdentical === true)
   const cliAfterRollback = readCli(cliFile)
   check("A04.rollback.cliRestored", cliFamily(cliAfterRollback).length === 1 && cliFamily(cliAfterRollback)[0].package === v1Runtime)
-  check("A04.rollback.cliMarkerCorrect", cliMarkerCount(cliAfterRollback) === 1)
+  check("A04.rollback.cliNoBuiltinNotifierSuppression", cliMarkerCount(cliAfterRollback) === 0)
   check("A04.rollback.cliNoStaleV2", !cliFamily(cliAfterRollback).some((entry) => entry.package === v2Runtime))
 
   // Skew RED: a stale family entry in cli.json, and a stale runtime in

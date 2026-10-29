@@ -129,8 +129,8 @@ describe("#given the guide page #when rendered #then it is the complete grouped 
     test(`#given the ${lang} guide #when scanned #then it carries every group and item with unique ids`, () => {
       // given / when / then
       const html = GUIDE[lang]
-      expect((html.match(/class="guide-item"/g) || []).length).toBe(75)
-      for (const [prefix, count] of [["agente-", 12], ["skill-", 33], ["cmd-", 30]] as const) {
+      expect((html.match(/class="guide-item"/g) || []).length).toBe(76)
+      for (const [prefix, count] of [["agente-", 12], ["skill-", 33], ["cmd-", 31]] as const) {
         const ids = [...html.matchAll(new RegExp(`id="${prefix}([^"]+)"`, "g"))].map((m) => m[1])
         expect([prefix, ids.length, new Set(ids).size]).toEqual([prefix, count, count])
       }

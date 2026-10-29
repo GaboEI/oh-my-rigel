@@ -124,11 +124,11 @@ describe("#given the migrated catalog #when coverage is checked #then it is exac
     for (const area of catalog.areas) expect([area.id, area.count]).toEqual([area.id, EXPECTED_PER_AREA[area.id]])
   })
 
-  test("#given the state totals #when recomputed from functions #then they match the approved summary (76/15/16)", () => {
+  test("#given the state totals #when recomputed from functions #then they match the approved summary (77/13/17)", () => {
     // given / when / then
     const totals: Record<string, number> = { activada: 0, desactivada: 0, condicionada: 0 }
     for (const f of catalog.functions) totals[f.estado] += 1
-    expect(totals).toEqual({ activada: 76, desactivada: 15, condicionada: 16 })
+    expect(totals).toEqual({ activada: 77, desactivada: 13, condicionada: 17 })
     expect(catalog.catalog.stateTotals).toEqual(totals)
   })
 
@@ -393,14 +393,16 @@ describe("#given cli.json #when re-derived against the real CLI sources #then no
     for (const c of declared) expect(parsed.find((p) => p.name === c.name)?.aliases).toEqual(c.aliases)
   })
 
-  test("#given the builtin commands source #when the registered names are parsed #then the slash set matches cli.json", () => {
+  test("#given parent commands, BTW aliases, and native V2 mcp-oauth #when registered names are parsed #then the slash set matches cli.json", () => {
     // given / when / then
     const defs = readRepo("packages/omo-opencode/src/features/builtin-commands/commands.ts")
     const registered = [...defs.matchAll(/^ {4}"?([a-z][a-z0-9-]*)"?:\s*\{/gm)].map((m) => m[1])
+    const nativeMcpOauth = readRepo("profiles/gabo/opencode/rigel-v2-native-mcp-oauth-command.mjs")
+    const nativeCommands = [...nativeMcpOauth.matchAll(/^const COMMAND_NAME = "([a-z][a-z0-9-]*)"/gm)].map((m) => m[1])
     const btw = readRepo("packages/omo-opencode/src/features/btw-side/btw-command-draft.ts")
     const btwNames = btw.match(/\/\(\?:([a-z|]+)\)/)?.[1].split("|") ?? []
-    const slash = [...registered, ...btwNames].sort()
-    expect(slash.length).toBeGreaterThanOrEqual(9)
+    const slash = [...registered, ...nativeCommands, ...btwNames].sort()
+    expect(slash.length).toBeGreaterThanOrEqual(10)
     expect((cliDoc.owners.slash.commands as string[]).slice().sort()).toEqual(slash)
   })
 

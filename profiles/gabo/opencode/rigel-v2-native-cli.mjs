@@ -8,7 +8,7 @@
  * resolves exactly one `tui.js`).
  *
  * Composition order and each surface's own gate:
- *   - `oh-my-rigel.notification`        session/attention/toast notices; config-gated.
+ *   - host-native notification          authoritative; never duplicated by this companion.
  *   - `oh-my-rigel.legacy-plugin-notice` legacy plugin-name detection + toast; default-on.
  *   - `oh-my-rigel.native-edition-nudge` one-time native-edition nudge + /native dialog; default-on.
  *   - `oh-my-rigel.task-toast`          task progress/completion toasts; default-on.
@@ -21,7 +21,6 @@
  * still side-effect-free there.
  */
 
-import { createNotificationPlugin } from "./rigel-v2-native-cli-notification.mjs"
 import { createLegacyNoticeCliSurface } from "./rigel-v2-native-cli-legacy-notice.mjs"
 import { createNudgeCliSurface } from "./rigel-v2-native-cli-nudge.mjs"
 import { createTaskToastCliSurface } from "./rigel-v2-native-cli-task-toast.mjs"
@@ -36,7 +35,7 @@ function describeError(error) {
 
 /**
  * Build the composed CLI plugin. `overrides` carries the per-surface test seams
- * (`notification`, `legacyPluginNotice`, `nativeEditionNudge`, `taskToast`); the
+ * (`legacyPluginNotice`, `nativeEditionNudge`, `taskToast`, `btw`, `panel`); the
  * live configuration is read by each surface from `context.options`.
  */
 export function createCompanionCliPlugin(overrides = {}) {
@@ -44,7 +43,6 @@ export function createCompanionCliPlugin(overrides = {}) {
     id: CLI_PLUGIN_ID,
     setup(context) {
       const surfaces = [
-        createNotificationPlugin(overrides.notification ?? {}),
         createLegacyNoticeCliSurface(overrides.legacyPluginNotice ?? {}),
         createNudgeCliSurface(overrides.nativeEditionNudge ?? {}),
         createTaskToastCliSurface(overrides.taskToast ?? {}),

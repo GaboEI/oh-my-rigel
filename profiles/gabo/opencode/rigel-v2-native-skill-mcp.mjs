@@ -283,7 +283,7 @@ export function createHttpMcpClient({ url, headers = {}, fetchImpl = fetch }) {
 
 // Per-session manager. Key is `${sessionID}:${skillName}:${serverName}`, so the
 // same skill loaded in two sessions never shares an MCP client.
-export function createSkillMcpManager({ createClient, fetchImpl } = {}) {
+export function createSkillMcpManager({ createClient, fetchImpl, storage } = {}) {
   const clients = new Map()
   const pending = new Map()
   const clientFactory = createClient ?? ((config, options) => {
@@ -295,7 +295,7 @@ export function createSkillMcpManager({ createClient, fetchImpl } = {}) {
       // (PKCE + DCR + step-up); plain HTTP servers keep the unauthenticated
       // client. V1 parity: `skill-mcp-manager/oauth-handler.ts`.
       if (isOAuthConfigured(resolved)) {
-        return createOAuthHttpMcpClient({ url: resolved.url, oauth: resolved.oauth, headers: resolved.headers, fetchImpl, storage: resolved.oauthStorage })
+        return createOAuthHttpMcpClient({ url: resolved.url, oauth: resolved.oauth, headers: resolved.headers, fetchImpl, storage })
       }
       return createHttpMcpClient({ url: resolved.url, headers: resolved.headers, fetchImpl })
     }

@@ -641,9 +641,9 @@ function statusOf(state, paths) {
   checks.push({ name: "goal.singleServerEntry", pass: configPlugins.filter(isGoalEngineEntry).length === 1 })
 
   // cli.json: exactly one Rigel-family companion entry pointing at the SAME
-  // runtime as the server config, and the builtin-disable marker present iff the
-  // notification surface is enabled. This is the skew the P2 REJECT proved: a
-  // version transition used to leave both the old and new entries behind.
+  // runtime as the server config, and no historical builtin-notifier suppression
+  // marker. This is the skew the P2 REJECT proved: a version transition used to
+  // leave both the old and new entries behind.
   const cliConfigFile = path.join(path.dirname(paths.configFile), "cli.json")
   const cli = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
   const cliPlugins = Array.isArray(cli.plugins) ? cli.plugins : []
@@ -651,10 +651,9 @@ function statusOf(state, paths) {
   // slot, so it must not count as the runtime companion.
   const cliFamily = cliPlugins.filter((entry) => !isGoalEngineEntry(entry) && entry && typeof entry === "object" && typeof entry.package === "string" && under(canonicalize(entry.package), canonicalState))
   const markerCount = cliPlugins.filter((entry) => entry === "-opencode.notifications").length
-  const notificationEnabled = cliFamily[0]?.options?.notification?.enabled === true
   checks.push({ name: "cli.singleRigelEntry", pass: cliFamily.length === 1 })
   checks.push({ name: "cli.runtimeMatchesConfig", pass: cliFamily.length === 1 && cliFamily[0].package === state.pluginEntry })
-  checks.push({ name: "cli.disabledMarkerCorrect", pass: markerCount === (notificationEnabled ? 1 : 0) })
+  checks.push({ name: "cli.noBuiltinNotifierSuppression", pass: markerCount === 0 })
   checks.push({ name: "goal.singleCliEntry", pass: cliPlugins.filter(isGoalEngineEntry).length === 1 })
 
   const currentDigest = fs.existsSync(runtime) ? treeDigest(runtime) : null
@@ -772,7 +771,6 @@ function main() {
         runtimeDir: targetRuntime,
         familyRoot: paths.stateRoot,
         options: notificationOptions,
-        notificationEnabled: notificationOptions.enabled,
       })
       writeJson(cliConfigFile, registerGoalCliEntry(cliCompanion, { tuiShimDir: goalPaths.tuiEntry }))
       txn.failAt("rollback:after-cli")
