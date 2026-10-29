@@ -8,6 +8,7 @@ import {
   isOAuthConfigured,
   isStepUpRequired,
   mergeScopes,
+  tokenStorageKey,
 } from "./rigel-v2-skill-mcp-oauth.mjs"
 
 function memoryStorage(initial = {}) {
@@ -133,6 +134,21 @@ describe("native OAuth provider", () => {
     expect(stored.accessToken).toBe("access-1")
   })
 
+  test("a persisted valid token is reused without opening the browser", async () => {
+    const serverUrl = "https://mcp.example.com"
+    const storage = memoryStorage({ [tokenStorageKey(serverUrl)]: { accessToken: "persisted-access", expiresAt: Math.floor(Date.now() / 1000) + 3600 } })
+    let browserOpened = false
+    const provider = createNativeOAuthProvider({
+      serverUrl,
+      clientId: "static-client",
+      storage,
+      fetchImpl: async () => { throw new Error("token reuse must not contact OAuth discovery") },
+      openBrowser: () => { browserOpened = true },
+    })
+    expect(await provider.getValidToken()).toBe("persisted-access")
+    expect(browserOpened).toBe(false)
+  })
+
   test("a static clientId skips DCR and refresh exchanges grant_type=refresh_token", async () => {
     // given
     const { fetchImpl, seen } = discoveryFetch()
@@ -148,6 +164,52 @@ describe("native OAuth provider", () => {
     // then
     expect(refreshed.accessToken).toBe("access-2")
     expect(seen.some((entry) => entry.url === METADATA.registration_endpoint)).toBe(false)
+  })
+
+  test("refresh retains the persisted refresh token when the server does not rotate it", async () => {
+    const serverUrl = "https://mcp.example.com"
+    const storage = memoryStorage({
+      [tokenStorageKey(serverUrl)]: {
+        accessToken: "expired-access",
+        refreshToken: "stable-refresh",
+        expiresAt: 0,
+      },
+    })
+    const grants = []
+    let refreshCount = 0
+    let browserOpened = false
+    const fetchImpl = async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/.well-known/oauth-protected-resource")) {
+        return jsonResponse({ authorization_servers: ["https://auth.example.com"] })
+      }
+      if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(METADATA)
+      if (url === METADATA.token_endpoint) {
+        const form = new URLSearchParams(init?.body)
+        grants.push({ grantType: form.get("grant_type"), refreshToken: form.get("refresh_token") })
+        refreshCount += 1
+        return jsonResponse({ access_token: `access-${refreshCount}`, expires_in: 3600 })
+      }
+      throw new Error(`unexpected OAuth request: ${url}`)
+    }
+    const provider = createNativeOAuthProvider({
+      serverUrl,
+      clientId: "static-client",
+      storage,
+      fetchImpl,
+      openBrowser: () => { browserOpened = true },
+    })
+
+    expect(await provider.getValidToken()).toBe("access-1")
+    provider.invalidateAccessToken()
+    expect(await provider.getValidToken()).toBe("access-2")
+
+    expect(grants).toEqual([
+      { grantType: "refresh_token", refreshToken: "stable-refresh" },
+      { grantType: "refresh_token", refreshToken: "stable-refresh" },
+    ])
+    expect((await storage.get(tokenStorageKey(serverUrl))).refreshToken).toBe("stable-refresh")
+    expect(browserOpened).toBe(false)
   })
 
   test("getValidToken refreshes an expired token without a second login", async () => {
@@ -324,14 +386,33 @@ describe("OAuth MCP HTTP client", () => {
   })
 
   test("a 401 triggers one fresh-token retry instead of surfacing the failure", async () => {
-    // given: first tools/list arrives before a token the server accepts (401), then succeeds
-    const storage = memoryStorage()
-    const { fetchImpl } = discoveryFetch()
+    // given: a persisted bearer is rejected, but its refresh grant is still valid
+    const serverUrl = "https://mcp.example.com"
+    const storage = memoryStorage({
+      [tokenStorageKey(serverUrl)]: {
+        accessToken: "persisted-access",
+        refreshToken: "persisted-refresh",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      },
+    })
     const calls = []
+    const grants = []
     let toolCalls = 0
+    let browserOpened = false
     const mcp = async (input, init) => {
       const url = typeof input === "string" ? input : input.toString()
-      if (url !== "https://mcp.example.com") return fetchImpl(input, init)
+      if (url === "https://auth.example.com/token") {
+        const body = new URLSearchParams(init?.body)
+        grants.push({ grantType: body.get("grant_type"), refreshToken: body.get("refresh_token") })
+        return jsonResponse({ access_token: "refreshed-access", refresh_token: "next-refresh", expires_in: 3600 })
+      }
+      if (url === "https://mcp.example.com/.well-known/oauth-protected-resource") {
+        return jsonResponse({ authorization_servers: ["https://auth.example.com"] })
+      }
+      if (url === "https://mcp.example.com/.well-known/oauth-authorization-server") {
+        return jsonResponse(METADATA)
+      }
+      if (url !== serverUrl) throw new Error(`unexpected OAuth request: ${url}`)
       const payload = JSON.parse(init?.body ?? "{}")
       calls.push({ url, authorization: init?.headers?.authorization, body: init?.body })
       if (payload.method === "initialize") return jsonResponse({ jsonrpc: "2.0", id: payload.id, result: {} })
@@ -345,18 +426,21 @@ describe("OAuth MCP HTTP client", () => {
       return jsonResponse({ jsonrpc: "2.0", id: payload.id, result: {} })
     }
     const client = createOAuthHttpMcpClient({
-      url: "https://mcp.example.com",
+      url: serverUrl,
       oauth: { clientId: "static-client" },
       fetchImpl: mcp,
       storage,
-      openBrowser: (authorizationUrl) => { void driveCallback(authorizationUrl) },
+      openBrowser: () => { browserOpened = true },
     })
     await client.initialize()
     // when
     const result = await client.listTools()
     // then: the retry after refresh succeeds
     expect(result.map((tool) => tool.name)).toEqual(["ok"])
-    expect(calls.filter((call) => call.body?.includes("tools/list")).length).toBeGreaterThanOrEqual(2)
+    expect(calls.filter((call) => call.body?.includes("tools/list"))).toHaveLength(2)
+    expect(grants).toEqual([{ grantType: "refresh_token", refreshToken: "persisted-refresh" }])
+    expect(calls.at(-1)?.authorization).toBe("Bearer refreshed-access")
+    expect(browserOpened).toBe(false)
   })
 
   test("a 403 with WWW-Authenticate scopes performs step-up and retries", async () => {

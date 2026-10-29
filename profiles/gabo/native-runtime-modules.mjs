@@ -10,7 +10,8 @@ import path from "node:path"
  *
  * The native runtime has two entrypoints: the server plugin
  * (`rigel-v2-native.mjs`) and the companion CLI plugin
- * (`rigel-v2-native-cli-notification.mjs`, exported as the package `./tui`).
+ * (`rigel-v2-native-cli.mjs`, exported as the package `./tui`). The companion
+ * composes no session notifier: the host owns that surface (row 57).
  * Both roots are walked so the CLI entry's own dependency graph is staged too.
  *
  * Returns repo-forward-slash relative paths, sorted, excluding the entry

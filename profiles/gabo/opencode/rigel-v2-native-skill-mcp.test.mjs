@@ -14,6 +14,7 @@ import {
   translateSkillMcpConfig,
 } from "./rigel-v2-native-skill-mcp.mjs"
 import { loadSkillsFromDir } from "./rigel-v2-native-skills.mjs"
+import { tokenStorageKey } from "./rigel-v2-skill-mcp-oauth.mjs"
 
 const temporaryRoots = []
 const runningServers = []
@@ -163,6 +164,37 @@ describe("#given a real Streamable HTTP MCP server", () => {
     const config = { type: "http", url: `http://127.0.0.1:${server.port}/mcp` }
     const content = await manager.callTool(info("ses_http"), config, "echo", { ping: true })
     expect(content[0].text).toBe('http:{"ping":true}')
+    await manager.disconnectAll()
+  })
+
+  test("#given a persisted OAuth token #when the real manager connects #then it uses the bearer without OAuth discovery", async () => {
+    // given
+    const requests = []
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const authorization = request.headers.get("authorization")
+        requests.push({ url: request.url, authorization })
+        if (authorization !== "Bearer persisted-access") return new Response("unexpected OAuth discovery", { status: 404 })
+        const payload = await request.json()
+        const result = payload.method === "tools/call"
+          ? { content: [{ type: "text", text: "oauth:ok" }] }
+          : { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "oauth-fixture", version: "1.0.0" } }
+        return Response.json({ jsonrpc: "2.0", id: payload.id, result })
+      },
+    })
+    runningServers.push(server)
+    const url = `http://127.0.0.1:${server.port}/mcp`
+    const entries = new Map([[tokenStorageKey(url), { accessToken: "persisted-access", expiresAt: Math.floor(Date.now() / 1000) + 3600 }]])
+    const storage = { get: async (key) => entries.get(key), set: async (key, value) => entries.set(key, value) }
+    const manager = createSkillMcpManager({ storage })
+    const config = { type: "http", url, oauth: { clientId: "unused" } }
+    // when
+    const content = await manager.callTool(info("ses_oauth"), config, "echo", {})
+    // then
+    expect(content[0].text).toBe("oauth:ok")
+    expect(requests.length).toBeGreaterThan(0)
+    expect(requests.every((request) => request.authorization === "Bearer persisted-access")).toBe(true)
     await manager.disconnectAll()
   })
 })

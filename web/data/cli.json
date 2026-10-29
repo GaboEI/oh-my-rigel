@@ -9,6 +9,7 @@
     "omrCli": "profiles/gabo/cli/rigel-v2-cli-registry.mjs",
     "omrLifecycle": "profiles/gabo/rigel-v2-user-install.mjs",
     "slashCommands": "packages/omo-opencode/src/features/builtin-commands/commands.ts",
+    "nativeMcpOauth": "profiles/gabo/opencode/rigel-v2-native-mcp-oauth-command.mjs",
     "btwSide": "packages/omo-opencode/src/features/btw-side/btw-command-draft.ts"
   },
   "owners": {
@@ -51,8 +52,8 @@
     },
     "slash": {
       "owner": "parent",
-      "note": "In-chat slash commands registered by the OpenCode plugin.",
-      "commands": ["goal", "refactor", "ulw-execute", "stop-continuation", "remove-ai-slops", "handoff", "hyperplan", "btw", "side"]
+      "note": "In-chat slash commands registered by the parent OpenCode plugin, its BTW aliases, and the native Rigel V2 `mcp-oauth` command",
+      "commands": ["goal", "refactor", "ulw-execute", "stop-continuation", "remove-ai-slops", "handoff", "hyperplan", "btw", "side", "mcp-oauth"]
     }
   },
   "install": {

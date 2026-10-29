@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url"
  * This guards the three decoupling invariants a later edit could silently undo:
  * no `rigel-v2-*sidebar*.mjs` module survives under `opencode/`, the compositor
  * carries neither the retired symbol nor the retired module specifier, and the
- * compositor still composes exactly the five protected surfaces in their
+ * compositor still composes exactly the four protected surfaces in their
  * protected order.
  */
 
@@ -22,22 +22,26 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const COMPOSITOR = "rigel-v2-native-cli.mjs"
 const compositorSource = fs.readFileSync(path.join(HERE, COMPOSITOR), "utf8")
 
-// The five surfaces the composed `./tui` entry must keep, in composition order.
+// The four surfaces the composed `./tui` entry must keep, in composition order.
+// The host owns session notification, so no Rigel notifier surface is composed.
 const PROTECTED_SURFACES = [
-  "createNotificationPlugin",
   "createLegacyNoticeCliSurface",
   "createNudgeCliSurface",
   "createTaskToastCliSurface",
   "createBtwCliSurface",
 ]
 
-// The composed entry keeps the five protected surfaces and appends the read-only
-// visual panel as a sixth, order-preserving surface.
+// The composed entry keeps the four protected surfaces and appends the read-only
+// visual panel as a fifth, order-preserving surface.
 const COMPOSED_SURFACES = [...PROTECTED_SURFACES, "createPanelSurface"]
 
 // Name-based on purpose: it must never match `rigel-v2-native.mjs`, whose
 // protected comment mentions `cli-sidebar` without naming a sidebar module.
 const RETIRED_MODULE = /^rigel-v2-.*sidebar.*\.mjs$/
+
+// Session notification is host-owned (row 57): the duplicate notifier surface
+// and its emission guard are withdrawn, so no module of either name may return.
+const RETIRED_NOTIFIER_MODULES = ["rigel-v2-native-cli-notification.mjs", "rigel-v2-native-emission-guard.mjs"]
 
 function filesUnder(directory) {
   const found = []
@@ -86,8 +90,21 @@ describe("native sidebar decoupling audit", () => {
     })
   })
 
+  describe("#given the host-owned session notifier", () => {
+    test("#then no Rigel notifier or emission-guard module survives under profiles/gabo/opencode", () => {
+      const names = filesUnder(HERE).map((file) => path.basename(file))
+      expect(names.filter((name) => RETIRED_NOTIFIER_MODULES.includes(name))).toEqual([])
+    })
+
+    test("#then the composed entry imports and registers no notifier surface", () => {
+      expect(compositorSource).not.toContain("rigel-v2-native-cli-notification")
+      expect(compositorSource).not.toContain("rigel-v2-native-emission-guard")
+      expect(compositorSource).not.toContain("createNotificationPlugin")
+    })
+  })
+
   describe("#given the composed ./tui entry", () => {
-    test("#then it composes exactly the five protected surfaces plus the read-only panel, in order", () => {
+    test("#then it composes exactly the four protected surfaces plus the read-only panel, in order", () => {
       expect(composedSurfaceFactories(compositorSource)).toEqual(COMPOSED_SURFACES)
     })
   })

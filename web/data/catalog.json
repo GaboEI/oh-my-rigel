@@ -6,9 +6,9 @@
     "totalFunctions": 107,
     "totalAreas": 14,
   "stateTotals": {
-    "activada": 76,
-    "desactivada": 15,
-    "condicionada": 16
+    "activada": 77,
+    "desactivada": 13,
+    "condicionada": 17
   }
   },
   "areas": [
@@ -3554,11 +3554,11 @@
       "nombre": "Notificación al terminar o pedir permiso",
       "area": "I",
       "areaSlug": "avisos-e-integraciones",
-      "estado": "desactivada",
-      "v2": "adaptada",
-      "que_es": "Avisa fuera del chat cuando el agente termina o necesita algo.",
-      "como_se_activa": "Se activa si habilitas los avisos de sesión.",
-      "como_se_usa": "Ajuste — activa los avisos de sesión en el apartado `notification` de tu configuración; si también usas el aviso nativo del programa anfitrión, elige una sola de las dos rutas para no recibir avisos dobles.",
+      "estado": "activada",
+      "v2": "sustituida",
+      "que_es": "El anfitrión OpenCode V2 avisa fuera del chat cuando el agente termina o necesita permiso.",
+      "como_se_activa": "Automático en el anfitrión OpenCode V2.",
+      "como_se_usa": "Automático: OpenCode V2 entrega el aviso nativo. Rigel no lo activa, suprime ni duplica.",
       "cuando_sirve": "Te vas a otra ventana con música y el aviso del sistema te trae de vuelta justo cuando el agente pide permiso para ejecutar algo.",
       "url": "/catalogo/notificacion-al-terminar-o-pedir-permiso/",
       "modo_de_activacion": "Ajuste",
@@ -3590,9 +3590,9 @@
         "fuente": "Catalogo_Funciones_OMR_V2.md (sección «Alcance y límites»)"
       },
       "cambios_relevantes": {
-        "procedencia": "no_consta",
-        "razon": "El catálogo clasifica la función como adaptada pero no detalla el ajuste concreto.",
-        "fuente": "catálogo: columna «Cómo está en V2»"
+        "procedencia": "derivado",
+        "valor": "Sustituida por el aviso nativo del anfitrión OpenCode V2; Rigel no registra una ruta paralela.",
+        "fuente": "decisión de dependencia del host y composición nativa V2"
       }
     },
     {
@@ -3830,17 +3830,17 @@
       "nombre": "Integración con Discord, Telegram, servicios web y comandos del sistema",
       "area": "I",
       "areaSlug": "avisos-e-integraciones",
-      "estado": "desactivada",
+      "estado": "condicionada",
       "v2": "migrada",
-      "que_es": "Envía avisos fuera del chat y permite responder desde otro canal, una dirección web o un comando del sistema.",
-      "como_se_activa": "Se activa al configurar una integración externa.",
-      "como_se_usa": "Ajuste — en el apartado `openclaw` de tu configuración enciende `enabled: true`, define el canal de salida y las credenciales (token de bot de Discord o de Telegram, una dirección web o un comando del sistema) y reinicia. Después los avisos van al canal y puedes contestar desde él.",
-      "cuando_sirve": "Sales a la calle: te llega el aviso al móvil por Telegram y respondes desde allí sin volver a la terminal.",
+      "que_es": "Envía eventos a una pasarela HTTP o a un comando configurado y, si configuras un bot autorizado, enruta respuestas de Discord o Telegram al chat.",
+      "como_se_activa": "Requiere `openclaw.enabled: true`, una pasarela de salida y un hook de evento.",
+      "como_se_usa": "Ajuste: en `openclaw` activa `enabled: true`, define `gateways` de tipo HTTP o comando y enlaza cada aviso en `hooks` con su pasarela e instrucción. Para responder, la pasarela debe devolver `messageId` y `platform`. Discord requiere token, canal e identificadores autorizados; Telegram requiere token y chat. Las respuestas usan la sesión del anfitrión. Aplica de nuevo la configuración y reinicia; no se envían avisos si falta la configuración.",
+      "cuando_sirve": "Con una pasarela aprobada recibes los avisos fuera del chat y, si habilitaste un bot autorizado, respondes desde ese canal sin volver a la terminal.",
       "url": "/catalogo/integracion-con-discord-telegram-servicios-web-y-comandos-del-sistema/",
       "modo_de_activacion": "Ajuste",
       "requisitos": {
         "procedencia": "derivado",
-        "valor": "Se activa al configurar una integración externa.",
+        "valor": "Requiere `openclaw.enabled`, una pasarela HTTP o comando, un hook de evento y metadatos `messageId` y `platform` para correlacionar respuestas; Discord y Telegram requieren todos los datos de su listener autorizado.",
         "fuente": "catálogo: columna «Cómo se activa o condición»"
       },
       "valores_por_defecto": {
@@ -3879,15 +3879,15 @@
       "estado": "activada",
       "v2": "migrada",
       "que_es": "Inicia y cierra sesión en servicios que lo requieren.",
-      "como_se_activa": "Cuando ejecutas la orden correspondiente.",
-      "como_se_usa": "Terminal — `omo mcp oauth login <servicio> --server-url <url>` para iniciar sesión (la página de autorización se abre fuera del chat); puede pedir identificador de cliente y permisos si el servicio los necesita; `omo mcp oauth status [servicio]` consulta el estado y `omo mcp oauth logout <servicio> --server-url <url>` cierra la sesión.",
-      "cuando_sirve": "Conectas por primera vez un servicio externo sin pegar tokens a mano ni tocar archivos secretos.",
+      "como_se_activa": "Cuando envías el comando visible correspondiente en el chat.",
+      "como_se_usa": "Comando visible: `/mcp-oauth login <servicio> --server-url <url>` inicia OAuth con PKCE y registro dinámico cuando el servidor lo admite; añade `--client-id` o ámbitos solo si el servidor lo exige. `/mcp-oauth status [servicio]` consulta el estado y `/mcp-oauth logout <servicio> --server-url <url>` borra el token. En un anfitrión sin navegador muestra la URL para completarlo manualmente; los tokens no se imprimen.",
+      "cuando_sirve": "Conectas por primera vez un servidor MCP OAuth sin pegar tokens a mano ni tocar archivos secretos.",
       "url": "/catalogo/autorizacion-de-servicios-externos/",
-      "modo_de_activacion": "Terminal",
+      "modo_de_activacion": "Comando visible",
       "requisitos": {
-        "procedencia": "no_aplica",
-        "razon": "El catálogo no declara requisito externo para esta función; su activación es automática, por ajuste, palabra clave, comando o panel (ver modo_de_activacion).",
-        "fuente": "catálogo: columna «Cómo se activa o condición»"
+        "procedencia": "derivado",
+        "valor": "Requiere la URL HTTP(S) de un servidor MCP que soporte OAuth; no se inventa un identificador de cliente y el registro dinámico se usa solo si el servidor lo admite.",
+        "fuente": "comando nativo V2 `profiles/gabo/opencode/rigel-v2-native-mcp-oauth-command.mjs` y proveedor OAuth"
       },
       "valores_por_defecto": {
         "procedencia": "no_consta",
@@ -3904,9 +3904,9 @@
       "comandos": {
         "procedencia": "derivado",
         "valor": [
-          "omo mcp"
+          "/mcp-oauth"
         ],
-        "fuente": "catálogo: celdas «Cómo la usas»/«Cómo se activa»; verificado contra el CLI real"
+        "fuente": "catálogo: celdas «Cómo la usas»/«Cómo se activa»; verificado contra el comando nativo V2"
       },
       "version_desde": {
         "procedencia": "no_consta",
@@ -4068,15 +4068,15 @@
       "areaSlug": "conexiones-y-servicios-externos",
       "estado": "condicionada",
       "v2": "migrada",
-      "que_es": "Permite conectar, solo si tú lo decides, servicios para repositorios, bases de datos, entornos aislados o análisis de seguridad.",
-      "como_se_activa": "Solo se activa cuando eliges y configuras una de esas conexiones.",
-      "como_se_usa": "Ajuste — en tu configuración añades solo las conexiones que quieras (repositorios, bases de datos, entornos aislados, análisis de seguridad) con sus credenciales; sin configurar nada, no aparece ninguna.",
-      "cuando_sirve": "Necesitas consultar tu base de datos real: añades esa conexión y se activa; el resto del catálogo sigue sin tocar.",
+      "que_es": "Permite añadir solo por decisión propia conexiones MCP para repositorios, bases de datos, entornos aislados o análisis de seguridad.",
+      "como_se_activa": "Solo se activa cuando eliges y configuras una conexión opcional.",
+      "como_se_usa": "Ajuste: Docker, GitHub, Postgres y Tide son conexiones opcionales y no se incrustan en el perfil portable. Añade solo la configuración MCP elegida y sus requisitos propios; si usa variables de entorno, permite sus nombres en `mcp_env_allowlist` de usuario. `grep_app`, `lsp`, `context7` y el SSH incluido son integrados; Playwright y Obsidian son conexiones externas principales, no opcionales de esta fila.",
+      "cuando_sirve": "Necesitas consultar tu base de datos real: añades esa conexión y se activa; el resto de conexiones opcionales sigue sin tocar.",
       "url": "/catalogo/conexiones-opcionales/",
       "modo_de_activacion": "Ajuste",
       "requisitos": {
         "procedencia": "derivado",
-        "valor": "Solo se activa cuando eliges y configuras una de esas conexiones.",
+        "valor": "Cada conexión opcional requiere su configuración MCP y los requisitos del servicio elegido; las variables de entorno se permiten solo desde la lista de usuario `mcp_env_allowlist`.",
         "fuente": "catálogo: columna «Cómo se activa o condición»"
       },
       "valores_por_defecto": {

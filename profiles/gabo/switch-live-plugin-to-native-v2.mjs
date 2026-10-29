@@ -50,4 +50,4 @@ state.nativeV2ActivatedAt = new Date().toISOString()
 fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 })
 
 console.log("Rigel native OpenCode V2 runtime registered.")
-console.log(`Rigel companion CLI surfaces registered in ${result.cliConfigFile} (builtin notifier ${result.notificationEnabled ? "disabled" : "left untouched"}).`)
+console.log(`Rigel companion CLI surfaces registered in ${result.cliConfigFile} (session notification is host-owned; the builtin notifier is left untouched).`)

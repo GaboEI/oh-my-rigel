@@ -85,6 +85,7 @@
     "slash:handoff": { "queHace": "Creates a context summary to continue in a new session.", "queToca": "Produces a summary; it does not change code." },
     "slash:hyperplan": { "queHace": "Adversarial multi-agent planning through team-mode.", "queToca": "Coordinates several team members to plan; it does not edit code." },
     "slash:btw": { "queHace": "Opens an ephemeral side conversation with the agent.", "queToca": "Creates an isolated side session; it does not touch the main thread." },
-    "slash:side": { "queHace": "Alias of the side conversation.", "queToca": "Same as the side conversation: an isolated session that leaves the main thread alone." }
+    "slash:side": { "queHace": "Alias of the side conversation.", "queToca": "Same as the side conversation: an isolated session that leaves the main thread alone." },
+    "slash:mcp-oauth": { "queHace": "Manages OAuth authorization login, status, and logout for an MCP server.", "queToca": "Stores or removes OAuth tokens in host storage; it never prints them." }
   }
 }

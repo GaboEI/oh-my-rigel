@@ -239,10 +239,9 @@ export function materializeNativeRuntime({
     runtimeDir,
     familyRoot: familyRoot ?? runtimeDir,
     options: notificationOptions,
-    notificationEnabled: notificationOptions.enabled,
   })
   const cliAfter = registerGoalCliEntry(cliCompanion, { tuiShimDir: goalTuiShimDir })
   writeTextAtomic(cliConfigFile, `${JSON.stringify(cliAfter, null, 2)}\n`, { mode: 0o600 })
 
-  return { pluginEntry: runtimeDir, cliConfigFile, notificationEnabled: notificationOptions.enabled, stagedLsp, goalVendor, goalOptions }
+  return { pluginEntry: runtimeDir, cliConfigFile, stagedLsp, goalVendor, goalOptions }
 }

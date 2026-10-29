@@ -601,7 +601,7 @@ export default {
       baseSkills: skillRegistry.skills,
       disabledSkills: readNativeDisabled(manifest).skills,
     })
-    const skillMcpManager = createSkillMcpManager()
+    const skillMcpManager = createSkillMcpManager({ storage: context?.storage })
     const skillMcpRegistration = await registerSkillMcpServers(context, skillRegistry.skills)
     // Tier-2 Claude Code MCP loader (correction H5): project/user .mcp.json
     // declarations through ctx.mcp.transform, with the V1 env-allowlist rule.
