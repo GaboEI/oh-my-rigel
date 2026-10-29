@@ -25,13 +25,12 @@ Before editing, determine:
   handoff, or equivalent project-specific sources.
 - Whether the task is vault-only or also allows repository work.
 - Whether the vault is a git repository whose edits must be committed and
-  pushed on closure (WatchdogVPN: yes — the private vault repo, branch `main`).
+  pushed on closure when the project contract requires it.
 - Whether this is a full vault topology audit. If yes, load
   `obsidian-second-brain-audit` for the audit workflow and return here before
   any approved writes.
 
-If the project defines stricter rules, follow them. For WatchdogVPN, the active
-vault is `~/Desktop/temporales`. The target standard is 100%
+If the project defines stricter rules, those project rules are authoritative. The target standard is 100%
 English for persistent vault documentation. From 2026-08-24 onward, every new
 persistent vault document and every new prose block must be written in English.
 The 70% language threshold is only a temporary legacy bypass to avoid forcing a
@@ -43,14 +42,9 @@ modular records are English. A pre-existing note below 70% in both languages is
 a corruption bug: report it as a bug, do not guess a target language, and do
 not edit it without explicit approval. Legacy Spanish or mixed text is accepted
 only as temporary inherited debt, not as the long-term standard. Repository
-inspection/editing is out of scope during vault-only work unless Gabo
-explicitly authorizes it.
+inspection/editing is out of scope during vault-only tasks unless the project maintainer explicitly authorizes it.
 
-For WatchdogVPN, classify a destination by the frontmatter taxonomy in
-`WatchdogVPN_Vault_Writing_Standard.md` before writing. Its classification is
-authoritative: do not infer a canonical document from a filename, folder,
-title, backlink, or use of words such as `plan`, `route`, or `task`. An
-unclassified or ambiguous note receives no autonomous prose.
+Classify each destination from the project's own frontmatter taxonomy or authoritative writing standard before writing. Do not infer a document's role from a filename, folder, title, backlink, or generic words such as `plan`, `route`, or `task`. If no project-specific classification is available or the role is ambiguous, stop and ask the maintainer rather than adding autonomous prose.
 
 ## 2. Write In Layers
 
@@ -207,21 +201,11 @@ default template notes. Report ambiguous cases instead of guessing.
 
 After vault edits:
 
-- Run the vault's local link audit if available. For WatchdogVPN:
-  `python3 .tools/audit_links.py`.
-- Run the vault's local language audit if available. For WatchdogVPN:
-  `python3 .tools/language_audit.py`.
-- When structure, MOCs, or topology changed, run a second-brain audit if
-  available. For WatchdogVPN:
-  `python3 ~/.config/opencode/skills/obsidian-second-brain-audit/scripts/audit_vault.py . --json`
-  (legacy fallback if the opencode path is missing:
-  `python3 ~/.codex/skills/obsidian-second-brain-audit/scripts/audit_vault.py . --json`).
-- Scan touched files for language drift according to the vault language.
-  For mixed legacy vaults, apply the 70% legacy bypass only to inherited text.
-  Any new prose introduced after the policy must be English. Below-threshold
-  MIXED files are corruption bugs to report per the vault contract.
-- Scan touched files for known corrupted prose patterns if the project has
-  identified any.
+- Run the project's local link audit when available, using the exact command defined by the project contract.
+- Run the project's local language audit when available, using the exact command defined by the project contract.
+- When structure or topology changes, run the project's topology/graph audit when available, using the exact command defined by the project contract.
+- Scan touched files for language drift according to the project's language contract. Preserve inherited legacy text only when that contract permits it.
+- Scan touched files for known corrupted prose patterns if the project has identified any.
 
 A closure is not complete if a new note is isolated, orphaned, dead-end, or
 linked only through a weak index when a direct peer link exists.
