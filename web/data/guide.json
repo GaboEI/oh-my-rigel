@@ -255,12 +255,6 @@
       "uso": "Úsala en cualquier tarea que cree o edite documentación dentro de una bóveda."
     },
     {
-      "id": "opencode-multi-auth-fix",
-      "provenance": "beta",
-      "funcion": "Diagnostica errores de cuentas del plugin multi-auth de Codex.",
-      "uso": "Úsala ante mensajes como falta de cuentas disponibles o token expirado."
-    },
-    {
       "id": "prompt-master",
       "provenance": "beta",
       "funcion": "Escribe o mejora prompts de OpenCode listos para copiar.",

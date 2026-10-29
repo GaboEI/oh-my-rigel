@@ -143,6 +143,23 @@ function deliverName({ name, source, kind, target, previousManaged, managed, pre
   preserved.push(name)
 }
 
+/**
+ * Remove links for skills that this profile managed previously but no longer
+ * ships. The prior state and exact symlink text are the ownership proof; if a
+ * user replaced the target, preserve it untouched.
+ */
+function removeStaleManaged({ previousManaged, linkedTargets, preserved }) {
+  for (const [name, recordedSource] of previousManaged) {
+    if (linkedTargets.has(name)) continue
+    const target = path.join(targetRoot, name)
+    if (linkText(target) === recordedSource) {
+      fs.rmSync(target, { force: true })
+      continue
+    }
+    if (entryExists(target)) preserved.push(name)
+  }
+}
+
 fs.mkdirSync(targetRoot, { recursive: true, mode: 0o700 })
 const managed = []
 const preserved = []
@@ -181,6 +198,7 @@ for (const name of listSkills(projectSkills)) {
   if (linkedTargets.has(name)) continue
   deliverName({ name, source: path.join(projectSkills, name), kind: "project-aligned", target: path.join(targetRoot, name), previousManaged, managed, preserved, linkedTargets })
 }
+removeStaleManaged({ previousManaged, linkedTargets, preserved })
 
 fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 })
 fs.writeFileSync(stateFile, JSON.stringify({
