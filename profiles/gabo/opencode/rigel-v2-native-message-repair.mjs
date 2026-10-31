@@ -84,6 +84,13 @@ function toolResultID(part) {
  * delegated to the existing `repairChatToolPairs`, so the surface keeps one
  * implementation per shape instead of a duplicate. Idempotent: the inserted result
  * pairs the call, so a second pass inserts nothing. Returns the repaired call ids.
+ *
+ * PR5 row 25 ownership rules: a `providerExecuted: true` call is executed by the
+ * provider/host, which owns its lifecycle, so it never receives a synthetic local
+ * result. Ambiguous histories are preserved byte-identically and left unrepaired:
+ * a call ID that appears on more than one `tool-call` part, duplicate results, a
+ * result that precedes its call, or a result on a role other than `tool` (any
+ * tool-result part anywhere pairs the ID, so none of these get a synthetic insert).
  */
 export function repairMessageToolPairs(messages) {
   if (!Array.isArray(messages)) return []
@@ -97,6 +104,13 @@ export function repairMessageToolPairs(messages) {
       if (id) paired.add(id)
     }
   }
+  const callCounts = new Map()
+  for (const message of messages) {
+    for (const part of contentOf(message)) {
+      const callID = toolCallID(part)
+      if (callID) callCounts.set(callID, (callCounts.get(callID) ?? 0) + 1)
+    }
+  }
   const repaired = []
   const rebuilt = []
   for (const message of messages) {
@@ -105,6 +119,8 @@ export function repairMessageToolPairs(messages) {
     for (const part of contentOf(message)) {
       const callID = toolCallID(part)
       if (!callID || paired.has(callID)) continue
+      if (part.providerExecuted === true) continue
+      if (callCounts.get(callID) !== 1) continue
       paired.add(callID)
       rebuilt.push({
         role: "tool",

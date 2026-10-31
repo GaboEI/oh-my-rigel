@@ -124,6 +124,97 @@ describe("#given the V2 tool-pair repair", () => {
 })
 
 // ---------------------------------------------------------------------------
+// Provider-executed calls and ambiguous histories (PR5 row 25)
+// ---------------------------------------------------------------------------
+
+describe("#given provider-executed and ambiguous tool-call histories", () => {
+  describe("#when an unpaired tool-call is provider-executed", () => {
+    test("#then no synthetic local result is inserted and the history is byte-identical", () => {
+      // given
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "search" }] },
+        { role: "assistant", content: [{ type: "tool-call", id: "cpe", name: "web_search", input: {}, providerExecuted: true }] },
+      ]
+      const before = sha256(messages)
+      // when / then
+      expect(repairMessageToolPairs(messages)).toEqual([])
+      expect(sha256(messages)).toBe(before)
+    })
+  })
+
+  describe("#when a provider-executed call is already paired", () => {
+    test("#then the valid pair is left byte-identical", () => {
+      // given
+      const messages = [
+        { role: "assistant", content: [{ type: "tool-call", id: "cpe", name: "web_search", input: {}, providerExecuted: true }] },
+        { role: "tool", content: [toolResult("cpe")] },
+      ]
+      const before = sha256(messages)
+      // when / then
+      expect(repairMessageToolPairs(messages)).toEqual([])
+      expect(sha256(messages)).toBe(before)
+    })
+  })
+
+  describe("#when two assistant tool-calls share one ID and neither has a result", () => {
+    test("#then the ambiguous pair is preserved byte-identically with no synthetic result", () => {
+      // given
+      const messages = [
+        { role: "assistant", content: [toolCall("cdup", "read")] },
+        { role: "assistant", content: [toolCall("cdup", "bash")] },
+      ]
+      const before = sha256(messages)
+      // when / then
+      expect(repairMessageToolPairs(messages)).toEqual([])
+      expect(sha256(messages)).toBe(before)
+    })
+  })
+
+  describe("#when a call has duplicate results", () => {
+    test("#then the ambiguous history is preserved byte-identically", () => {
+      // given
+      const messages = [
+        { role: "assistant", content: [toolCall("c1")] },
+        { role: "tool", content: [toolResult("c1")] },
+        { role: "tool", content: [toolResult("c1")] },
+      ]
+      const before = sha256(messages)
+      // when / then
+      expect(repairMessageToolPairs(messages)).toEqual([])
+      expect(sha256(messages)).toBe(before)
+    })
+  })
+
+  describe("#when a matching result precedes its call", () => {
+    test("#then the ambiguous history is preserved byte-identically", () => {
+      // given
+      const messages = [
+        { role: "tool", content: [toolResult("c1")] },
+        { role: "assistant", content: [toolCall("c1")] },
+      ]
+      const before = sha256(messages)
+      // when / then
+      expect(repairMessageToolPairs(messages)).toEqual([])
+      expect(sha256(messages)).toBe(before)
+    })
+  })
+
+  describe("#when a matching result sits on a role other than tool", () => {
+    test("#then the ambiguous history is preserved byte-identically", () => {
+      // given
+      const messages = [
+        { role: "assistant", content: [toolCall("c1")] },
+        { role: "user", content: [toolResult("c1")] },
+      ]
+      const before = sha256(messages)
+      // when / then
+      expect(repairMessageToolPairs(messages)).toEqual([])
+      expect(sha256(messages)).toBe(before)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Assistant-prefill tail repair
 // ---------------------------------------------------------------------------
 
