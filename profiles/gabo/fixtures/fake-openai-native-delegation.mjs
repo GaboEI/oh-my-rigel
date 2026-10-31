@@ -93,6 +93,8 @@ http.createServer(async (request, response) => {
     requestCount,
     hasTaskTool,
     toolNames: payload.tools?.map((entry) => entry?.function?.name).filter(Boolean) ?? [],
+    taskDescription: payload.tools?.find((entry) => entry?.function?.name === taskName)?.function?.description ?? null,
+    categoryEnum: payload.tools?.find((entry) => entry?.function?.name === taskName)?.function?.parameters?.properties?.category?.enum ?? null,
     hasToolResult,
     model: payload.model ?? null,
     variant: payload.variant ?? null,

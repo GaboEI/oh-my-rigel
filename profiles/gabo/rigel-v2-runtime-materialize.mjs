@@ -14,6 +14,7 @@ import fs from "node:fs"
 import path from "node:path"
 
 import { discoverRuntimeModules } from "./native-runtime-modules.mjs"
+import { rewriteLegacyDelegationToolExamples } from "./opencode/rigel-v2-native-prompt-tools.mjs"
 import { writeTextAtomic } from "./rigel-v2-lifecycle-transaction.mjs"
 import { goalVendorDigestKey, materializeGoalVendor } from "./rigel-v2-goal-vendor.mjs"
 import {
@@ -182,7 +183,7 @@ export function materializeNativeRuntime({
   ]
   for (const [name, relative] of promptFiles) {
     const source = fs.readFileSync(path.join(sourceRoot, relative), "utf8")
-    fs.writeFileSync(path.join(runtimeDir, "prompts", name), source.replace(/\btask\(/g, "rigel_task("), { mode: 0o600 })
+    fs.writeFileSync(path.join(runtimeDir, "prompts", name), rewriteLegacyDelegationToolExamples(source), { mode: 0o600 })
   }
   const keywordConstants = fs.readFileSync(path.join(sourceRoot, "packages/omo-opencode/src/hooks/keyword-detector/constants.ts"), "utf8")
   const comboBanner = keywordConstants.match(/const HYPERPLAN_ULTRAWORK_BANNER = `([\s\S]*?)`/)?.[1]

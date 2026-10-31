@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { callableAgents } from "./rigel-v2-native-core.mjs"
 import { createKeywordState } from "./rigel-v2-keyword-state.mjs"
 import { createNativeContextHook, createNativeModelRequestHook, createNativeRequestHook, formatDelegationRoster, reasoningEffortFromThinking } from "./rigel-v2-native-prompt.mjs"
@@ -20,6 +20,38 @@ test("context hook adds root roster to system and agent tuning to options", asyn
   await hook(event)
   expect(event.system).toContainEqual(expect.objectContaining({ text: expect.stringContaining("<rigel-native-delegation-roster>") }))
   expect(event.options).toMatchObject({ temperature: 0.1, maxTokens: 4096 })
+})
+
+test("context hook reports roster availability and logs a failed roster read", async () => {
+  const observed = []
+  const hook = createNativeContextHook({
+    getDelegationRoster: async () => [{ name: "explore", mode: "subagent" }],
+    onDelegationRoster: (event) => observed.push(event),
+  })
+  const event = {
+    sessionID: "ses_roster_observable",
+    agent: "Sisyphus - ultraworker",
+    model: { providerID: "openai", modelID: "gpt-6" },
+    system: [],
+    messages: [{ role: "user", content: "work" }],
+    options: {},
+  }
+  await hook(event)
+  expect(observed).toEqual([{ count: 1, available: true }])
+
+  const error = spyOn(console, "error").mockImplementation(() => {})
+  const failed = createNativeContextHook({
+    getDelegationRoster: async () => { throw new Error("private endpoint detail") },
+    onDelegationRoster: (value) => observed.push(value),
+  })
+  try {
+    await failed({ ...event, system: [], options: {} })
+    expect(observed.at(-1)).toEqual({ count: 0, available: false })
+    expect(error).toHaveBeenCalledWith("[oh-my-rigel] Native V2 delegation roster is unavailable")
+    expect(JSON.stringify(error.mock.calls)).not.toContain("private endpoint detail")
+  } finally {
+    error.mockRestore()
+  }
 })
 
 // Fase 6: the look_at child runs the same context hook; on a model the host pushes
@@ -97,6 +129,9 @@ test("delegation roster renders each category's description and caller guidance"
   )
   expect(roster).toContain('"quick": Trivial tasks <Caller_Warning>write explicit steps</Caller_Warning>')
   expect(roster).toContain('"my-lane": Custom lane')
+  expect(roster).toContain("subagent_type for a named specialist")
+  expect(roster).toContain("category for a category-selected execution worker")
+  expect(roster).toContain("Do not send both route fields")
 })
 
 test("delegation roster still accepts bare category names", () => {

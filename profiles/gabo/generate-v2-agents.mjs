@@ -10,6 +10,7 @@ import legacyModule from "../../dist/index.js"
 import { sortAgentsByCanonicalOrder } from "./opencode/rigel-v2-native-agent-order.mjs"
 import { buildMcpPolicyEntry, deriveNativeGates, deriveNativeMinOpenCodeVersion, resolveNativePluginConfig } from "./opencode/rigel-v2-native-config.mjs"
 import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
+import { rewriteLegacyDelegationToolExamples } from "./opencode/rigel-v2-native-prompt-tools.mjs"
 import { agentChain } from "./opencode/rigel-v2-native-model-chains.mjs"
 import { SISYPHUS_AGENT_ID, SISYPHUS_PROMPT_IDENTITY_MODELS, applySisyphusFormatExampleFix, disposeBakeHooks, extractModelName, fixSisyphusAgentMap } from "./opencode/rigel-v2-native-sisyphus-prompt.mjs"
 
@@ -79,13 +80,13 @@ async function bakeSisyphusPromptVariants(agent) {
   const configuredModel = typeof agent.model === "string" ? agent.model : ""
   const configuredName = extractModelName(configuredModel)
   const byModel = {}
-  if (configuredName) byModel[configuredName] = applySisyphusFormatExampleFix(agent.prompt)
+  if (configuredName) byModel[configuredName] = rewriteLegacyDelegationToolExamples(applySisyphusFormatExampleFix(agent.prompt))
   for (const rung of agentChain(SISYPHUS_AGENT_ID) ?? []) {
     const name = typeof rung?.model === "string" ? rung.model : ""
     if (!name || byModel[name] !== undefined) continue
     const provider = Array.isArray(rung.providers) && typeof rung.providers[0] === "string" ? rung.providers[0] : undefined
     const baked = await bakeAgentPromptForModel(provider ? `${provider}/${name}` : name, SISYPHUS_AGENT_ID)
-    if (typeof baked === "string" && baked) byModel[name] = applySisyphusFormatExampleFix(baked)
+    if (typeof baked === "string" && baked) byModel[name] = rewriteLegacyDelegationToolExamples(applySisyphusFormatExampleFix(baked))
   }
   // Explicit prompt-identity variants (the gpt family, Astra included) share a
   // body skeleton but differ in the identity line, so bake each one. A runtime
@@ -95,9 +96,13 @@ async function bakeSisyphusPromptVariants(agent) {
   for (const name of SISYPHUS_PROMPT_IDENTITY_MODELS) {
     if (!name || byModel[name] !== undefined) continue
     const baked = await bakeAgentPromptForModel(`openai/${name}`, SISYPHUS_AGENT_ID)
-    if (typeof baked === "string" && baked) byModel[name] = applySisyphusFormatExampleFix(baked)
+    if (typeof baked === "string" && baked) byModel[name] = rewriteLegacyDelegationToolExamples(applySisyphusFormatExampleFix(baked))
   }
-  return { bakedModel: configuredModel, bakedPrompt: applySisyphusFormatExampleFix(agent.prompt), promptByModel: byModel }
+  return {
+    bakedModel: configuredModel,
+    bakedPrompt: rewriteLegacyDelegationToolExamples(applySisyphusFormatExampleFix(agent.prompt)),
+    promptByModel: byModel,
+  }
 }
 
 // Upstream 5a9bb74a4: an explicit user model on an agent (or a user
@@ -158,7 +163,12 @@ try {
   // in the V2 bake, to the Sisyphus entry only. The V1 owners stay byte-identical
   // to HEAD, so the registered body and the reconciliation plan agree while no
   // other agent entry is touched.
-  const fixedAgents = fixSisyphusAgentMap(orderedSelected)
+  const fixedAgents = Object.fromEntries(Object.entries(fixSisyphusAgentMap(orderedSelected)).map(([id, agent]) => [
+    id,
+    typeof agent?.prompt === "string"
+      ? { ...agent, prompt: rewriteLegacyDelegationToolExamples(agent.prompt) }
+      : agent,
+  ]))
   // SEED-ONLY: attach each agent's ordered canonical chain so the installer can
   // materialize the full fallback chain into the user's live `~/.omo/omo.jsonc`
   // (parity with build-target-agent-manifest.mjs). The runtime NEVER consults

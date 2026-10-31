@@ -50,6 +50,7 @@ import {
   resolveNativePluginConfig,
 } from "./opencode/rigel-v2-native-config.mjs"
 import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
+import { rewriteLegacyDelegationToolExamples } from "./opencode/rigel-v2-native-prompt-tools.mjs"
 import { buildIsolatedV2Env } from "./isolated-v2-env.mjs"
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
@@ -249,7 +250,10 @@ export async function buildTargetAgentManifest(options = {}) {
       const orderedSelected = {}
       for (const { id } of sortAgentsByCanonicalOrder(Object.keys(selected).map((key) => ({ id: key, name: key })))) {
         const chain = agentChain(id)
-        orderedSelected[id] = chain ? { ...selected[id], chain } : selected[id]
+        const record = chain ? { ...selected[id], chain } : selected[id]
+        orderedSelected[id] = typeof record?.prompt === "string"
+          ? { ...record, prompt: rewriteLegacyDelegationToolExamples(record.prompt) }
+          : record
       }
 
       const gates = deriveNativeGates(pluginView)

@@ -194,6 +194,16 @@ describe("build-target-agent-manifest", () => {
         expect(manifest.metadata.global.categories).toBeDefined()
       })
 
+      test.skipIf(!hasDist)("#then every generated model-facing agent prompt uses the registered delegation tool", () => {
+        const prompts = Object.values(manifest.agents).map((agent) => agent.prompt ?? "")
+        const sisyphus = manifest.metadata.global.sisyphusPrompt
+        prompts.push(sisyphus?.bakedPrompt ?? "", ...Object.values(sisyphus?.promptByModel ?? {}))
+        for (const prompt of prompts) {
+          expect(prompt).not.toMatch(/(?<!rigel_)\btask\(/)
+          expect(prompt).not.toContain("call_omo_agent(")
+        }
+      })
+
       test.skipIf(!hasDist)("#then the regenerated manifest quarantines the inherited goal and grants no goal_* tool", () => {
         // The generator must never bake gates.goal:true nor a legacy `goal_*`
         // tool permission, so a reinstall/update cannot revive the surface (N10).
