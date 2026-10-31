@@ -98,7 +98,7 @@ const NATIVE_ACTION_TOOL_PATTERNS = Object.freeze({
   read: ["read"],
   edit: ["edit"],
   shell: ["shell"],
-  subagent: ["task"],
+  subagent: ["task", "rigel_task"],
   question: ["question"],
   skill: ["skill"],
   lsp: ["lsp_*", "Lsp*"],
@@ -255,6 +255,7 @@ export function evaluateToolNameGate(toolGates, toolName) {
  * A `lsp` / `lsp_*` key is the family the OmO lsp MCP tools belong to.
  */
 function globalToolGatePatterns(key) {
+  if (key === "task") return ["task", "rigel_task"]
   if (key.startsWith("grep_app_")) return ["grep_app_*"]
   if (key.startsWith("task_")) return ["task_*"]
   if (key === "teammate" || key.startsWith("team_")) return ["team_*"]

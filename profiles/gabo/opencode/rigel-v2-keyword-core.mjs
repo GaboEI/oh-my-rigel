@@ -37,6 +37,7 @@ export const SYSTEM_DIRECTIVE_PREFIX = "[SYSTEM DIRECTIVE: OH-MY-OPENCODE"
 const SYSTEM_DIRECTIVE_LEADING_KEYWORD_PATTERN = /^\s*(?:ultrawork|ulw)\s+/i
 export const OMO_INTERNAL_INITIATOR_MARKER = "<!-- OMO_INTERNAL_INITIATOR -->"
 const INTERNAL_INITIATOR_MARKER_DETECT_PATTERN = /<!--\s*OMO_INTERNAL_INITIATOR\s*-->/
+const RIGEL_INJECTED_USER_REPORT_PATTERN = /^\s*<rigel-native-(?:background-result|child-task)\b/i
 
 export const KEYWORD_TYPES = Object.freeze(["ultrawork", "team", "hyperplan", "hyperplan-ultrawork"])
 
@@ -57,7 +58,9 @@ function isTextPartLike(part) {
 
 function isSyntheticOrInternalTextPart(part) {
   return isTextPartLike(part)
-    && (part.synthetic === true || INTERNAL_INITIATOR_MARKER_DETECT_PATTERN.test(part.text))
+    && (part.synthetic === true
+      || INTERNAL_INITIATOR_MARKER_DETECT_PATTERN.test(part.text)
+      || RIGEL_INJECTED_USER_REPORT_PATTERN.test(part.text))
 }
 
 export function isRealUserTextPart(part) {

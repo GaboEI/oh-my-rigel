@@ -279,23 +279,63 @@ function reportRuleFailure(phase, failure) {
   console.error(`[oh-my-rigel] Native V2 ${phase} rule failed; chain continues: rule=${failure?.name}; ${message}`)
 }
 
-export function createTaskPresentation() {
-  return `Spawn one delegated task through the OpenCode V2 agent runtime.
+function safeTaskPresentationLine(value, limit = 240) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit)
+}
 
-⚠️ CRITICAL: provide exactly one of category, subagent_type, or task_id. A task_id resumes a prior Rigel child.
+function taskCategoryLines(categories) {
+  if (!Array.isArray(categories)) return []
+  return categories.flatMap((category) => {
+    const name = typeof category?.name === "string" ? category.name.trim() : ""
+    if (!name) return []
+    const description = safeTaskPresentationLine(category?.description, 240)
+    const guidance = safeTaskPresentationLine(category?.callerGuidance, 320)
+    const details = [description, guidance].filter(Boolean).join(" ")
+    return [`- ${JSON.stringify(name)}${details ? `: ${details}` : ""}`]
+  })
+}
 
-Use subagent_type for a named specialist when its role matches a discrete research, consultation, review, or audit need. Use category for an execution worker with a category-selected model. The main agent chooses the appropriate route based on the active V2 agent inventory; this tool does not impose a routing policy.
+export function createTaskPresentation(categories = []) {
+  const categoryLines = taskCategoryLines(categories)
+  const categorySection = categoryLines.length > 0
+    ? `\n\nEnabled execution categories (choose an exact name from this list):\n${categoryLines.join("\n")}`
+    : "\n\nNo execution categories are currently available."
+  return `Delegate bounded work through the registered OpenCode V2 agent tool.
 
-By default this is foreground work: it waits and returns the child's final text, so use it when the result is needed for the next decision. Set run_in_background=true for independent work: it returns immediately, then native V2 event delivery wakes the parent with the child's final result. Prompts must state the child task, scope, constraints, and expected evidence clearly.`
+Assess the request before acting: keep a small, self-contained task in the current session; delegate a bounded task when independent progress, parallel work, or specialist expertise will improve the result. This tool supports orchestration; the task context determines whether and how to use it.
+
+Use the active V2 agent inventory to choose an exact named specialist, and the enabled category list below to choose an execution lane.
+
+Choose exactly one route for a new child:
+- subagent_type: call a named specialist when the work needs that agent's distinct expertise (for example, research, architecture, or independent review).
+- category: send an execution task to Sisyphus-Junior using the selected category's configured model and guidance. Choose the category that matches the work; category names are listed below.
+- task_id: resume an existing Rigel child; do not combine it with either new-child route.
+
+Never provide both subagent_type and category. The category route and named-specialist route are both supported by this tool.${categorySection}
+
+By default this is foreground work and returns the child's final text. Use run_in_background=true only when the child can make independent progress while you continue; native V2 event delivery returns its final result to the parent. Give every child a bounded task, scope, constraints, and expected evidence.`
 }
 
 // V2 accepts a JSON Schema/Standard Schema/Effect codec. A raw V1 Zod shape
 // becomes `unknown` to the model, which silently produces V1 argument names.
-const taskInput = {
+export function createTaskInput(categories = []) {
+  const categoryNames = [...new Set((Array.isArray(categories) ? categories : [])
+    .map((category) => typeof category?.name === "string" ? category.name.trim() : "")
+    .filter(Boolean))]
+  const category = {
+    type: "string",
+    description: "Choose one exact enabled execution category listed in this tool's description; omit when selecting a named specialist or resuming task_id.",
+    ...(categoryNames.length > 0 ? { enum: categoryNames } : {}),
+  }
+  return {
   type: "object",
   properties: {
     subagent_type: { type: "string", description: "Exact callable agent name; omit when category or task_id is supplied." },
-    category: { type: "string", description: "OmO category; omit when subagent_type or task_id is supplied." },
+    category,
     task_id: { type: "string", description: "Existing Rigel child session ID to continue; omit for a new child." },
     description: { type: "string", description: "Short task description." },
     prompt: { type: "string", description: "Full task for the child agent." },
@@ -305,6 +345,26 @@ const taskInput = {
   },
   required: ["prompt"],
   additionalProperties: false,
+  }
+}
+
+function taskRouteError(input) {
+  const hasCategory = typeof input?.category === "string" && input.category.trim().length > 0
+  const hasSubagent = typeof input?.subagent_type === "string" && input.subagent_type.trim().length > 0
+  const hasTaskID = typeof input?.task_id === "string" && input.task_id.trim().length > 0
+  const routeCount = Number(hasCategory) + Number(hasSubagent) + Number(hasTaskID)
+  if (input?.cancel === true) {
+    return hasTaskID && !hasCategory && !hasSubagent
+      ? undefined
+      : "Invalid arguments: cancellation requires task_id and cannot include category or subagent_type."
+  }
+  if (routeCount === 0) {
+    return "Invalid arguments: Must provide either category, subagent_type, or task_id."
+  }
+  if (routeCount > 1) {
+    return "Invalid arguments: Provide exactly one route; do not combine category, subagent_type, and task_id."
+  }
+  return undefined
 }
 
 /** Build the `provider/id` admission key from a model ref object or string. */
@@ -490,6 +550,7 @@ export default {
     // selectable and routable exactly like a built-in.
     const userCategories = (liveOverridesSource.state === "loaded" ? liveOverridesSource.categories : undefined)
       ?? readUserCategories(context)
+    const categoryRoster = buildCategoryRoster(userCategories)
     const sessionAgentResolver = createSessionAgentResolver(context)
     const permissionWiring = createNativePermissionWiring({
       manifest,
@@ -1644,10 +1705,12 @@ export default {
       editor.add({
         name: taskName,
         options: { codemode: false },
-        description: createTaskPresentation(),
-        input: taskInput,
+        description: createTaskPresentation(categoryRoster),
+        input: createTaskInput(categoryRoster),
         execute: async (input, toolContext) => {
           console.error(`[oh-my-rigel] Native V2 task context: name=${taskName}; setup=${Object.keys(context ?? {}).sort().join(",")}; tool=${Object.keys(toolContext ?? {}).sort().join(",")}`)
+          const routeError = taskRouteError(input)
+          if (routeError) throw new Error(routeError)
           if (isCoordinatorAgent(input.subagent_type)) {
             throw new Error(`Cannot delegate to coordinator agent "${String(input.subagent_type).trim()}" via task. Coordinator agents (prometheus) own the orchestration loop and must not be used as subagent targets - doing so creates duplicate coordinators and conflicting team state. Select a worker agent (e.g., sisyphus-junior via category, hephaestus, oracle) instead.`)
           }
@@ -1898,7 +1961,13 @@ export default {
         [context, context?.client],
         context.location,
       ),
-      categories: buildCategoryRoster(userCategories),
+      onDelegationRoster: (event) => {
+        writeStateReceipt("delegation-roster.json", {
+          count: Number.isSafeInteger(event?.count) ? Math.max(0, event.count) : 0,
+          available: event?.available === true,
+        }, resolveMcpGuidanceReceiptRoot())
+      },
+      categories: categoryRoster,
       resolveModel: resolveNativeModel,
       getAgentRequestBody: (agent) => agentRequestBodies.get(String(agent ?? "").toLocaleLowerCase()),
       // Mirror the V1 `disabled_hooks` gate for think-mode (default on).

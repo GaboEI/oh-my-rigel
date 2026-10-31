@@ -139,6 +139,19 @@ describe("stageGoalVendor", () => {
 
     // then the engine is registered exactly once: one runtime string entry and
     // one goal tuple carrying the Rigel-managed default options.
+    for (const prompt of [
+      "ultrawork-default.md",
+      "ultrawork-gpt.md",
+      "ultrawork-gemini.md",
+      "ultrawork-glm.md",
+      "ultrawork-planner.md",
+      "team.md",
+      "hyperplan.md",
+    ]) {
+      const stagedPrompt = fs.readFileSync(path.join(runtimeDir, "prompts", prompt), "utf8")
+      expect(stagedPrompt, prompt).not.toMatch(/(?<!rigel_)\btask\(/)
+      expect(stagedPrompt, prompt).not.toContain("call_omo_agent(")
+    }
     expect(result.goalVendor.treeDigest).toMatch(/^[0-9a-f]{64}$/)
     expect(fs.existsSync(result.goalVendor.engineEntry)).toBe(true)
     const config = JSON.parse(fs.readFileSync(configFile, "utf8"))

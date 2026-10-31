@@ -29,3 +29,17 @@ test("#given the migrated surface #when reading the manifest #then every command
     expect(name.length).toBeGreaterThan(0)
   }
 })
+
+test("#given native command templates #when generated #then operational examples use V2 names and Codex compatibility stays intact", () => {
+  for (const [name, entry] of Object.entries(buildBuiltinCommandManifest().commands)) {
+    for (const template of [entry.template, entry.teamModeTemplate]) {
+      expect(template, name).not.toMatch(/(?<!rigel_)\btask\(/)
+      expect(template, name).not.toContain("call_omo_agent(")
+      expect(template, name).not.toMatch(/`rigel_task\(\.\.\.\)`, `rigel_task\(\.\.\.\)`,/)
+      if (template.includes("## Codex Harness Tool Compatibility")) {
+        expect(template, name).toContain("multi_agent_v1.spawn_agent")
+        expect(template, name).toContain("OpenCode example")
+      }
+    }
+  }
+})

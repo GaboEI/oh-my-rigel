@@ -167,6 +167,26 @@ describe("Rigel V2 keyword core: prompt extraction and text guards", () => {
     expect(isSyntheticOrInternalOnlyTextParts([])).toBe(false)
   })
 
+  test("plugin handoff reports do not activate keyword modes while user requests still do", () => {
+    // given a background handoff or child task injected as a user message
+    const reports = [
+      "<rigel-native-background-result>\nagent: explore\nreport mentions ultrawork-default.md, hyperplan.md, and team-mode\n</rigel-native-background-result>",
+      "  <rigel-native-child-task>\nplease use ultrawork and team mode\n</rigel-native-child-task>",
+    ]
+
+    // when the native keyword decision scans those injected messages
+    for (const report of reports) {
+      const result = decide(report)
+
+      // then no mode is inferred from plugin output
+      expect(result.types).toEqual([])
+      expect(result.reason).toBe("synthetic-internal-only")
+    }
+
+    // Positive control: explicit user intent remains active.
+    expect(decide("ulw fix the parser").types).toContain("ultrawork")
+  })
+
   test("differential: extractPromptText agrees with the V1 detector", async () => {
     // given
     const oracle = await loadV1Oracle("keyword-detector.detector")

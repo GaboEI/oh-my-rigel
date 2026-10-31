@@ -142,6 +142,27 @@ test("keeps V1-only tool families independently gateable by their real tool name
   expect(evaluateToolNameGate(toolGates, "task")).toBeUndefined()
 })
 
+test("maps legacy task permissions to the registered rigel_task tool under wildcard gates", async () => {
+  const { translateV1Permissions, evaluateToolNameGate } = await load()
+
+  // given a legacy task allow that overrides a deny-all wildcard
+  const allowed = translateV1Permissions({ "*": "deny", task: "allow" })
+
+  // when the V2 runtime checks its registered tool name
+  expect(evaluateToolNameGate(allowed.toolGates, "rigel_task")).toBe("allow")
+  expect(evaluateToolNameGate(allowed.toolGates, "task")).toBe("allow")
+
+  // then the deny-all wildcard still denies an unrelated task-family tool
+  const denied = translateV1Permissions({ "*": "deny" })
+  expect(evaluateToolNameGate(denied.toolGates, "rigel_task")).toBe("deny")
+})
+
+test("global task toggle also governs Rigel's registered delegation tool", async () => {
+  const { translateGlobalTools, evaluateToolNameGate } = await load()
+  expect(evaluateToolNameGate(translateGlobalTools({ task: false }), "rigel_task")).toBe("deny")
+  expect(evaluateToolNameGate(translateGlobalTools({ task: true }), "rigel_task")).toBe("allow")
+})
+
 test("fails closed on an unknown V1 permission key while accepting arbitrary resources", async () => {
   const { translateV1Permissions } = await load()
   expect(() => translateV1Permissions({ definitely_not_a_permission: "deny" })).toThrow()

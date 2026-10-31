@@ -197,6 +197,74 @@ test("native runtime uses the V2 setup context, not context.client", async () =>
   await dispose()
 })
 
+test("native runtime exposes enabled user categories in the registered task description and schema", async () => {
+  let definition
+  const context = {
+    location: { directory: "/native-v2" },
+    agent: {
+      list: async () => ({ data: [{ id: "explore", name: "Explore", mode: "subagent" }] }),
+      transform: async (callback) => { callback({ update() {}, default() {} }); return { dispose() {} } },
+      reload: async () => {},
+    },
+    session: {
+      hook: async () => ({ dispose() {} }),
+      create: async () => ({ data: { id: "ses_native" } }),
+      prompt: async () => ({ data: {} }),
+    },
+    tool: { transform: async (callback) => {
+      callback({ add: (value) => { if (value?.name === "rigel_task") definition = value } })
+      return { dispose() {} }
+    } },
+  }
+  await withLiveOmoConfig({ categories: {
+    "audit-lane": { description: "Independent verification", caller_guidance: "Return concrete evidence." },
+  } }, async () => {
+    const dispose = await plugin.setup(context)
+    try {
+      expect(definition.description).toContain('"audit-lane": Independent verification')
+      expect(definition.input.properties.category.enum).toContain("audit-lane")
+    } finally {
+      await dispose()
+    }
+  })
+})
+
+test("native runtime rejects ambiguous routes before resolving or spawning a child", async () => {
+  let definition
+  let agentLookups = 0
+  let childCreates = 0
+  const context = {
+    location: { directory: "/native-v2" },
+    agent: {
+      list: async () => { agentLookups++; return { data: [{ id: "explore", name: "Explore", mode: "subagent" }] } },
+      transform: async (callback) => { callback({ update() {}, default() {} }); return { dispose() {} } },
+      reload: async () => {},
+    },
+    session: {
+      hook: async () => ({ dispose() {} }),
+      create: async () => { childCreates++; return { data: { id: "ses_native" } } },
+      prompt: async () => ({ data: {} }),
+    },
+    tool: { transform: async (callback) => {
+      callback({ add: (value) => { if (value?.name === "rigel_task") definition = value } })
+      return { dispose() {} }
+    } },
+  }
+  const dispose = await plugin.setup(context)
+  const beforeLookups = agentLookups
+  try {
+    await expect(definition.execute({
+      category: "quick",
+      subagent_type: "explore",
+      prompt: "Do the task.",
+    }, { sessionID: "ses_parent" })).rejects.toThrow("Provide exactly one route; do not combine")
+    expect(agentLookups).toBe(beforeLookups)
+    expect(childCreates).toBe(0)
+  } finally {
+    dispose()
+  }
+})
+
 test("native runtime rejects coordinator delegation before any agent or session work", async () => {
   let definition
   const calls = []
@@ -785,6 +853,36 @@ test("native runtime applies per-turn think reasoning in its registered context 
     expect(plain.options.reasoningEffort).toBeUndefined()
   } finally {
     dispose()
+  }
+})
+
+test("native runtime writes a secret-free durable delegation roster receipt", async () => {
+  const previousStateHome = process.env.XDG_STATE_HOME
+  const stateRoot = mkdtempSync(join(tmpdir(), "rigel-native-delegation-roster-"))
+  process.env.XDG_STATE_HOME = stateRoot
+  const { context, registrations } = recordingHookContext()
+  context.agent.list = async () => ({ data: [{ id: "explore", name: "Explore", mode: "subagent" }] })
+  const dispose = await plugin.setup(context)
+  try {
+    const contextRegistration = registrations.find((registration) => registration.name === "context")
+    expect(contextRegistration).toBeDefined()
+    await contextRegistration.handler({
+      sessionID: "ses_roster_receipt",
+      agent: "Sisyphus - ultraworker",
+      model: { providerID: "openai", modelID: "gpt-6" },
+      system: [],
+      messages: [{ role: "user", content: "sensitive prompt must not be recorded" }],
+      options: {},
+    })
+    const receipt = JSON.parse(readFileSync(join(stateRoot, "oh-my-rigel", "delegation-roster.json"), "utf8"))
+    expect(receipt).toMatchObject({ count: 1, available: true })
+    expect(JSON.stringify(receipt)).not.toContain("sensitive prompt")
+    expect(JSON.stringify(receipt)).not.toContain("ses_roster_receipt")
+  } finally {
+    dispose()
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previousStateHome
+    rmSync(stateRoot, { recursive: true, force: true })
   }
 })
 
