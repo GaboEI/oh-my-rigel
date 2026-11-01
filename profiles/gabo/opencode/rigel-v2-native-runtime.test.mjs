@@ -988,7 +988,6 @@ test("native runtime registers its ordered tool hook chain and disposes every re
       "prometheus-md-only",
       "write-existing-file-guard",
       "comment-checker",
-      "webfetch-redirect-guard",
       "mcp-prefix-strip",
       "bash-null-byte-strip",
       "background-sleep-block",
@@ -1070,7 +1069,6 @@ test("native runtime runs the composed execute.before chain in order for an allo
       "prometheus-md-only",
       "write-existing-file-guard",
       "comment-checker",
-      "webfetch-redirect-guard",
       "mcp-prefix-strip",
       "bash-null-byte-strip",
       "background-sleep-block",
@@ -2946,5 +2944,50 @@ test("native runtime builds the session HTTP authority with the monitor gate off
     if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previousConfigHome
     rmSync(sandbox, { recursive: true, force: true })
+  }
+})
+
+test("native runtime updates the host webfetch executor without replacing its definition", async () => {
+  const nativeExecute = async () => ({ content: "host" })
+  const webfetch = {
+    name: "webfetch",
+    description: "host webfetch",
+    input: { host: "schema" },
+    output: { host: "output" },
+    options: { codemode: false },
+    execute: nativeExecute,
+  }
+  let updated = false
+  const base = editorCaptureContext().context
+  const context = {
+    ...base,
+    permission: { assert: async () => {} },
+    tool: {
+      transform: async (callback) => {
+        callback({
+          add() {},
+          get(name) { return name === "webfetch" ? webfetch : undefined },
+          update(name, apply) {
+            if (name === "webfetch") {
+              updated = true
+              apply(webfetch)
+            }
+          },
+        })
+        return { dispose() {} }
+      },
+    },
+  }
+
+  const dispose = await plugin.setup(context)
+  try {
+    expect(updated).toBe(true)
+    expect(webfetch.name).toBe("webfetch")
+    expect(webfetch.description).toBe("host webfetch")
+    expect(webfetch.input).toEqual({ host: "schema" })
+    expect(webfetch.output).toEqual({ host: "output" })
+    expect(webfetch.execute).not.toBe(nativeExecute)
+  } finally {
+    await dispose()
   }
 })

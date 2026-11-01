@@ -11,6 +11,7 @@
  */
 import crypto from "node:crypto"
 import fs from "node:fs"
+import { createRequire } from "node:module"
 import path from "node:path"
 
 import { discoverRuntimeModules } from "./native-runtime-modules.mjs"
@@ -109,6 +110,55 @@ export function stageLspRuntime({ sourceRoot, runtimeDir }) {
   return staged
 }
 
+function resolvePackageRoot(requireFrom, name) {
+  const entry = requireFrom.resolve(name)
+  let current = path.dirname(entry)
+  while (current !== path.dirname(current)) {
+    const manifest = path.join(current, "package.json")
+    if (fs.existsSync(manifest)) {
+      try {
+        if (JSON.parse(fs.readFileSync(manifest, "utf8")).name === name) return current
+      } catch {
+        // Continue walking; only a package manifest with the requested name is
+        // a valid package root for the staged runtime dependency.
+      }
+    }
+    current = path.dirname(current)
+  }
+  throw new Error(`Unable to locate package root for ${name}`)
+}
+
+/** Stage the exact htmlparser2 dependency closure required by native WebFetch. */
+export function stageWebFetchHtmlParser({ sourceRoot, runtimeDir }) {
+  const rootRequire = createRequire(path.join(sourceRoot, "package.json"))
+  const staged = []
+  const visited = new Set()
+
+  const stagePackage = (requireFrom, name, destination) => {
+    const source = resolvePackageRoot(requireFrom, name)
+    const manifest = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"))
+    const identity = `${name}@${manifest.version}`
+    if (visited.has(identity)) return
+    visited.add(identity)
+
+    fs.cpSync(source, destination, {
+      recursive: true,
+      filter(entry) {
+        return path.basename(entry) !== "node_modules" && path.basename(entry) !== ".git"
+      },
+    })
+    staged.push(path.relative(runtimeDir, destination).split(path.sep).join("/"))
+
+    const ownRequire = createRequire(path.join(source, "package.json"))
+    for (const dependency of Object.keys(manifest.dependencies ?? {}).sort()) {
+      stagePackage(ownRequire, dependency, path.join(destination, "node_modules", ...dependency.split("/")))
+    }
+  }
+
+  stagePackage(rootRequire, "htmlparser2", path.join(runtimeDir, "node_modules", "htmlparser2"))
+  return staged
+}
+
 /**
  * Stage the pinned, verified goal vendor into the deployment. Additive and fully
  * offline: it registers nothing, writes no `opencode.json` / `cli.json` key and
@@ -203,6 +253,7 @@ export function materializeNativeRuntime({
   // Stage the built LSP runtime under the deployment so the runtime resolves it
   // from its own directory instead of the transient source checkout.
   const stagedLsp = stageLspRuntime({ sourceRoot, runtimeDir })
+  const stagedWebFetchHtmlParser = stageWebFetchHtmlParser({ sourceRoot, runtimeDir })
 
   // Stage the pinned goal vendor (dark: nothing references it yet). The digest is
   // returned so the installer can record it inside `versionDigests`.
@@ -246,5 +297,5 @@ export function materializeNativeRuntime({
   const cliAfter = registerGoalCliEntry(cliCompanion, { tuiShimDir: goalTuiShimDir })
   writeTextAtomic(cliConfigFile, `${JSON.stringify(cliAfter, null, 2)}\n`, { mode: 0o600 })
 
-  return { pluginEntry: runtimeDir, cliConfigFile, stagedLsp, goalVendor, goalOptions }
+  return { pluginEntry: runtimeDir, cliConfigFile, stagedLsp, stagedWebFetchHtmlParser, goalVendor, goalOptions }
 }

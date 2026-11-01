@@ -2,9 +2,9 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
-import { materializeNativeRuntime, stageGoalVendor, stageLspRuntime } from "./rigel-v2-runtime-materialize.mjs"
+import { materializeNativeRuntime, stageGoalVendor, stageLspRuntime, stageWebFetchHtmlParser } from "./rigel-v2-runtime-materialize.mjs"
 import { digestOfDirectory } from "./goal-vendor-tarball.mjs"
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
@@ -89,6 +89,40 @@ describe("stageLspRuntime", () => {
   })
 })
 
+describe("stageWebFetchHtmlParser", () => {
+  test("stages the parser and its dependency closure inside the versioned runtime", () => {
+    const sourceRoot = temporaryRoot("rigel-html-parser-source-")
+    const runtimeDir = temporaryRoot("rigel-html-parser-runtime-")
+    const parserDir = path.join(sourceRoot, "node_modules/htmlparser2")
+    const entitiesDir = path.join(sourceRoot, "node_modules/entities")
+    fs.mkdirSync(parserDir, { recursive: true })
+    fs.mkdirSync(entitiesDir, { recursive: true })
+    fs.writeFileSync(path.join(sourceRoot, "package.json"), JSON.stringify({ name: "fixture", type: "module" }))
+    fs.writeFileSync(path.join(parserDir, "package.json"), JSON.stringify({ name: "htmlparser2", version: "1.0.0", main: "index.js", dependencies: { entities: "1.0.0" } }))
+    fs.writeFileSync(path.join(parserDir, "index.js"), 'import "entities"\n')
+    fs.writeFileSync(path.join(entitiesDir, "package.json"), JSON.stringify({ name: "entities", version: "1.0.0", main: "index.js" }))
+    fs.writeFileSync(path.join(entitiesDir, "index.js"), "export {}\n")
+
+    const staged = stageWebFetchHtmlParser({ sourceRoot, runtimeDir })
+
+    expect(staged).toContain("node_modules/htmlparser2")
+    expect(staged).toContain("node_modules/htmlparser2/node_modules/entities")
+    expect(fs.existsSync(path.join(runtimeDir, "node_modules/htmlparser2/index.js"))).toBe(true)
+    expect(fs.existsSync(path.join(runtimeDir, "node_modules/htmlparser2/node_modules/entities/index.js"))).toBe(true)
+  })
+
+  test("the staged dependency closure is importable from the versioned runtime", async () => {
+    const runtimeDir = temporaryRoot("rigel-html-parser-runtime-import-")
+    stageWebFetchHtmlParser({ sourceRoot: repoRoot, runtimeDir })
+    const parserModule = await import(pathToFileURL(path.join(runtimeDir, "node_modules/htmlparser2/dist/esm/index.js")).href)
+    let text = ""
+    const parser = new parserModule.Parser({ ontext(value) { text += value } })
+    parser.write("<p>staged parser works</p>")
+    parser.end()
+    expect(text).toBe("staged parser works")
+  })
+})
+
 describe("stageGoalVendor", () => {
   test("#given the pinned vendor #when staging #then the engine lands in the deployment without any config registration", () => {
     // given a deployment directory that has no config at all
@@ -124,7 +158,7 @@ describe("stageGoalVendor", () => {
     expect(digestOfDirectory(path.join(repoRoot, "profiles/gabo/vendor/opencode-goal-plugin"))).toBe(sourceBefore)
   })
 
-  test("#given a materialized runtime #when the config is produced #then exactly one runtime entry and exactly one goal entry are registered", () => {
+  test("#given a materialized runtime #when the config is produced #then exactly one runtime entry and exactly one goal entry are registered", async () => {
     // given a real source root and an empty target config
     const runtimeDir = path.join(largeRoot, "runtime-config")
     const configDir = path.join(largeRoot, "config", "opencode")
@@ -136,6 +170,12 @@ describe("stageGoalVendor", () => {
 
     // when
     const result = materializeNativeRuntime({ sourceRoot: repoRoot, runtimeDir, agentManifestPath, configFile })
+
+    expect(result.stagedWebFetchHtmlParser).toContain("node_modules/htmlparser2")
+    expect(fs.existsSync(path.join(runtimeDir, "node_modules/htmlparser2/dist/esm/index.js"))).toBe(true)
+    expect(fs.existsSync(path.join(runtimeDir, "rigel-v2-native-webfetch-html-markdown.ts"))).toBe(true)
+    const stagedConverter = await import(pathToFileURL(path.join(runtimeDir, "rigel-v2-native-webfetch-html-markdown.ts")).href)
+    expect(stagedConverter.convertHTMLToMarkdown("<p>staged helper works</p>")).toContain("staged helper works")
 
     // then the engine is registered exactly once: one runtime string entry and
     // one native goal object carrying the Rigel-managed default options.

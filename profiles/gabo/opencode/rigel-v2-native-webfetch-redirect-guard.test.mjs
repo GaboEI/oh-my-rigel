@@ -1,138 +1,374 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import http from "node:http"
+import { describe, expect, test } from "bun:test"
 import {
-  createNativeWebFetchRedirectGuard,
   MAX_WEBFETCH_REDIRECTS,
+  MAX_WEBFETCH_RESPONSE_BYTES,
+  createNativeWebFetchRedirectGuard,
+  createPermissionedWebFetchExecutor,
+  updateNativeWebFetchDefinition,
 } from "./rigel-v2-native-webfetch-redirect-guard.mjs"
 
-let base
-const server = http.createServer((req, res) => {
-  const url = req.url
-  if (url === "/a") {
-    res.writeHead(302, { Location: "/final" })
-    res.end()
-    return
-  }
-  if (url === "/final") {
-    res.writeHead(200, { "content-type": "text/plain" })
-    res.end("final body")
-    return
-  }
-  if (url === "/ok") {
-    res.writeHead(200, { "content-type": "text/plain" })
-    res.end("ok body")
-    return
-  }
-  const hop = /^\/r(\d+)$/.exec(url)
-  if (hop) {
-    const step = Number(hop[1])
-    if (step >= 11) {
-      res.writeHead(200, { "content-type": "text/plain" })
-      res.end("end of chain")
-      return
-    }
-    res.writeHead(302, { Location: `/r${step + 1}` })
-    res.end()
-    return
-  }
-  res.writeHead(404)
-  res.end()
-})
+const initialUrl = "https://allowed.example/start"
+const toolContext = {
+  sessionID: "ses_webfetch",
+  agent: "librarian",
+  messageID: "msg_webfetch",
+  id: "call_webfetch",
+}
 
-beforeAll(async () => {
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
-  base = `http://127.0.0.1:${server.address().port}`
-})
+function response(body, { status = 200, headers = {} } = {}) {
+  return new Response(body, { status, headers })
+}
 
-afterAll(async () => {
-  await new Promise((resolve) => server.close(resolve))
-})
+function permissionHarness({ denied = new Set() } = {}) {
+  const permissionCalls = []
+  return {
+    permission: {
+      async assert(input) {
+        permissionCalls.push(input)
+        if (denied.has(input.resources[0])) throw new Error(`permission denied: ${input.resources[0]}`)
+      },
+    },
+    permissionCalls,
+  }
+}
 
 describe("Rigel native V2 webfetch redirect guard", () => {
-  describe("#given a URL that redirects once to a final 200", () => {
-    describe("#when before runs", () => {
-      test("#then rewrites the args url to the final url", async () => {
-        const guard = createNativeWebFetchRedirectGuard()
-        const event = {
-          tool: "webfetch",
-          sessionID: "ses_happy",
-          id: "call_happy",
-          input: { url: `${base}/a`, format: "markdown" },
+  test("updates the existing native definition without changing identity or schema", () => {
+    const originalExecute = async () => ({ content: "native" })
+    const definition = {
+      name: "webfetch",
+      description: "native description",
+      input: { native: "schema" },
+      output: { native: "output" },
+      options: { codemode: false },
+      execute: originalExecute,
+    }
+    const updates = []
+    const editor = {
+      get(name) { return name === "webfetch" ? definition : undefined },
+      update(name, apply) {
+        updates.push(name)
+        apply(definition)
+      },
+    }
+
+    expect(updateNativeWebFetchDefinition(editor, { permission: permissionHarness().permission })).toBe(true)
+    expect(updates).toEqual(["webfetch"])
+    expect(definition.name).toBe("webfetch")
+    expect(definition.description).toBe("native description")
+    expect(definition.input).toEqual({ native: "schema" })
+    expect(definition.output).toEqual({ native: "output" })
+    expect(definition.options).toEqual({ codemode: false })
+    expect(definition.execute).not.toBe(originalExecute)
+  })
+
+  test("checks the initial URL and denied redirect before requesting the denied target", async () => {
+    const deniedUrl = "https://denied.example/secret"
+    const { permission, permissionCalls } = permissionHarness({ denied: new Set([deniedUrl]) })
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url) => {
+        requests.push(url)
+        return response("redirect", { status: 302, headers: { Location: deniedUrl } })
+      },
+    })
+
+    await expect(execute({ url: initialUrl, format: "markdown" }, toolContext)).rejects.toThrow("permission denied")
+    expect(permissionCalls.map((call) => call.resources[0])).toEqual([initialUrl, deniedUrl])
+    expect(requests).toEqual([initialUrl])
+  })
+
+  test("allows a relative redirect and checks every resolved URL before its request", async () => {
+    const { permission, permissionCalls } = permissionHarness()
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url, init) => {
+        requests.push({ url, init })
+        if (url === initialUrl) return response("redirect", { status: 302, headers: { Location: "/docs/final" } })
+        return response("<h1>Allowed</h1>", { headers: { "content-type": "text/html" } })
+      },
+    })
+
+    const result = await execute({ url: initialUrl, format: "markdown" }, toolContext)
+
+    expect(requests.map(({ url }) => url)).toEqual([initialUrl, "https://allowed.example/docs/final"])
+    expect(permissionCalls.map((call) => call.resources[0])).toEqual(requests.map(({ url }) => url))
+    expect(requests[0].init.redirect).toBe("manual")
+    expect(requests[0].init.headers.Accept).toContain("text/markdown")
+    expect(result.output).toEqual({
+      url: initialUrl,
+      contentType: "text/html",
+      format: "markdown",
+      output: "# Allowed",
+    })
+    expect(result.content).toBe("# Allowed")
+  })
+
+  test("matches native Cloudflare challenge retry while keeping redirects guarded", async () => {
+    const { permission, permissionCalls } = permissionHarness()
+    const calls = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url, init) => {
+        calls.push({ url, userAgent: init.headers["User-Agent"] })
+        if (calls.length === 1) {
+          return response("challenge", {
+            status: 403,
+            headers: { "cf-mitigated": "challenge", "content-type": "text/plain" },
+          })
         }
-
-        await guard.before(event)
-
-        expect(event.input.url).toBe(`${base}/final`)
-      })
+        return response("page", { headers: { "content-type": "text/plain" } })
+      },
     })
+
+    const result = await execute({ url: initialUrl, format: "text" }, toolContext)
+
+    expect(calls.map(({ url }) => url)).toEqual([initialUrl, initialUrl])
+    expect(calls[0].userAgent).toContain("OpenCode-User/1.0")
+    expect(calls[1].userAgent).toBe("opencode")
+    expect(permissionCalls.map((call) => call.resources[0])).toEqual([initialUrl, initialUrl])
+    expect(result.output.output).toBe("page")
   })
 
-  describe("#given a chain of 11 redirects that exceeds the limit", () => {
-    describe("#when before then after run", () => {
-      test("#then tracks the failure and rewrites the mutable result text", async () => {
-        const guard = createNativeWebFetchRedirectGuard()
-        const url = `${base}/r0`
-        const before = { tool: "webfetch", sessionID: "ses_block", id: "call_block", input: { url } }
-
-        await guard.before(before)
-        expect(before.input.url).toBe(url)
-
-        const after = {
-          tool: "webfetch",
-          sessionID: "ses_block",
-          id: "call_block",
-          output: "Error: the response redirected too many times",
-        }
-        await guard.after(after)
-
-        expect(after.output).toContain(`exceeded maximum redirects (${MAX_WEBFETCH_REDIRECTS})`)
-        expect(after.output).toContain(url)
-      })
+  test("fails closed at the ten-redirect cap without requesting the eleventh target", async () => {
+    const { permission, permissionCalls } = permissionHarness()
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url) => {
+        requests.push(url)
+        const hop = Number(new URL(url).pathname.slice(2))
+        return response("redirect", { status: 302, headers: { Location: `/r${hop + 1}` } })
+      },
     })
+
+    await expect(execute({ url: "https://allowed.example/r0" }, toolContext)).rejects.toThrow("too many redirects")
+    expect(requests).toHaveLength(MAX_WEBFETCH_REDIRECTS + 1)
+    expect(permissionCalls).toHaveLength(MAX_WEBFETCH_REDIRECTS + 1)
+    expect(requests.at(-1)).toBe("https://allowed.example/r10")
   })
 
-  describe("#given a direct 200 URL", () => {
-    describe("#when before runs", () => {
-      test("#then leaves the args url unchanged", async () => {
-        const guard = createNativeWebFetchRedirectGuard()
-        const event = { tool: "webfetch", sessionID: "ses_ok", id: "call_ok", input: { url: `${base}/ok` } }
-
-        await guard.before(event)
-
-        expect(event.input.url).toBe(`${base}/ok`)
-      })
+  test("fails closed for a malformed or non-HTTP redirect target", async () => {
+    const { permission, permissionCalls } = permissionHarness()
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url) => {
+        requests.push(url)
+        return response("redirect", { status: 301, headers: { Location: "file:///etc/passwd" } })
+      },
     })
+
+    await expect(execute({ url: initialUrl }, toolContext)).rejects.toThrow("http:// or https://")
+    expect(requests).toEqual([initialUrl])
+    expect(permissionCalls.map((call) => call.resources[0])).toEqual([initialUrl])
   })
 
-  describe("#given a result carried as text content parts", () => {
-    describe("#when a raw redirect-loop error has no tracked state", () => {
-      test("#then normalizes the part text without a url", async () => {
-        const guard = createNativeWebFetchRedirectGuard()
-        const part = { type: "text", text: "error: too many redirects" }
-        const after = { tool: "webfetch", sessionID: "ses_parts", id: "call_parts", output: { content: [part] } }
-
-        await guard.after(after)
-
-        expect(part.text).toBe(`Error: WebFetch failed: exceeded maximum redirects (${MAX_WEBFETCH_REDIRECTS})`)
-      })
+  test("forwards external abort and never issues a later redirect request", async () => {
+    const external = new AbortController()
+    const { permission, permissionCalls } = permissionHarness()
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url, init) => {
+        requests.push(url)
+        return await new Promise((resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(init.signal.reason ?? new Error("aborted")), { once: true })
+          external.abort(new Error("caller aborted"))
+        })
+      },
     })
+
+    await expect(execute({ url: initialUrl, timeout: 120 }, { ...toolContext, signal: external.signal })).rejects.toThrow("aborted")
+    expect(requests).toEqual([initialUrl])
+    expect(permissionCalls).toHaveLength(1)
   })
 
-  describe("#given successful content that merely mentions redirect loops", () => {
-    describe("#when after runs", () => {
-      test("#then keeps the text unchanged", async () => {
-        const guard = createNativeWebFetchRedirectGuard()
-        const after = {
-          tool: "webfetch",
-          sessionID: "ses_content",
-          id: "call_content",
-          output: "This page explains why browsers hit too many redirects in some setups.",
-        }
-
-        await guard.after(after)
-
-        expect(after.output).toBe("This page explains why browsers hit too many redirects in some setups.")
-      })
+  test("does not charge initial permission approval against the request timeout", async () => {
+    const { permission } = permissionHarness()
+    permission.assert = async () => await new Promise((resolve) => setTimeout(resolve, 1_100))
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url, init) => {
+        requests.push({ url, aborted: init.signal.aborted })
+        return response("approved")
+      },
     })
+
+    const result = await execute({ url: initialUrl, timeout: 1, format: "text" }, toolContext)
+
+    expect(requests).toEqual([{ url: initialUrl, aborted: false }])
+    expect(result.output.output).toBe("approved")
+  })
+
+  test("does not charge redirect permission approval against the shared request timeout", async () => {
+    const { permission } = permissionHarness()
+    const requests = []
+    permission.assert = async ({ resources }) => {
+      if (resources[0] !== initialUrl) await new Promise((resolve) => setTimeout(resolve, 1_100))
+    }
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url, init) => {
+        requests.push({ url, aborted: init.signal.aborted })
+        if (url === initialUrl) return response("redirect", { status: 302, headers: { Location: "/final" } })
+        return response("approved redirect")
+      },
+    })
+
+    const result = await execute({ url: initialUrl, timeout: 1, format: "text" }, toolContext)
+
+    expect(requests).toEqual([
+      { url: initialUrl, aborted: false },
+      { url: "https://allowed.example/final", aborted: false },
+    ])
+    expect(result.output.output).toBe("approved redirect")
+  })
+
+  test("does not issue a request if the caller aborts while permission is pending", async () => {
+    const external = new AbortController()
+    const { permission } = permissionHarness()
+    let approve
+    permission.assert = async () => await new Promise((resolve) => { approve = resolve })
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url) => {
+        requests.push(url)
+        return response("must not be fetched")
+      },
+    })
+
+    const pending = execute({ url: initialUrl, timeout: 1, format: "text" }, { ...toolContext, signal: external.signal })
+    await new Promise((resolve) => setImmediate(resolve))
+    external.abort(new Error("caller aborted while approval was pending"))
+    approve()
+
+    await expect(pending).rejects.toThrow("Request aborted")
+    expect(requests).toEqual([])
+  })
+
+  test("releases a pending permission wait when the caller aborts", async () => {
+    const external = new AbortController()
+    const { permission } = permissionHarness()
+    let permissionStarted
+    const started = new Promise((resolve) => { permissionStarted = resolve })
+    permission.assert = async () => {
+      permissionStarted()
+      await new Promise(() => {})
+    }
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url) => {
+        requests.push(url)
+        return response("must not be fetched")
+      },
+    })
+
+    const pending = execute({ url: initialUrl, timeout: 1, format: "text" }, { ...toolContext, signal: external.signal })
+    await started
+    external.abort(new Error("caller aborted while approval was pending"))
+    const outcome = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise((resolve) => setTimeout(() => resolve("still pending"), 50)),
+    ])
+
+    expect(outcome).toBe("rejected")
+    expect(requests).toEqual([])
+  })
+
+  test("enforces the requested timeout when the request does not settle", async () => {
+    const { permission } = permissionHarness()
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (_url, init) => await new Promise((resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason ?? new Error("aborted")), { once: true })
+      }),
+    })
+
+    await expect(execute({ url: initialUrl, timeout: 0.001 }, toolContext)).rejects.toThrow("timed out")
+  })
+
+  test("rejects a response above the native five MiB limit before converting it", async () => {
+    const { permission } = permissionHarness()
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async () => response("x", { headers: { "content-length": String(MAX_WEBFETCH_RESPONSE_BYTES + 1) } }),
+    })
+
+    await expect(execute({ url: initialUrl }, toolContext)).rejects.toThrow("Response too large")
+  })
+
+  test("preserves native format behavior for text, html, and markdown", async () => {
+    const { permission } = permissionHarness()
+    const seenAccept = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (_url, init) => {
+        seenAccept.push(init.headers.Accept)
+        return response("<p>Hello <strong>world</strong></p>", { headers: { "content-type": "text/html; charset=utf-8" } })
+      },
+    })
+
+    const text = await execute({ url: initialUrl, format: "text" }, toolContext)
+    const html = await execute({ url: initialUrl, format: "html" }, toolContext)
+    const markdown = await execute({ url: initialUrl, format: "markdown" }, toolContext)
+
+    expect(text.output.output).toBe("Hello world")
+    expect(html.output.output).toContain("<strong>world</strong>")
+    expect(markdown.output.output).toBe("Hello **world**")
+    expect(seenAccept[0]).toContain("text/plain")
+    expect(seenAccept[1]).toContain("text/html")
+    expect(seenAccept[2]).toContain("text/markdown")
+  })
+
+  test("matches native HTML parser behavior for nested markup, entities, lists, and script omission", async () => {
+    const html = "<!doctype html><article><h2>Heading &amp; title</h2><p>intro <strong>bold <em>nested</em></strong> <a href=\"/docs\">link</a>.</p><ul><li>alpha</li><li><code>beta()</code></li></ul><script>bad</script></article>"
+    const { permission } = permissionHarness()
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async () => response(html, { headers: { "content-type": "text/html; charset=utf-8" } }),
+    })
+
+    const markdown = await execute({ url: initialUrl, format: "markdown" }, toolContext)
+    const text = await execute({ url: initialUrl, format: "text" }, toolContext)
+
+    expect(markdown.output.output).toBe("## Heading & title\n\nintro **bold *nested*** [link](/docs).\n\n- alpha\n\n- `beta()`")
+    expect(text.output.output).toBe("Heading & titleintro bold nested link.alphabeta()")
+    expect(markdown.output.output).not.toContain("bad")
+  })
+
+  test("normalizes the actual OpenCode V2 error.message field", async () => {
+    const guard = createNativeWebFetchRedirectGuard()
+    const event = {
+      status: "error",
+      tool: "webfetch",
+      sessionID: "ses_error_object",
+      error: { name: "ToolError", message: "WebFetch failed: redirected too many times" },
+    }
+
+    await guard.after(event)
+
+    expect(event.error.message).toBe("Error: WebFetch failed: OpenCode reported too many redirects")
+  })
+
+  test("leaves successful page text and non-webfetch errors untouched", async () => {
+    const guard = createNativeWebFetchRedirectGuard()
+    const success = {
+      status: "completed",
+      tool: "webfetch",
+      result: { content: [{ type: "text", text: "This page explains too many redirects." }] },
+    }
+    const other = { status: "error", tool: "fetch", error: { message: "too many redirects" } }
+
+    await guard.after(success)
+    await guard.after(other)
+
+    expect(success.result.content[0].text).toBe("This page explains too many redirects.")
+    expect(other.error.message).toBe("too many redirects")
   })
 })

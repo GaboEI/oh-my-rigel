@@ -370,8 +370,8 @@ export default {
   "webfetch-redirect-guard": {
     classification: "Migrar",
     rationale:
-      "V1 guard in `hooks/webfetch-redirect-guard/hook.ts` resolves and bounds webfetch redirects; the native V2 runtime replicates `resolveWebFetchRedirects` (max 10, statuses 301/302/303/307/308, normalized timeout) in tool.execute.before/after, tested against a real local HTTP server.",
+      "The native V2 `webfetch` definition is updated in place, preserving its identity, schema, description, headers, formats, output shape, timeout and response-size contract. Its executor manually handles only 301/302/303/307/308 redirects, resolves relative HTTP(S) Locations, caps the chain at 10, and calls `context.permission.assert` for every resolved URL before issuing that hop's request. The after hook only normalizes the host's reported too-many-redirects envelope. The V1 resolver remains available to the differential oracle and is not called by the V2 hook.",
     status: "Migrado",
-    futureEvidence: ".omo/evidence/20261004-phase4-task18-guards/task-18.txt",
+    futureEvidence: "profiles/gabo/opencode/rigel-v2-native-webfetch-redirect-guard.mjs; profiles/gabo/opencode/rigel-v2-native-webfetch-redirect-guard.test.mjs; profiles/gabo/opencode/rigel-v2-native-runtime.test.mjs",
   },
 }

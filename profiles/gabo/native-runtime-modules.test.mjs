@@ -116,6 +116,13 @@ describe("Rigel native runtime module discovery", () => {
     expect(found).not.toContain("rigel-v2-native.mjs")
   })
 
+  test("#given an entry importing a TypeScript helper #when discovering #then the helper is staged with its runtime", () => {
+    const root = workspace()
+    fs.writeFileSync(path.join(root, "rigel-v2-native.mjs"), 'import { parser } from "./parser.ts"\n')
+    fs.writeFileSync(path.join(root, "parser.ts"), 'import { Parser } from "htmlparser2"\nexport const parser = Parser\n')
+    expect(discoverRuntimeModules(root)).toContain("parser.ts")
+  })
+
   test("#given a broken relative import #when discovering #then the missing target is skipped without throwing", () => {
     const root = workspace()
     fs.writeFileSync(path.join(root, "rigel-v2-native.mjs"), 'import { missing } from "./missing.mjs"\nimport { p } from "./present.mjs"\n')
