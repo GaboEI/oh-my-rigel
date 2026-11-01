@@ -121,6 +121,9 @@ try {
     directory,
     ...(profileRoot ? { env: { ...process.env, HOME: profileRoot } } : {}),
   })
+  for (const diagnostic of pluginView.diagnostics) {
+    console.error(`Rigel native agent manifest: ${diagnostic}`)
+  }
   const canonicalAgentKey = (id) => String(id ?? "").trim().toLocaleLowerCase().split(/\s+-\s+/)[0].trim()
   const disabledAgentKeys = new Set((pluginView.disabled?.agents ?? []).map((id) => canonicalAgentKey(id)))
   const selection = selectionPath ? JSON.parse(fs.readFileSync(selectionPath, "utf8")) : null
