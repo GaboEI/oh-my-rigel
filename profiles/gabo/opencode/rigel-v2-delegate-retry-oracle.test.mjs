@@ -36,7 +36,7 @@ function backgroundChild() {
 
 // Exact message thrown from rigel-v2-native.mjs when the target is a coordinator.
 const V2_COORDINATOR_REJECTION =
-  'Cannot delegate to coordinator agent "prometheus" via task. Coordinator agents (prometheus) own the orchestration loop and must not be used as subagent targets - doing so creates duplicate coordinators and conflicting team state. Select a worker agent (e.g., sisyphus-junior via category, hephaestus, oracle) instead.'
+  'Cannot delegate to coordinator agent "prometheus" via task. Coordinator agents (prometheus) own the orchestration loop and must not be used as subagent targets - doing so creates duplicate coordinators and conflicting team state. Select a worker agent instead.'
 
 describe("#given the real rigel_task taskResult shapes", () => {
   describe("#when a foreground child completed with text", () => {

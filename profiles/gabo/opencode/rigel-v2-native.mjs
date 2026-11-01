@@ -1716,7 +1716,7 @@ export default {
           const routeError = taskRouteError(input)
           if (routeError) throw new Error(routeError)
           if (isCoordinatorAgent(input.subagent_type)) {
-            throw new Error(`Cannot delegate to coordinator agent "${String(input.subagent_type).trim()}" via task. Coordinator agents (prometheus) own the orchestration loop and must not be used as subagent targets - doing so creates duplicate coordinators and conflicting team state. Select a worker agent (e.g., sisyphus-junior via category, hephaestus, oracle) instead.`)
+            throw new Error(`Cannot delegate to coordinator agent "${String(input.subagent_type).trim()}" via task. Coordinator agents (prometheus) own the orchestration loop and must not be used as subagent targets - doing so creates duplicate coordinators and conflicting team state. Select a worker agent instead.`)
           }
           // In the V2 setup() API, the context itself is the typed service
           // surface. Tool execution receives only turn metadata, not a second
