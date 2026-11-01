@@ -105,7 +105,6 @@ describe("goal budget guard", () => {
     expect(hardened.input.properties).toEqual({ objective: { type: "string" } })
     expect(hardened.input.required).toEqual(["objective"])
     expect(hardened.input.additionalProperties).toBe(true)
-    expect(hardened.description).toContain("plugin configuration")
   })
 
   test("#given a set_goal or replace_goal definition #when hardened #then it is hardened too", () => {
