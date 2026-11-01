@@ -15,6 +15,7 @@ import path from "node:path"
 
 import {
   RIGEL_GOAL_DEFAULTS,
+  DISABLED_BUILTIN_GOAL,
   adoptGoalState,
   assertGoalStatePathSafe,
   countGoalEntries,
@@ -111,6 +112,11 @@ describe("#given explicit user overrides", () => {
     })
   })
 
+  test("#when wait_for_command is provided #then the 0.1.91 command-lifetime override is preserved", () => {
+    expect(resolveGoalOptions({ overrides: { wait_for_command: true } }).wait_for_command).toBe(true)
+    expect(() => resolveGoalOptions({ overrides: { wait_for_command: "yes" } })).toThrow(/boolean/)
+  })
+
   test("#when a value is invalid #then it fails with a diagnostic instead of guessing", () => {
     expect(() => resolveGoalOptions({ overrides: { max_auto_turns: 0 } })).toThrow(/positive integer/)
     expect(() => resolveGoalOptions({ overrides: { auto_continue: "yes" } })).toThrow(/boolean/)
@@ -150,15 +156,18 @@ describe("#given the two-slot family registration", () => {
     expect(second.find(isGoalEngineEntry)[0]).toBe(engine2)
   })
 
-  test("#when the CLI entry is registered #then it is a single object pointing at the TUI shim directory", () => {
+  test("#when the CLI entry is registered #then it is a single shim with one builtin-disable marker", () => {
     const once = registerGoalCliEntry({ plugins: [{ package: "/runtime", options: {} }] }, { tuiShimDir: TUI_SHIM })
-    expect(once.plugins.filter(isGoalEngineEntry)).toHaveLength(1)
-    expect(once.plugins.find(isGoalEngineEntry)).toEqual({ package: TUI_SHIM })
+    const twice = registerGoalCliEntry(once, { tuiShimDir: TUI_SHIM })
+    expect(twice.plugins.filter(isGoalEngineEntry)).toHaveLength(1)
+    expect(twice.plugins.find(isGoalEngineEntry)).toEqual({ package: TUI_SHIM })
+    expect(twice.plugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL)).toHaveLength(1)
+    expect(twice).toEqual(once)
   })
 
-  test("#when the goal entries are removed #then both configs are clean but foreign entries stay", () => {
+  test("#when the goal entries are removed #then both configs and the marker are clean but foreign entries stay", () => {
     const config = { plugin: ["/runtime", [ENGINE, {}]] }
-    const cli = { plugins: [{ package: "/runtime", options: {} }, { package: ARTIFACT }] }
+    const cli = { plugins: [{ package: "/runtime", options: {} }, DISABLED_BUILTIN_GOAL, { package: ARTIFACT }] }
     const stripped = removeGoalEntries(config, cli)
     expect(countGoalEntries(config, cli)).toEqual({ config: 1, cli: 1 })
     expect(countGoalEntries(stripped.config, stripped.cli)).toEqual({ config: 0, cli: 0 })

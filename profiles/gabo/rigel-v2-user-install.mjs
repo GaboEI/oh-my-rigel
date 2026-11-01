@@ -34,10 +34,12 @@ import { GOAL_VENDOR_ARTIFACT, goalVendorDigestKey, goalVendorTargetDir } from "
 import {
   GOAL_ENGINE_SHIM_DIRNAME,
   GOAL_TUI_SHIM_DIRNAME,
+  DISABLED_BUILTIN_GOAL,
   adoptGoalState,
   assertGoalStatePathSafe,
   goalEntryOptions,
   isGoalEngineEntry,
+  pluginEntrySpec,
   registerGoalCliEntry,
   registerGoalServerEntry,
   removeGoalEntries,
@@ -637,38 +639,40 @@ function statusOf(state, paths) {
   const configFamily = configPlugins.filter((entry) => typeof entry === "string" && under(canonicalize(entry), canonicalState))
   checks.push({ name: "config.registersRuntime", pass: configPlugins.includes(state.pluginEntry) })
   checks.push({ name: "config.singleRigelEntry", pass: configFamily.length === 1 && configFamily[0] === state.pluginEntry })
-  // The vendored goal engine is its own slot in the SAME array: exactly one.
-  checks.push({ name: "goal.singleServerEntry", pass: configPlugins.filter(isGoalEngineEntry).length === 1 })
+  // The third-party Goal is loaded through Rigel's server shim, exactly once.
+  const goalServerEntries = configPlugins.filter(isGoalEngineEntry)
+  const goalPaths = goalEnginePaths(runtime)
+  checks.push({ name: "goal.singleServerEntry", pass: goalServerEntries.length === 1 && pluginEntrySpec(goalServerEntries[0]) === goalPaths.engineEntry })
 
   // cli.json: exactly one Rigel-family companion entry pointing at the SAME
-  // runtime as the server config, and no historical builtin-notifier suppression
-  // marker. This is the skew the P2 REJECT proved: a version transition used to
-  // leave both the old and new entries behind.
+  // runtime as the server config, no historical notification suppression, and
+  // exactly one explicit marker disabling the host builtin Goal. The goal TUI
+  // slot must be the active runtime's Rigel shim, never an ambiguous vendor path.
   const cliConfigFile = path.join(path.dirname(paths.configFile), "cli.json")
   const cli = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
   const cliPlugins = Array.isArray(cli.plugins) ? cli.plugins : []
-  // The goal TUI entry lives under the state root too but belongs to the goal
-  // slot, so it must not count as the runtime companion.
   const cliFamily = cliPlugins.filter((entry) => !isGoalEngineEntry(entry) && entry && typeof entry === "object" && typeof entry.package === "string" && under(canonicalize(entry.package), canonicalState))
-  const markerCount = cliPlugins.filter((entry) => entry === "-opencode.notifications").length
+  const notificationMarkerCount = cliPlugins.filter((entry) => entry === "-opencode.notifications").length
+  const goalMarkerCount = cliPlugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length
+  const goalCliEntries = cliPlugins.filter(isGoalEngineEntry)
   checks.push({ name: "cli.singleRigelEntry", pass: cliFamily.length === 1 })
   checks.push({ name: "cli.runtimeMatchesConfig", pass: cliFamily.length === 1 && cliFamily[0].package === state.pluginEntry })
-  checks.push({ name: "cli.noBuiltinNotifierSuppression", pass: markerCount === 0 })
-  checks.push({ name: "goal.singleCliEntry", pass: cliPlugins.filter(isGoalEngineEntry).length === 1 })
+  checks.push({ name: "cli.noBuiltinNotifierSuppression", pass: notificationMarkerCount === 0 })
+  checks.push({ name: "goal.builtinDisabled", pass: goalMarkerCount === 1 })
+  checks.push({ name: "goal.singleCliEntry", pass: goalCliEntries.length === 1 && pluginEntrySpec(goalCliEntries[0]) === goalPaths.tuiEntry })
 
   const currentDigest = fs.existsSync(runtime) ? treeDigest(runtime) : null
   checks.push({ name: "runtime.digestMatches", pass: currentDigest !== null && currentDigest === state.versionDigests?.[state.version] })
 
-  if (state.goalStatePath !== undefined) {
-    let inside = false
-    try {
-      assertGoalStatePathSafe(state.goalStatePath, paths.stateRoot)
-      inside = true
-    } catch {
-      inside = false
-    }
-    checks.push({ name: "goal.statePathInsideRoot", pass: inside })
+  let goalStatePathMatchesRoot = false
+  try {
+    const expectedGoalStatePath = resolveGoalStatePath(paths.stateRoot)
+    goalStatePathMatchesRoot = state.goalStatePath === expectedGoalStatePath
+    assertGoalStatePathSafe(state.goalStatePath, paths.stateRoot)
+  } catch {
+    goalStatePathMatchesRoot = false
   }
+  checks.push({ name: "goal.statePathMatchesRoot", pass: goalStatePathMatchesRoot })
   return { version: state.version, previousVersion: state.previousVersion ?? null, checks, pass: checks.every((entry) => entry.pass) }
 }
 

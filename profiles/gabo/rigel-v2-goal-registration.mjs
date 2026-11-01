@@ -63,6 +63,9 @@ export const GOAL_ENGINE_SHIM_DIRNAME = "rigel-goal-engine"
  */
 export const GOAL_TUI_SHIM_DIRNAME = "rigel-goal-tui"
 
+/** Explicit CLI marker that disables OpenCode's competing builtin Goal plugin. */
+export const DISABLED_BUILTIN_GOAL = "-opencode.goal"
+
 /**
  * The Rigel-managed DEFAULT options written into the community entry exactly
  * once. `default_token_budget` and `max_goal_duration_seconds` are deliberately
@@ -87,6 +90,7 @@ const GOAL_OPTION_SPECS = Object.freeze({
   auto_continue: "boolean",
   defer_while_tasks_active: "boolean",
   register_command: "boolean",
+  wait_for_command: "boolean",
   allow_goal_execution_from_plan: "boolean",
   max_auto_turns: "positiveInteger",
   max_prompt_failures: "positiveInteger",
@@ -269,32 +273,49 @@ export function registerGoalServerEntry(plugins, { engineEntry, options }) {
  * its `.`/`./tui` export to the vendored TUI). A prior version's goal entry is
  * replaced in place.
  */
+/**
+ * Register the goal engine's CLI/TUI entry in `cli.json` `plugins` exactly once
+ * as an object pointing at the Rigel-owned TUI shim directory (the host resolves
+ * its `.`/`./tui` export to the vendored TUI). The same array carries exactly one
+ * `-opencode.goal` marker so the host builtin cannot contend for Goal ownership.
+ * A prior version's goal entry is replaced in place; uninstall removes both the
+ * shim entry and marker through {@link removeGoalEntries}.
+ */
 export function registerGoalCliEntry(cliConfig, { tuiShimDir }) {
   const next = { ...(cliConfig && typeof cliConfig === "object" ? cliConfig : {}) }
   const current = Array.isArray(next.plugins) ? next.plugins : []
   const plugins = []
-  let placed = false
+  let goalPlaced = false
+  let markerPlaced = false
   for (const entry of current) {
+    if (entry === DISABLED_BUILTIN_GOAL) {
+      if (!markerPlaced) {
+        plugins.push(DISABLED_BUILTIN_GOAL)
+        markerPlaced = true
+      }
+      continue
+    }
     if (isGoalEngineEntry(entry)) {
-      if (!placed) {
+      if (!goalPlaced) {
         plugins.push({ package: tuiShimDir })
-        placed = true
+        goalPlaced = true
       }
       continue
     }
     plugins.push(entry)
   }
-  if (!placed) plugins.push({ package: tuiShimDir })
+  if (!markerPlaced) plugins.push(DISABLED_BUILTIN_GOAL)
+  if (!goalPlaced) plugins.push({ package: tuiShimDir })
   next.plugins = plugins
   return next
 }
 
-/** Remove every goal-engine entry from `opencode.json` and `cli.json`. */
+/** Remove every goal-engine entry and the Goal builtin-disable marker from `opencode.json` and `cli.json`. */
 export function removeGoalEntries(config, cliConfig) {
   const nextConfig = { ...(config && typeof config === "object" ? config : {}) }
   if (Array.isArray(nextConfig.plugin)) nextConfig.plugin = nextConfig.plugin.filter((entry) => !isGoalEngineEntry(entry))
   const nextCli = { ...(cliConfig && typeof cliConfig === "object" ? cliConfig : {}) }
-  if (Array.isArray(nextCli.plugins)) nextCli.plugins = nextCli.plugins.filter((entry) => !isGoalEngineEntry(entry))
+  if (Array.isArray(nextCli.plugins)) nextCli.plugins = nextCli.plugins.filter((entry) => entry !== DISABLED_BUILTIN_GOAL && !isGoalEngineEntry(entry))
   return { config: nextConfig, cli: nextCli }
 }
 

@@ -10,7 +10,7 @@ It contains no credentials, accounts, model catalog, SSH targets, database setti
 
 ## Layout
 
-- `omo.jsonc` defines the OmO `gabo` profile: Tavily, one external Context7, internal Goal ownership, Sisyphus as the merged orchestrator, and canonical Playwright. The internal Goal is enabled by default (`goal.enabled: true`); the retired `@prevalentware/opencode-goal-plugin` must stay unregistered and its state/cache must stay absent. The pinned community engine is vendored **dark** in-tree (see `vendor/opencode-goal-plugin/README.md`): the bytes travel with the repository so a future activation is offline and reproducible, but nothing registers it, no goal config key exists, and no state is created.
+- `omo.jsonc` defines the OmO `gabo` profile: Tavily, one external Context7, and Sisyphus as the merged orchestrator. The active Goal owner is the vendored community engine, registered through Rigel-owned server/TUI shims in the managed user deployment; its explicit `-opencode.goal` CLI marker disables the competing host builtin. The pinned community engine is vendored **dark** in-tree (see `vendor/opencode-goal-plugin/README.md`): the bytes travel with the repository so a future activation is offline and reproducible, but only the user lifecycle materializer registers the shims and creates state under its Rigel root.
 - `opencode/prompts/sisyphus-orchestration.md` adds the delegation and acceptance contract to upstream Sisyphus. `opencode/agents/judge.md` packages Gabo's independent Juez methodology, adapted to generic Rigel terminology and registered as the V2 `judge` agent from the native manifest. Momus is a distinct plan critic, never a Juez alias.
 - `opencode/rigel-v2-native*.mjs` is the native OpenCode V2 runtime. It resolves agents and creates delegated sessions through V2 APIs directly; it does not execute OmO's V1 plugin hooks through a compatibility bridge. The retired bridge and legacy activation paths are quarantined under `attic/`, and profile validation fails if any active file references them.
 - `attic/` holds the quarantined V1 bridge, dist/adapter activation switches, live-trial service wrappers, and the five bridge-based QA contracts. It is historical reference only: it is never built, activated, or counted by the acceptance suite.
@@ -38,7 +38,7 @@ Run `bash profiles/gabo/run-v2-isolated.sh` to boot the host OpenCode **V2** bin
 
 Run `bash profiles/gabo/run-delegation-preflight.sh` to execute that isolated smoke plus focused tests of OmO's real delegated-session engine. It proves session creation, synchronous routing, continuation metadata, and child-session permission isolation; it deliberately does not use a model provider or account.
 
-Run `bash profiles/gabo/run-session-authority-preflight.sh` to verify that the Gabo profile owns the Goal internally (external `@prevalentware/opencode-goal-plugin` absent) while retaining OmO's delegated-child continuation and Context Mode as the root context authority.
+Run `bash profiles/gabo/run-session-authority-preflight.sh` to verify the managed Goal shim shape (`-opencode.goal`, one server entry, one CLI entry, and the Rigel-owned state path) while retaining OmO's delegated-child continuation and Context Mode as the root context authority. It does not prove that a live host has loaded the disable marker.
 
 Run `bash profiles/gabo/run-mcp-policy-preflight.sh` to validate singleton ownership, the embedded protective SSH MCP, and the absence of credentials or duplicate external MCP declarations.
 

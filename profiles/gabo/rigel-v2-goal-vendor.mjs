@@ -36,13 +36,13 @@ export const GOAL_VENDOR_SCHEMA = 1
  */
 export const GOAL_VENDOR_ARTIFACT = Object.freeze({
   name: "@prevalentware/opencode-goal-plugin",
-  version: "0.1.60",
-  tag: "v0.1.60",
-  commit: "cf22feaaa7ab3367053a9a99913cbc40e5c3224e",
+  version: "0.1.91",
+  tag: "v0.1.91",
+  commit: "ccdd288fd595f41d1482e03088612b7eb7704cde",
   license: "MIT",
-  distIntegrity: "sha512-mDEwq3DdZtUPtty26FFf7SptSnTATeJYZGXOYEMVt/utjB7YwTzxiZwur6D65hxYEzhC6Qw7uSMi2wrP3OK0og==",
-  tarballSha256: "292680c8a777113f92c82811a8683c4f9da368023d966fb0ead059c5243c9689",
-  tarball: `tarballs/prevalentware-${GOAL_VENDOR_ID}-0.1.60.tgz`,
+  distIntegrity: "sha512-rE2wUeRxjLwwQ5C+K5deJzzq7iCAxtqcIlH4NkBVU972otaw3WsawopqitiQxl2YFxS7M4TSaCuJA3DbLPpwDQ==",
+  tarballSha256: "81ff56d1c22c5ac8d7c80cf59d8e58618e0c28d2c8d139c55c4f73a98e95148a",
+  tarball: `tarballs/prevalentware-${GOAL_VENDOR_ID}-0.1.91.tgz`,
   engineEntry: "dist/server.js",
   tuiEntry: "src/tui.ts",
 })
