@@ -34,7 +34,7 @@ import { createNativeRulesInjector } from "./rigel-v2-native-rules.mjs"
 import { createNativeWriteExistingFileGuard } from "./rigel-v2-native-write-guard.mjs"
 import { createNativeNonInteractiveEnvGuard } from "./rigel-v2-native-noninteractive.mjs"
 import { createNativeCommentChecker } from "./rigel-v2-native-comment-checker.mjs"
-import { createNativeWebFetchRedirectGuard } from "./rigel-v2-native-webfetch-redirect-guard.mjs"
+import { createNativeWebFetchRedirectGuard, updateNativeWebFetchDefinition } from "./rigel-v2-native-webfetch-redirect-guard.mjs"
 import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-validator.mjs"
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
@@ -1691,6 +1691,10 @@ export default {
     const toolServerApi = serverApi?.available ? serverApi : undefined
 
     const registration = await context.tool.transform((editor) => {
+      // Keep the host's native webfetch identity, schema, description, and
+      // output contract, but replace its redirecting executor. The replacement
+      // owns each hop so permission.assert runs before any request to it.
+      updateNativeWebFetchDefinition(editor, { permission: context?.permission })
       const before = editor.get?.(taskName)
       // Register the skill MCP tool before the delegation tool so a single
       // editor.add capture (used by the runtime tests) still resolves to
@@ -1917,7 +1921,6 @@ export default {
       { name: "prometheus-md-only", run: (event) => prometheusMdOnly.before(event) },
       { name: "write-existing-file-guard", run: (event) => writeGuard.before(event) },
       { name: "comment-checker", run: (event) => commentChecker.before(event) },
-      { name: "webfetch-redirect-guard", run: (event) => webFetchGuard.before(event) },
       ...createNativeToolBeforeRules({ backgroundManager }),
       ...flowRules.beforeRules,
       ...(teamGatingRule ? [teamGatingRule] : []),

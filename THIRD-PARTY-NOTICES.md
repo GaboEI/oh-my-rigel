@@ -68,6 +68,54 @@ Generator/checker note: update this file with the audited component list, then r
 - Upstream URL: https://github.com/lovell/detect-libc
 - Where-bundled: root production dependency used by platform/runtime detection.
 
+### htmlparser2@10.1.0
+- License: MIT, from package metadata and `node_modules/htmlparser2/LICENSE`.
+- Copyright: htmlparser2 contributors.
+- Upstream URL: https://github.com/fb55/htmlparser2
+- Where-bundled: root production dependency; staged into the versioned native runtime for OpenCode-compatible WebFetch HTML conversion.
+
+### domelementtype@2.3.0
+- License: BSD-2-Clause, from package metadata.
+- Copyright: Felix Böhm and contributors.
+- Upstream URL: https://github.com/fb55/domhandler
+- Where-bundled: transitive runtime dependency of htmlparser2.
+
+### domhandler@5.0.3
+- License: BSD-2-Clause, from package metadata.
+- Copyright: Felix Böhm and contributors.
+- Upstream URL: https://github.com/fb55/domhandler
+- Where-bundled: transitive runtime dependency of htmlparser2.
+
+### domutils@3.2.2
+- License: BSD-2-Clause, from package metadata.
+- Copyright: Felix Böhm and contributors.
+- Upstream URL: https://github.com/fb55/domutils
+- Where-bundled: transitive runtime dependency of htmlparser2.
+
+### dom-serializer@2.0.0
+- License: MIT, from package metadata.
+- Copyright: Felix Böhm and contributors.
+- Upstream URL: https://github.com/cheeriojs/dom-serializer
+- Where-bundled: transitive runtime dependency of domutils.
+
+### entities@7.0.1
+- License: BSD-2-Clause, from package metadata.
+- Copyright: Felix Böhm and contributors.
+- Upstream URL: https://github.com/fb55/entities
+- Where-bundled: transitive runtime dependency of htmlparser2.
+
+### entities@4.5.0
+- License: BSD-2-Clause, from package metadata.
+- Copyright: Felix Böhm and contributors.
+- Upstream URL: https://github.com/fb55/entities
+- Where-bundled: transitive runtime dependency of dom-serializer.
+
+### OpenCode WebFetch HTML converter (v2.0.32)
+- License: MIT, from the upstream OpenCode repository `LICENSE`.
+- Copyright: Copyright (c) 2025 opencode.
+- Upstream URL: https://github.com/anomalyco/opencode/tree/v2.0.32
+- Where-bundled: adapted `html-markdown.ts` parser/converter behavior in the Rigel native runtime to preserve OpenCode WebFetch output formats.
+
 ### diff@9.0.0
 - License: BSD-3-Clause, from `node_modules/diff/LICENSE`.
 - Copyright: Copyright (c) 2009-2015, Kevin Decker.

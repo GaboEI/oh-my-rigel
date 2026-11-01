@@ -36,7 +36,7 @@ export function discoverRuntimeModules(sourceOpenDir, entries = RUNTIME_ENTRIES)
     const text = fs.readFileSync(absolute, "utf8")
     for (const match of text.matchAll(/from\s+"(\.[^"]+)"/g)) {
       let target = match[1]
-      if (!target.endsWith(".mjs")) target += ".mjs"
+      if (!/\.(?:mjs|js|ts)$/.test(target)) target += ".mjs"
       stack.push(path.normalize(path.join(path.dirname(file), target)).split(path.sep).join("/"))
     }
   }
