@@ -290,9 +290,11 @@ function toNativePluginEntry(entry) {
 /**
  * Normalize server plugins from the native V2 `plugins` field and its V1
  * `plugin` predecessor. A document containing both is migrated to the native
- * field without dropping a foreign entry from either list; native entries stay
- * first and each source list preserves its original order. Legacy tuples are
- * converted to native objects before they are written under `plugins`.
+ * field without dropping a foreign entry from either list. Order follows the
+ * host normalizer — legacy entries first, then native ones — so a document that
+ * moves from `plugin` to `plugins` keeps the effective set AND the effective
+ * load order it had before the migration. Legacy tuples are converted to native
+ * objects before they are written under `plugins`.
  */
 export function serverPluginEntries(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) return []

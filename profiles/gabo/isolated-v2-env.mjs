@@ -289,10 +289,11 @@ export function launchConfigSources({ env = process.env, readJson, existsSync = 
     let plugins = []
     try {
       const parsed = read(file)
-      // Mirror the host normalizer exactly: the legacy `plugin` key first, then
-      // the native `plugins` key. A document migrated by the installer writes
-      // only `plugins`, so reading `plugin` alone would see zero plugins and
-      // silently skip runtime-collision and goal-state agreement checks.
+      // Mirror the host normalizer's per-key merge exactly: the legacy `plugin`
+      // key first, then the native `plugins` key. A document migrated by the
+      // installer writes only `plugins`, so reading `plugin` alone would see
+      // zero plugins and silently skip runtime-collision and goal-state
+      // agreement checks.
       const legacy = Array.isArray(parsed?.plugin) ? parsed.plugin : []
       const native = Array.isArray(parsed?.plugins) ? parsed.plugins : []
       plugins = [...legacy, ...native]

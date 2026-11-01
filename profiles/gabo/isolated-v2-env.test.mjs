@@ -89,6 +89,7 @@ describe("launch config-chain audit", () => {
     } catch (error) {
       refusal = error instanceof Error ? error.message : String(error)
     }
+    expect(typeof refusal).toBe("string")
     expect(refusal).toContain("2 Rigel runtimes")
     expect(refusal).toContain(installed)
     expect(refusal).toContain(candidate)
@@ -130,6 +131,7 @@ describe("launch config-chain audit", () => {
     } catch (error) {
       refusal = error instanceof Error ? error.message : String(error)
     }
+    expect(typeof refusal).toBe("string")
     expect(refusal).toContain("2 Rigel runtimes")
     expect(refusal).toContain(installed)
     expect(refusal).toContain(candidate)
