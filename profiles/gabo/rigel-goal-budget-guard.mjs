@@ -23,6 +23,14 @@ export function defaultBudgetNotice({ tool, fields }) {
 }
 
 /**
+ * Describe discarded budget fields in a tool result so the model must disclose
+ * that configuration-owned goal limits replaced the requested model budget.
+ */
+export function budgetDiscardNotice(fields) {
+  return `The requested budget fields (${fields.join(", ")}) were IGNORED. This goal's limits come from opencode.json, and you must tell the user the requested budget was not applied.`
+}
+
+/**
  * Return whether a value can carry named tool arguments, excluding arrays so the
  * guard can copy and filter only JSON-object-shaped inputs without changing others.
  */
@@ -78,8 +86,8 @@ export function hardenGoalTool(definition, options = {}) {
 
   if (typeof definition.execute !== "function") return hardened
 
-  hardened.execute = async (args, toolContext) => {
-    const fields = presentBudgetFields(args)
+  hardened.execute = async (...args) => {
+    const fields = presentBudgetFields(args[0])
     const onStripped = typeof options.onStripped === "function" ? options.onStripped : defaultBudgetNotice
     if (fields.length > 0) {
       try {
@@ -88,18 +96,25 @@ export function hardenGoalTool(definition, options = {}) {
         // A logger must never prevent the goal engine from creating a goal.
       }
     }
-    return definition.execute(stripGoalBudgetArgs(args), toolContext)
+    const result = await definition.execute(stripGoalBudgetArgs(args[0]), ...args.slice(1))
+    if (fields.length === 0 || result === null || typeof result !== "object" || typeof result.content !== "string") return result
+    return { ...result, content: `${result.content}\n\n${budgetDiscardNotice(fields)}` }
   }
   return hardened
 }
 
 /**
- * Create a tool editor facade whose add operation hardens vendor definitions
- * while retaining every other editor member through the original prototype.
+ * Create a tool editor facade whose own data-property add override hardens vendor
+ * definitions even when the original editor is frozen, retaining other members.
  */
 function withHardenAdd(draft, options) {
   const guardedDraft = Object.create(draft)
-  guardedDraft.add = (definition) => draft.add(hardenGoalTool(definition, options))
+  Object.defineProperty(guardedDraft, "add", {
+    value: (definition) => draft.add(hardenGoalTool(definition, options)),
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  })
   return guardedDraft
 }
 
@@ -115,42 +130,49 @@ function ensureInstruction(payload) {
 
 /**
  * Clone the V2 context on top of its prototype and intercept only tool creation
- * and model-context hooks, leaving all unrelated vendor registrations intact.
+ * and model-context hooks, invoking overridden members on their original objects
+ * so method-private state survives while unrelated prototype members stay reachable.
  */
 function guardedContext(context, options) {
+  if (context === null || (typeof context !== "object" && typeof context !== "function")) return context
   const guarded = Object.create(context)
   const originalTool = context.tool ?? {}
   const originalSession = context.session ?? {}
   const originalTransform = originalTool.transform
   const originalHook = originalSession.hook
 
-  guarded.tool = {
-    ...originalTool,
-    ...(typeof originalTransform === "function"
-      ? {
-          transform: (callback) => originalTransform.call(originalTool, (draft) => callback(withHardenAdd(draft, options))),
-        }
-      : {}),
+  const guardedTool = Object.create(originalTool)
+  if (typeof originalTransform === "function") {
+    Object.defineProperty(guardedTool, "transform", {
+      value: (callback) => originalTransform.call(originalTool, (draft) => callback(withHardenAdd(draft, options))),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
   }
-  guarded.session = {
-    ...originalSession,
-    ...(typeof originalHook === "function"
-      ? {
-          hook: (name, callback) => originalHook.call(originalSession, name, (payload) => {
-            const result = callback(payload)
-            if (name !== "context" && name !== "compaction") return result
-            if (result && typeof result.then === "function") {
-              return result.then((value) => {
-                ensureInstruction(payload)
-                return value
-              })
-            }
+  guarded.tool = guardedTool
+
+  const guardedSession = Object.create(originalSession)
+  if (typeof originalHook === "function") {
+    Object.defineProperty(guardedSession, "hook", {
+      value: (name, callback) => originalHook.call(originalSession, name, (payload) => {
+        const result = callback(payload)
+        if (name !== "context" && name !== "compaction") return result
+        if (result && typeof result.then === "function") {
+          return result.then((value) => {
             ensureInstruction(payload)
-            return result
-          }),
+            return value
+          })
         }
-      : {}),
+        ensureInstruction(payload)
+        return result
+      }),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
   }
+  guarded.session = guardedSession
   return guarded
 }
 
@@ -162,6 +184,6 @@ export default function guardGoalEngine(vendor, options = {}) {
   if (!vendor || typeof vendor.setup !== "function") return vendor
   return {
     ...vendor,
-    setup: (context) => vendor.setup(guardedContext(context, options)),
+    setup: (...args) => vendor.setup(guardedContext(args[0], options), ...args.slice(1)),
   }
 }

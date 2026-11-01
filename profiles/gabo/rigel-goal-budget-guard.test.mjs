@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import guardGoalEngine, {
   BUDGET_GUARD_INSTRUCTION,
   GOAL_BUDGET_FIELDS,
+  budgetDiscardNotice,
   hardenGoalTool,
 } from "./rigel-goal-budget-guard.mjs"
 
@@ -97,9 +98,10 @@ async function captureVendorTools(vendor) {
 
 describe("goal budget guard", () => {
   test("#given a create_goal definition #when hardened #then the budget schema is removed and configuration owns limits", () => {
-    const hardened = hardenGoalTool(goalDefinition())
+    const definition = goalDefinition()
+    const hardened = hardenGoalTool(definition)
 
-    expect(hardened).not.toBe(goalDefinition)
+    expect(hardened).not.toBe(definition)
     expect(hardened.input.properties).toEqual({ objective: { type: "string" } })
     expect(hardened.input.required).toEqual(["objective"])
     expect(hardened.input.additionalProperties).toBe(true)
@@ -108,9 +110,10 @@ describe("goal budget guard", () => {
 
   test("#given a set_goal or replace_goal definition #when hardened #then it is hardened too", () => {
     for (const name of ["set_goal", "replace_goal"]) {
-      const hardened = hardenGoalTool(goalDefinition(name))
+      const definition = goalDefinition(name)
+      const hardened = hardenGoalTool(definition)
 
-      expect(hardened).not.toBe(goalDefinition)
+      expect(hardened).not.toBe(definition)
       expect(hardened.input.properties.token_budget).toBeUndefined()
       expect(hardened.input.required).toEqual(["objective"])
     }
@@ -191,7 +194,9 @@ describe("goal budget guard", () => {
       return { content: "created" }
     }), { onStripped: () => { throw new Error("logger unavailable") } })
 
-    await expect(hardened.execute({ objective: "Secure the shim", token_budget: 12_000 })).resolves.toEqual({ content: "created" })
+    await expect(hardened.execute({ objective: "Secure the shim", token_budget: 12_000 })).resolves.toEqual({
+      content: `created\n\n${budgetDiscardNotice(["token_budget"])}`,
+    })
     expect(executions).toBe(1)
   })
 
@@ -236,6 +241,88 @@ describe("goal budget guard", () => {
 
     expect(captured).toHaveLength(1)
     expect(captured[0].input.properties.token_budget).toBeUndefined()
+  })
+
+  test("#given prototype-owned context methods and a frozen editor #when guarded setup runs #then siblings survive, add is hardened, and setup arguments are forwarded", () => {
+    class ToolSurface {
+      constructor(draft) {
+        this.draft = draft
+      }
+
+      transform(callback) {
+        return callback(this.draft)
+      }
+
+      hook() {}
+    }
+    class SessionSurface {
+      hook() {}
+      prompt() {}
+      wait() {}
+    }
+
+    let capturedDefinition
+    let receivedContext
+    let receivedRenderer
+    const frozenEditor = Object.freeze({ add: (definition) => { capturedDefinition = definition } })
+    const tool = new ToolSurface(frozenEditor)
+    const session = new SessionSurface()
+    const renderer = { id: "renderer" }
+    const vendor = {
+      server() {},
+      setup(context, rendererInstance) {
+        receivedContext = context
+        receivedRenderer = rendererInstance
+        context.tool.transform((draft) => draft.add(goalDefinition()))
+      },
+    }
+
+    guardGoalEngine(vendor).setup({ options: {}, tool, session }, renderer)
+
+    expect(receivedRenderer).toBe(renderer)
+    expect(typeof receivedContext.tool.transform).toBe("function")
+    expect(typeof receivedContext.tool.hook).toBe("function")
+    expect(typeof receivedContext.session.hook).toBe("function")
+    expect(typeof receivedContext.session.prompt).toBe("function")
+    expect(typeof receivedContext.session.wait).toBe("function")
+    expect(capturedDefinition.input.properties.token_budget).toBeUndefined()
+    // V1 never loads this shim: the installer deletes `plugin`, and its V1 tool
+    // shape uses `args`, not the V2 `input` schema hardened above.
+    expect(guardGoalEngine(vendor).server).toBe(vendor.server)
+  })
+
+  test("#given extra execute arguments and a discarded budget #when the hardened tool returns content #then arguments are forwarded and the result tells the model the budget was ignored", async () => {
+    const toolContext = { sessionID: "ses_123" }
+    const extra = { traceID: "trace_123" }
+    let received
+    const hardened = hardenGoalTool(goalDefinition("create_goal", async (...args) => {
+      received = args
+      return { content: "goal created" }
+    }), { onStripped: () => {} })
+
+    const result = await hardened.execute({ objective: "Secure the shim", token_budget: 12_000 }, toolContext, extra)
+
+    expect(received).toEqual([{ objective: "Secure the shim" }, toolContext, extra])
+    expect(result.content).toBe(`goal created\n\n${budgetDiscardNotice(["token_budget"])}`)
+  })
+
+  test("#given no budget fields #when a hardened tool returns content #then the result is byte-identical", async () => {
+    const originalResult = { content: "goal created\nwithout alteration" }
+    const hardened = hardenGoalTool(goalDefinition("create_goal", async () => originalResult), { onStripped: () => {} })
+
+    const result = await hardened.execute({ objective: "Secure the shim" })
+
+    expect(result).toBe(originalResult)
+    expect(result.content).toBe("goal created\nwithout alteration")
+  })
+
+  test("#given a discarded budget #when the original result has no string content #then the result remains untouched", async () => {
+    const originalResult = { content: { structured: true } }
+    const hardened = hardenGoalTool(goalDefinition("create_goal", async () => originalResult), { onStripped: () => {} })
+
+    const result = await hardened.execute({ objective: "Secure the shim", token_budget: 12_000 })
+
+    expect(result).toBe(originalResult)
   })
 
   if (fs.existsSync(vendorArchive)) {
@@ -297,6 +384,38 @@ describe("goal budget guard", () => {
       { type: "text", text: "Vendor context" },
       { type: "text", text: BUDGET_GUARD_INSTRUCTION },
       { type: "text", text: "Vendor context" },
+    ])
+  })
+
+  test("#given an asynchronous context hook #when it resolves #then the instruction is appended before the wrapped result resolves", async () => {
+    let registered
+    const order = []
+    const vendor = {
+      setup(context) {
+        context.session.hook("context", async (payload) => {
+          await Promise.resolve()
+          payload.system.push({ type: "text", text: "Vendor context" })
+          order.push("vendor")
+          return "vendor result"
+        })
+      },
+    }
+    const context = {
+      options: {},
+      tool: { transform: () => {} },
+      session: { hook: (_name, callback) => { registered = callback } },
+    }
+    const payload = { system: [] }
+
+    guardGoalEngine(vendor).setup(context)
+    const result = await registered(payload)
+    order.push("wrapped")
+
+    expect(result).toBe("vendor result")
+    expect(order).toEqual(["vendor", "wrapped"])
+    expect(payload.system).toEqual([
+      { type: "text", text: "Vendor context" },
+      { type: "text", text: BUDGET_GUARD_INSTRUCTION },
     ])
   })
 
