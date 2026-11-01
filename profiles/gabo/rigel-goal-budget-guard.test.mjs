@@ -1,12 +1,25 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
-import { fileURLToPath } from "node:url"
+import os from "node:os"
+import path from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 import guardGoalEngine, {
   BUDGET_GUARD_INSTRUCTION,
   GOAL_BUDGET_FIELDS,
   hardenGoalTool,
 } from "./rigel-goal-budget-guard.mjs"
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
+const vendorDir = path.join(repoRoot, "profiles", "gabo", "vendor", "opencode-goal-plugin")
+const vendorTarballs = path.join(vendorDir, "tarballs")
+const vendorArchive = path.join(vendorTarballs, "prevalentware-opencode-goal-plugin-0.1.91.tgz")
+const temporaryDirectories = []
+
+afterEach(() => {
+  while (temporaryDirectories.length > 0) fs.rmSync(temporaryDirectories.pop(), { recursive: true, force: true })
+})
 
 function goalDefinition(name = "create_goal", execute = async (args) => ({ content: JSON.stringify(args) })) {
   return {
@@ -25,6 +38,61 @@ function goalDefinition(name = "create_goal", execute = async (args) => ({ conte
     },
     execute,
   }
+}
+
+function extractVendorPackage(archive, destination) {
+  execFileSync("tar", ["-xzf", archive, "-C", destination], { stdio: "pipe" })
+}
+
+function extractVendorDependency(archive, destination) {
+  fs.mkdirSync(destination, { recursive: true })
+  execFileSync("tar", ["-xzf", archive, "--strip-components=1", "-C", destination], { stdio: "pipe" })
+}
+
+function realVendorEngineEntry() {
+  const materialized = path.join(vendorDir, "node_modules", "@prevalentware", "opencode-goal-plugin", "dist", "server.js")
+  if (fs.existsSync(materialized)) return { engineEntry: materialized, extracted: false }
+
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-goal-vendor-"))
+  temporaryDirectories.push(temporaryRoot)
+  extractVendorPackage(vendorArchive, temporaryRoot)
+  const packageRoot = path.join(temporaryRoot, "package")
+  const dependencies = [
+    ["zod-4.6.7.tgz", "zod"],
+    ["effect-3.22.2.tgz", "effect-goal-state"],
+    ["fast-check-3.23.2.tgz", "effect-goal-state/node_modules/fast-check"],
+    ["pure-rand-6.1.0.tgz", "effect-goal-state/node_modules/pure-rand"],
+  ]
+  for (const [archive, installPath] of dependencies) {
+    extractVendorDependency(path.join(vendorTarballs, archive), path.join(packageRoot, "node_modules", installPath))
+  }
+  return { engineEntry: path.join(packageRoot, "dist", "server.js"), extracted: true }
+}
+
+async function captureVendorTools(vendor) {
+  const captured = []
+  const disposable = { dispose() {} }
+  await vendor.setup({
+    options: { auto_continue: false, register_command: false },
+    tool: {
+      transform: (callback) => {
+        callback({ add: (definition) => captured.push(definition) })
+        return disposable
+      },
+      hook: () => disposable,
+    },
+    session: {
+      hook: () => disposable,
+      prompt: async () => {},
+      get: async () => ({ data: {} }),
+    },
+    command: {
+      transform: () => disposable,
+      list: async () => ({ data: [] }),
+    },
+    event: { subscribe: async function* () {} },
+  })
+  return captured
 }
 
 describe("goal budget guard", () => {
@@ -71,7 +139,7 @@ describe("goal budget guard", () => {
       retained: true,
     }
 
-    await hardenGoalTool(definition).execute(args, { sessionID: "ses_123" })
+    await hardenGoalTool(definition, { onStripped: () => {} }).execute(args, { sessionID: "ses_123" })
 
     expect(received).toEqual({ objective: "Finish the migration", retained: true })
     expect(received).not.toBe(args)
@@ -94,6 +162,51 @@ describe("goal budget guard", () => {
       tool: "create_goal",
       fields: ["token_budget", "max_duration_seconds"],
     }])
+  })
+
+  test("#given no onStripped option #when a hardened execute receives token_budget #then console.warn receives one line and the original execute receives stripped args", async () => {
+    const originalWarn = console.warn
+    const warnings = []
+    let received
+    console.warn = (...args) => warnings.push(args)
+
+    try {
+      await hardenGoalTool(goalDefinition("create_goal", async (args) => {
+        received = args
+        return { content: "created" }
+      })).execute({ objective: "Secure the shim", token_budget: 12_000 })
+    } finally {
+      console.warn = originalWarn
+    }
+
+    expect(warnings).toEqual([[expect.stringContaining("create_goal")]])
+    expect(warnings[0][0]).toContain("token_budget")
+    expect(received).toEqual({ objective: "Secure the shim" })
+  })
+
+  test("#given an explicit onStripped that throws #when execute runs #then it does not throw and the underlying execute still runs", async () => {
+    let executions = 0
+    const hardened = hardenGoalTool(goalDefinition("create_goal", async () => {
+      executions += 1
+      return { content: "created" }
+    }), { onStripped: () => { throw new Error("logger unavailable") } })
+
+    await expect(hardened.execute({ objective: "Secure the shim", token_budget: 12_000 })).resolves.toEqual({ content: "created" })
+    expect(executions).toBe(1)
+  })
+
+  test("#given an explicit no-op onStripped #when execute runs #then console.warn is not called", async () => {
+    const originalWarn = console.warn
+    const warnings = []
+    console.warn = (...args) => warnings.push(args)
+
+    try {
+      await hardenGoalTool(goalDefinition(), { onStripped: () => {} }).execute({ objective: "Secure the shim", token_budget: 12_000 })
+    } finally {
+      console.warn = originalWarn
+    }
+
+    expect(warnings).toEqual([])
   })
 
   test("#given no budget fields #when a hardened execute runs #then onStripped is not called", async () => {
@@ -124,6 +237,43 @@ describe("goal budget guard", () => {
     expect(captured).toHaveLength(1)
     expect(captured[0].input.properties.token_budget).toBeUndefined()
   })
+
+  if (fs.existsSync(vendorArchive)) {
+    test("#given the real vendored goal engine #when its setup registers its tools through the guarded context #then create_goal, set_goal and replace_goal expose no budget properties and every other goal tool keeps its original schema", async () => {
+      const source = realVendorEngineEntry()
+      const isolatedStateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-goal-state-"))
+      temporaryDirectories.push(isolatedStateRoot)
+      const previousStatePath = process.env.OPENCODE_GOAL_STATE_PATH
+      process.env.OPENCODE_GOAL_STATE_PATH = path.join(isolatedStateRoot, "goals.json")
+
+      try {
+        const { default: vendor } = await import(pathToFileURL(source.engineEntry).href)
+        const unguarded = await captureVendorTools(vendor)
+        const guarded = await captureVendorTools(guardGoalEngine(vendor))
+        const unguardedByName = Object.fromEntries(unguarded.map((definition) => [definition.name, definition]))
+        const guardedByName = Object.fromEntries(guarded.map((definition) => [definition.name, definition]))
+
+        for (const name of ["create_goal", "set_goal", "replace_goal"]) {
+          const definition = guardedByName[name]
+          expect(definition).toBeDefined()
+          expect(definition.input.properties.token_budget).toBeUndefined()
+          expect(definition.input.properties.max_auto_turns).toBeUndefined()
+          expect(definition.input.properties.max_duration_seconds).toBeUndefined()
+          expect(definition.input.required).toEqual(["objective"])
+          expect(definition.input.additionalProperties).toBe(true)
+        }
+        for (const name of ["get_goal", "clear_goal", "update_goal"]) {
+          expect(guardedByName[name]).toBeDefined()
+          expect(guardedByName[name].input).toEqual(unguardedByName[name].input)
+        }
+      } finally {
+        if (previousStatePath === undefined) delete process.env.OPENCODE_GOAL_STATE_PATH
+        else process.env.OPENCODE_GOAL_STATE_PATH = previousStatePath
+      }
+    })
+  } else {
+    test.skip("#given the real vendored goal engine #when its archive is missing #then the integration test is skipped with the missing artifact identified", () => {})
+  }
 
   test("#given a vendor engine that registers a context hook #when its hook runs twice #then the system gains one guard instruction after the vendor part", () => {
     let registered

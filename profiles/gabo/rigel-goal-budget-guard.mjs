@@ -10,6 +10,18 @@ export const BUDGET_GUARD_MARKER = "Rigel goal budget policy:"
 /** The model-visible policy that makes configuration, rather than a tool call, own every goal limit. */
 export const BUDGET_GUARD_INSTRUCTION = `${BUDGET_GUARD_MARKER} Never supply token_budget, max_auto_turns or max_duration_seconds; they are stripped before the engine sees them. A goal's limits are exactly what opencode.json configures for the goal engine; omitting a field means "no limit", which is the managed default. Pass only the objective; if the user wants a specific budget they must change opencode.json.`
 
+/** The stable console prefix that identifies a rejected model-supplied goal budget. */
+export const BUDGET_GUARD_LOG_PREFIX = "[rigel-goal-engine] "
+
+/**
+ * Emit a single safe operational notice for a discarded budget so operators can
+ * see attempted policy bypasses without changing the successful tool result.
+ */
+export function defaultBudgetNotice({ tool, fields }) {
+  if (typeof console?.warn !== "function") return
+  console.warn(`${BUDGET_GUARD_LOG_PREFIX}discarded model-supplied goal budget on ${tool}: ${fields.join(", ")}; limits come from opencode.json`)
+}
+
 /**
  * Return whether a value can carry named tool arguments, excluding arrays so the
  * guard can copy and filter only JSON-object-shaped inputs without changing others.
@@ -68,8 +80,13 @@ export function hardenGoalTool(definition, options = {}) {
 
   hardened.execute = async (args, toolContext) => {
     const fields = presentBudgetFields(args)
-    if (fields.length > 0 && typeof options.onStripped === "function") {
-      options.onStripped({ tool: definition.name, fields })
+    const onStripped = typeof options.onStripped === "function" ? options.onStripped : defaultBudgetNotice
+    if (fields.length > 0) {
+      try {
+        onStripped({ tool: definition.name, fields })
+      } catch {
+        // A logger must never prevent the goal engine from creating a goal.
+      }
     }
     return definition.execute(stripGoalBudgetArgs(args), toolContext)
   }
