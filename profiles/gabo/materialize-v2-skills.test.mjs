@@ -95,6 +95,30 @@ describe("#given the shared-pool skill delivery", () => {
     expect(state.managed.some((entry) => entry.kind === "shared")).toBe(true)
   })
 
+  test("#given a legacy skill whose source entry is a symlink to a directory with SKILL.md #when the materializer runs #then that skill is delivered to the discovery root as a managed entry", () => {
+    const home = makeHome()
+    const name = "legacy-symlinked-thing"
+    const source = path.join(home, "external-legacy-source", name)
+    const legacyRoot = path.join(home, ".config", "opencode", "skills")
+    const danglingName = "dangling-legacy-symlink"
+    fs.mkdirSync(source, { recursive: true })
+    fs.writeFileSync(path.join(source, "SKILL.md"), "---\nname: legacy-symlinked-thing\ndescription: linked legacy skill\n---\n\nlegacy body\n")
+    fs.mkdirSync(legacyRoot, { recursive: true })
+    fs.symlinkSync(source, path.join(legacyRoot, name), "dir")
+    fs.symlinkSync(path.join(home, "missing-legacy-source"), path.join(legacyRoot, danglingName), "dir")
+
+    const out = runMaterialize(home)
+    const state = readState(home)
+    const managed = state.managed.find((entry) => entry.name === name)
+
+    expect(out.linked).toContain(name)
+    expect(managed?.kind).toBe("legacy-bridge")
+    expect(fs.readFileSync(path.join(skillsRoot(home), name, "SKILL.md"), "utf8")).toContain("legacy body")
+    expect(out.linked).not.toContain(danglingName)
+    expect(state.managed.some((entry) => entry.name === danglingName)).toBe(false)
+    expect(state.preserved).not.toContain(danglingName)
+  })
+
   test("#when re-run #then the managed set is stable and every managed link resolves to its recorded source", () => {
     const home = makeHome()
     runMaterialize(home)

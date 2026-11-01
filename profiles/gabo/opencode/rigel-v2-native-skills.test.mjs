@@ -102,6 +102,28 @@ describe("#given skills in multiple scope directories", () => {
     expect(matchSkillByName(skills, "/alpha/thing").rawBody).toBe("A")
   })
 
+  test("#given a project-scoped skill and a user-wide skill #when discovery starts inside, below, and outside the project #then project scope follows the ancestor path while user scope remains available", () => {
+    const root = makeRoot()
+    const project = path.join(root, "project")
+    const descendant = path.join(project, "sub", "dir")
+    const outside = path.join(root, "outside")
+    const home = path.join(root, "home")
+    const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") }
+    fs.mkdirSync(descendant, { recursive: true })
+    fs.mkdirSync(outside, { recursive: true })
+    writeSkill(project, ".agents/skills/project-only", "project-only", { frontmatter: "name: project-only", body: "PROJECT_ONLY" })
+    writeSkill(home, ".agents/skills/user-wide", "user-wide", { frontmatter: "name: user-wide", body: "USER_WIDE" })
+
+    const namesAtProject = discoverSkills({ directory: project, home, env, config: {} }).map((skill) => skill.name)
+    const namesAtDescendant = discoverSkills({ directory: descendant, home, env, config: {} }).map((skill) => skill.name)
+    const namesOutsideProject = discoverSkills({ directory: outside, home, env, config: {} }).map((skill) => skill.name)
+
+    expect(namesAtProject).toEqual(expect.arrayContaining(["project-only", "user-wide"]))
+    expect(namesAtDescendant).toContain("project-only")
+    expect(namesOutsideProject).not.toContain("project-only")
+    expect(namesOutsideProject).toContain("user-wide")
+  })
+
   test("#when configured skill sources declare a directory #then its skills join discovery below project scope", () => {
     const root = makeRoot()
     const configured = path.join(root, "configured-skills")
