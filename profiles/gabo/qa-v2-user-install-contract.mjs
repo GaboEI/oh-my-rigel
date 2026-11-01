@@ -54,6 +54,24 @@ function cliFamily(cli) {
   return (Array.isArray(cli.plugins) ? cli.plugins : []).filter((entry) => entry && typeof entry === "object" && typeof entry.package === "string" && entry.package.includes("/versions/"))
 }
 function cliMarkerCount(cli) { return (Array.isArray(cli.plugins) ? cli.plugins : []).filter((entry) => entry === "-opencode.notifications").length }
+/** One plugin specifier: bare string, legacy `[spec, options]` tuple, or native `{package, options}` object. */
+function pluginSpec(entry) {
+  if (typeof entry === "string") return entry
+  if (Array.isArray(entry) && typeof entry[0] === "string") return entry[0]
+  if (entry && typeof entry === "object" && typeof entry.package === "string") return entry.package
+  return undefined
+}
+/**
+ * Effective server plugin specifiers of a config document. The installer writes
+ * the native `plugins` key and drops `plugin`, so a reader that only looks at
+ * `plugin` sees nothing after the first install. Order mirrors the host
+ * normalizer: legacy entries first, then native ones.
+ */
+function configPluginSpecs(config) {
+  const legacy = Array.isArray(config?.plugin) ? config.plugin : []
+  const native = Array.isArray(config?.plugins) ? config.plugins : []
+  return [...legacy, ...native].map(pluginSpec).filter((spec) => typeof spec === "string")
+}
 
 const v1Config = path.join(os.homedir(), ".config", "opencode", "opencode.json")
 const v1Before = { config: sha(v1Config), protected: buildProtectedManifest(os.homedir()) }
@@ -92,7 +110,7 @@ try {
   check("A03.install.exitZero", install.result.status === 0, install.result.stderr?.slice(0, 200))
   const stateFile = path.join(stateRoot, "install-state.json")
   const v1Runtime = path.join(stateRoot, "versions", "1", "runtime")
-  check("A03.config.generatedWithRuntime", fs.existsSync(configFile) && JSON.parse(fs.readFileSync(configFile, "utf8")).plugin.includes(v1Runtime))
+  check("A03.config.generatedWithRuntime", fs.existsSync(configFile) && configPluginSpecs(JSON.parse(fs.readFileSync(configFile, "utf8"))).includes(v1Runtime))
   check("A03.runtime.materialized", fs.existsSync(path.join(v1Runtime, "index.js")) && fs.existsSync(path.join(v1Runtime, "rigel-v2-native-agent-manifest.mjs")))
   check("A03.state.scopedToTempRoot", install.json?.version === "1" && fs.existsSync(stateFile))
   check("A03.launcher.installedExecutable", fs.existsSync(path.join(stateRoot, "bin", "rigel-v2")) && (fs.statSync(path.join(stateRoot, "bin", "rigel-v2")).mode & 0o111) !== 0)
@@ -122,7 +140,7 @@ try {
   check("A04.upgrade.versionTransition", stateAfterUpgrade.version === "2" && stateAfterUpgrade.previousVersion === "1")
   check("A04.upgrade.stateMigrated", Array.isArray(stateAfterUpgrade.migrationLog) && stateAfterUpgrade.migrationLog.length === 1 && stateAfterUpgrade.migrationLog[0].from === "1" && stateAfterUpgrade.migrationLog[0].to === "2")
   check("A04.upgrade.newRuntimeInstalled", fs.existsSync(path.join(v2Runtime, "rigel-v2-upgrade-probe.mjs")))
-  check("A04.upgrade.configRepointed", JSON.parse(fs.readFileSync(configFile, "utf8")).plugin.includes(v2Runtime) && !JSON.parse(fs.readFileSync(configFile, "utf8")).plugin.includes(v1Runtime))
+  check("A04.upgrade.configRepointed", configPluginSpecs(JSON.parse(fs.readFileSync(configFile, "utf8"))).includes(v2Runtime) && !configPluginSpecs(JSON.parse(fs.readFileSync(configFile, "utf8"))).includes(v1Runtime))
   const cliAfterUpgrade = readCli(cliFile)
   check("A04.upgrade.cliNoDuplicate", cliFamily(cliAfterUpgrade).length === 1)
   check("A04.upgrade.cliPointsAtNewRuntime", cliFamily(cliAfterUpgrade)[0]?.package === v2Runtime)
@@ -147,7 +165,7 @@ try {
   check("A04.rollback.byteIdentical", rollback.json?.byteIdentical === true)
   check("A04.rollback.probeRemoved", !fs.existsSync(path.join(v1Runtime, "rigel-v2-upgrade-probe.mjs")))
   const stateAfterRollback = JSON.parse(fs.readFileSync(stateFile, "utf8"))
-  check("A04.rollback.configRestored", stateAfterRollback.version === "1" && JSON.parse(fs.readFileSync(configFile, "utf8")).plugin.includes(v1Runtime))
+  check("A04.rollback.configRestored", stateAfterRollback.version === "1" && configPluginSpecs(JSON.parse(fs.readFileSync(configFile, "utf8"))).includes(v1Runtime))
   check("A04.rollback.logged", Array.isArray(stateAfterRollback.rollbackLog) && stateAfterRollback.rollbackLog.at(-1)?.byteIdentical === true)
   const cliAfterRollback = readCli(cliFile)
   check("A04.rollback.cliRestored", cliFamily(cliAfterRollback).length === 1 && cliFamily(cliAfterRollback)[0].package === v1Runtime)
@@ -165,7 +183,8 @@ try {
   check("A04.status.detectsCliSkew", cliSkewStatus.result.status !== 0 && cliSkewStatus.json?.pass === false, JSON.stringify(cliSkewStatus.json?.checks?.filter((entry) => !entry.pass) ?? null))
   fs.writeFileSync(cliFile, cliBeforeSkew)
   const skewConfig = JSON.parse(fs.readFileSync(configFile, "utf8"))
-  skewConfig.plugin.push(path.join(stateRoot, "versions", "999", "runtime"))
+  if (!Array.isArray(skewConfig.plugins)) skewConfig.plugins = []
+  skewConfig.plugins.push(path.join(stateRoot, "versions", "999", "runtime"))
   fs.writeFileSync(configFile, `${JSON.stringify(skewConfig, null, 2)}\n`)
   const configSkewStatus = runJson(["status", ...common])
   check("A04.status.detectsConfigSkew", configSkewStatus.result.status !== 0 && configSkewStatus.json?.pass === false)
@@ -176,8 +195,8 @@ try {
   check("A04.uninstall.exitZero", uninstall.result.status === 0, uninstall.result.stderr?.slice(0, 200))
   const configAfterUninstall = JSON.parse(fs.readFileSync(configFile, "utf8"))
   check("A04.uninstall.runtimeRemoved", !fs.existsSync(path.join(stateRoot, "versions")) && !fs.existsSync(path.join(stateRoot, "bin")) && !fs.existsSync(stateFile))
-  check("A04.uninstall.configDeregistered", !configAfterUninstall.plugin.some((entry) => String(entry).includes("/versions/")))
-  check("A04.uninstall.preservesForeignConfig", configAfterUninstall.plugin.includes("rigel-foreign-plugin") && configAfterUninstall.model === "rigel-fixture/fixture")
+  check("A04.uninstall.configDeregistered", !configPluginSpecs(configAfterUninstall).some((entry) => entry.includes("/versions/")))
+  check("A04.uninstall.preservesForeignConfig", configPluginSpecs(configAfterUninstall).includes("rigel-foreign-plugin") && configAfterUninstall.model === "rigel-fixture/fixture")
   check("A04.uninstall.preservesForeignState", fs.existsSync(path.join(stateRoot, "foreign-note.txt")) && (uninstall.json?.preserved ?? []).includes("foreign-note.txt"))
   check("A04.uninstall.skillsRemoved", Array.isArray(uninstall.json?.removedSkills) && uninstall.json.removedSkills.length > 0 && !fs.existsSync(path.join(home, ".local", "share", "oh-my-rigel", "skills-v2.json")))
   check("A04.uninstall.preservesForeignSkill", fs.existsSync(path.join(foreignSkillDir, "SKILL.md")))

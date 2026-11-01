@@ -21,6 +21,25 @@ const labConfig = path.join(labRoot, "config/opencode/opencode.json")
 const home = path.join(labRoot, "home")
 const evidenceDir = path.join(root, ".omo/evidence/20261002-rigel-v2-lab-install-contract")
 
+/** One plugin specifier: bare string, legacy `[spec, options]` tuple, or native `{package, options}` object. */
+function pluginSpec(entry) {
+  if (typeof entry === "string") return entry
+  if (Array.isArray(entry) && typeof entry[0] === "string") return entry[0]
+  if (entry && typeof entry === "object" && typeof entry.package === "string") return entry.package
+  return undefined
+}
+/**
+ * Effective server plugin specifiers of a config document. The installer writes
+ * the native `plugins` key and drops `plugin`, so reading `plugin` alone sees
+ * nothing after the first install. Order mirrors the host normalizer: legacy
+ * entries first, then native ones.
+ */
+function configPluginSpecs(config) {
+  const legacy = Array.isArray(config?.plugin) ? config.plugin : []
+  const native = Array.isArray(config?.plugins) ? config.plugins : []
+  return [...legacy, ...native].map(pluginSpec).filter((spec) => typeof spec === "string")
+}
+
 function hashFile(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")
 }
@@ -61,7 +80,7 @@ try {
 
   assert.equal(hashFile(v1Config), v1Before, "V1 configuration changed during a V2-only staging run")
   assert.deepEqual(afterConfig.agent, beforeConfig.agent, "native agents leaked into V2 static config instead of the runtime manifest")
-  assert.ok(afterConfig.plugin.includes(runtime), "V2 config did not receive the native runtime entry")
+  assert.ok(configPluginSpecs(afterConfig).includes(runtime), "V2 config did not receive the native runtime entry")
   assert.equal(state.configFile, labConfig)
   assert.equal(state.labRoot, labRoot)
   assert.equal(state.pluginEntry, runtime)
