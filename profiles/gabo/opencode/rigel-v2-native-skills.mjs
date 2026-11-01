@@ -16,6 +16,9 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
+import { availableCategoryNames } from "./rigel-v2-native-categories.mjs"
+import { resolveDelegationToolName } from "./rigel-v2-native-flow-guards.mjs"
+import { TEAM_MODE_CREATE_CALL } from "./rigel-v2-native-team-mode-command.mjs"
 
 // Higher wins on the same skill name. Mirrors
 // `packages/skills-loader-core/src/features/opencode-skill-loader/merger/scope-priority.ts`.
@@ -285,7 +288,28 @@ export function parseSkillMcpConfig(frontmatterData, resolvedPath) {
   return undefined
 }
 
-function toSkillFromFile({ skillPath, resolvedPath, defaultName, scope, namePrefix = "" }) {
+const SKILL_RUNTIME_CONTRACT_OPEN = "<rigel-skill-runtime-contract>"
+const SKILL_RUNTIME_CONTRACT_CLOSE = "</rigel-skill-runtime-contract>"
+
+function createSkillRuntimeContract({ env, userCategories } = {}) {
+  const delegationToolName = resolveDelegationToolName(env)
+  const categories = availableCategoryNames(userCategories).map((name) => JSON.stringify(name)).join(", ") || "(none)"
+  return `${SKILL_RUNTIME_CONTRACT_OPEN}\nRuntime tool contract: delegate with ${delegationToolName}; create teams with ${TEAM_MODE_CREATE_CALL}, never inline_spec; available execution categories: ${categories}.\n${SKILL_RUNTIME_CONTRACT_CLOSE}`
+}
+
+function applySkillRuntimeContract(body, contract) {
+  if (!hasSkillRuntimeContractMismatch(body, contract) || body.includes(SKILL_RUNTIME_CONTRACT_OPEN)) return body
+  return `${createSkillRuntimeContract(contract)}\n\n${body}`
+}
+
+function hasSkillRuntimeContractMismatch(body, contract) {
+  const delegationToolName = resolveDelegationToolName(contract?.env)
+  const delegationCalls = Array.from(body.matchAll(/\b(task|rigel_task|call_omo_agent)\s*\(/g), (match) => match[1])
+  return delegationCalls.some((name) => name !== delegationToolName)
+    || /\b(?:inline_spec|teamName)\b/.test(body)
+}
+
+function toSkillFromFile({ skillPath, resolvedPath, defaultName, scope, namePrefix = "", contract }) {
   let content
   try {
     content = fs.readFileSync(skillPath, "utf8")
@@ -295,7 +319,7 @@ function toSkillFromFile({ skillPath, resolvedPath, defaultName, scope, namePref
   const { data, body } = parseFrontmatter(content)
   const baseName = String(data.name || defaultName)
   const name = namePrefix ? `${namePrefix}/${baseName}` : baseName
-  const rawBody = body.trim()
+  const rawBody = applySkillRuntimeContract(body.trim(), contract)
   const resolvedBody = resolveSkillPathReferences(rawBody, resolvedPath)
   const template = `<skill-instruction>\nBase directory for this skill: ${resolvedPath}/\nFile references (@path) in this skill are relative to this directory.\n\n${resolvedBody}\n</skill-instruction>\n\n<user-request>\n$ARGUMENTS\n</user-request>`
   return {
@@ -317,7 +341,7 @@ function toSkillFromFile({ skillPath, resolvedPath, defaultName, scope, namePref
   }
 }
 
-export function loadSkillsFromDir({ skillsDir, scope, namePrefix = "", depth = 0, maxDepth = 2 }) {
+export function loadSkillsFromDir({ skillsDir, scope, namePrefix = "", depth = 0, maxDepth = 2, contract }) {
   const skills = new Map()
   let entries
   try {
@@ -333,17 +357,17 @@ export function loadSkillsFromDir({ skillsDir, scope, namePrefix = "", depth = 0
       let resolvedPath = entryPath
       try { resolvedPath = fs.realpathSync(entryPath) } catch { resolvedPath = entryPath }
       const skillMd = path.join(resolvedPath, "SKILL.md")
-      if (isFile(skillMd)) { add(toSkillFromFile({ skillPath: skillMd, resolvedPath, defaultName: entry.name, scope, namePrefix })); continue }
+      if (isFile(skillMd)) { add(toSkillFromFile({ skillPath: skillMd, resolvedPath, defaultName: entry.name, scope, namePrefix, contract })); continue }
       const namedMd = path.join(resolvedPath, `${entry.name}.md`)
-      if (isFile(namedMd)) { add(toSkillFromFile({ skillPath: namedMd, resolvedPath, defaultName: entry.name, scope, namePrefix })); continue }
+      if (isFile(namedMd)) { add(toSkillFromFile({ skillPath: namedMd, resolvedPath, defaultName: entry.name, scope, namePrefix, contract })); continue }
       if (depth < maxDepth) {
         const nestedPrefix = namePrefix ? `${namePrefix}/${entry.name}` : entry.name
-        for (const nested of loadSkillsFromDir({ skillsDir: resolvedPath, scope, namePrefix: nestedPrefix, depth: depth + 1, maxDepth })) add(nested)
+        for (const nested of loadSkillsFromDir({ skillsDir: resolvedPath, scope, namePrefix: nestedPrefix, depth: depth + 1, maxDepth, contract })) add(nested)
       }
       continue
     }
     if (!/\.md$/i.test(entry.name)) continue
-    add(toSkillFromFile({ skillPath: entryPath, resolvedPath: skillsDir, defaultName: path.basename(entryPath, ".md"), scope, namePrefix }))
+    add(toSkillFromFile({ skillPath: entryPath, resolvedPath: skillsDir, defaultName: path.basename(entryPath, ".md"), scope, namePrefix, contract }))
   }
   return Array.from(skills.values())
 }
@@ -401,10 +425,10 @@ function opencodeConfigDirs(env) {
   return Array.from(dirs)
 }
 
-function discoverScope(dirs, scope) {
+function discoverScope(dirs, scope, contract) {
   const out = []
   for (const dir of dirs) {
-    out.push(...loadSkillsFromDir({ skillsDir: dir, scope }))
+    out.push(...loadSkillsFromDir({ skillsDir: dir, scope, contract }))
   }
   return out
 }
@@ -459,7 +483,7 @@ function configuredSkillDirs(config, directory) {
   return dirs
 }
 
-export function discoverSkills({ directory, home = os.homedir(), env = process.env, config } = {}) {
+export function discoverSkills({ directory, home = os.homedir(), env = process.env, runtimeEnv, config, userCategories } = {}) {
   const start = directory || process.cwd()
   const homeDir = home || os.homedir()
   const opencodeProjectDirs = findAncestorDirs(start, [[".opencode", "skills"], [".opencode", "skill"]])
@@ -468,14 +492,15 @@ export function discoverSkills({ directory, home = os.homedir(), env = process.e
   const opencodeGlobals = opencodeConfigDirs({ ...env, HOME: homeDir }).flatMap((dir) => [path.join(dir, "skills"), path.join(dir, "skill")])
   const claudeConfigDir = (env.CLAUDE_CONFIG_DIR && String(env.CLAUDE_CONFIG_DIR).trim()) || path.join(homeDir, ".claude")
   const userDirs = [path.join(claudeConfigDir, "skills"), path.join(homeDir, ".agents", "skills")]
+  const contract = { env: runtimeEnv ?? env, userCategories }
 
   return dedupeSkills([
-    ...discoverScope(opencodeProjectDirs, "opencode-project"),
-    ...discoverScope(opencodeGlobals, "opencode"),
-    ...discoverScope(claudeProjectDirs, "project"),
-    ...discoverScope(agentsProjectDirs, "project"),
-    ...discoverScope(configuredSkillDirs(config, start), "config"),
-    ...discoverScope(userDirs, "user"),
+    ...discoverScope(opencodeProjectDirs, "opencode-project", contract),
+    ...discoverScope(opencodeGlobals, "opencode", contract),
+    ...discoverScope(claudeProjectDirs, "project", contract),
+    ...discoverScope(agentsProjectDirs, "project", contract),
+    ...discoverScope(configuredSkillDirs(config, start), "config", contract),
+    ...discoverScope(userDirs, "user", contract),
   ])
 }
 
@@ -593,9 +618,9 @@ function addNativeSkill(collection, skill) {
 // Host-registered names win over ours, matching OmO's "existing entry wins"
 // precedence. Returns the discovered list so delegation can inject real bodies
 // without re-reading the disk.
-export async function registerNativeSkills(context, { directory, home, env, disabledSkills, config } = {}) {
+export async function registerNativeSkills(context, { directory, home, env, runtimeEnv, disabledSkills, config, userCategories } = {}) {
   const target = directory ?? context?.location?.directory ?? process.cwd()
-  const discovered = discoverSkills({ directory: target, home, env, config: config ?? context?.config })
+  const discovered = discoverSkills({ directory: target, home, env, runtimeEnv, config: config ?? context?.config, userCategories })
   const enabled = disabledSkills && disabledSkills.size > 0
     ? discovered.filter((skill) => !isDisabledSkillAlias(skill, disabledSkills))
     : discovered
@@ -624,7 +649,7 @@ export async function registerNativeSkills(context, { directory, home, env, disa
 // cached with single-flight dedupe; on any failure the base skills are
 // returned unchanged. Base skills keep precedence on name collisions: they
 // were fully discovered with bodies and MCP config on disk.
-export async function readRuntimeHostSkills(context) {
+export async function readRuntimeHostSkills(context, { contract } = {}) {
   if (typeof context?.skill?.list !== "function") return undefined
   const entries = await context.skill.list()
   const hostSkills = []
@@ -633,7 +658,7 @@ export async function readRuntimeHostSkills(context) {
     if (typeof name !== "string" || !name.trim()) continue
     const skillPath = typeof entry?.path === "string" ? entry.path : ""
     if (skillPath && isFile(skillPath)) {
-      const parsed = toSkillFromFile({ skillPath, resolvedPath: skillPath, defaultName: name, scope: "runtime-host" })
+      const parsed = toSkillFromFile({ skillPath, resolvedPath: skillPath, defaultName: name, scope: "runtime-host", contract })
       if (parsed) {
         hostSkills.push(parsed)
         continue
@@ -645,18 +670,18 @@ export async function readRuntimeHostSkills(context) {
       resolvedPath: skillPath,
       scope: "runtime-host",
       description: typeof entry?.description === "string" ? entry.description : "",
-      rawBody: typeof entry?.content === "string" ? entry.content : "",
-      resolvedBody: typeof entry?.content === "string" ? entry.content : "",
+      rawBody: applySkillRuntimeContract(typeof entry?.content === "string" ? entry.content : "", contract),
+      resolvedBody: applySkillRuntimeContract(typeof entry?.content === "string" ? entry.content : "", contract),
     })
   }
   return hostSkills
 }
 
-export function createRuntimeHostSkillSource({ context, baseSkills, disabledSkills } = {}) {
+export function createRuntimeHostSkillSource({ context, baseSkills, disabledSkills, contract } = {}) {
   let inflight
   const resolve = async () => {
     try {
-      const hostSkills = await readRuntimeHostSkills(context)
+      const hostSkills = await readRuntimeHostSkills(context, { contract })
       if (!hostSkills || hostSkills.length === 0) return baseSkills
       const seen = new Set(baseSkills.map((skill) => skill.name.toLowerCase()))
       const merged = [...baseSkills]
