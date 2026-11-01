@@ -17,6 +17,9 @@ import {
   registerNativeSkills,
   selectSkillsForChild,
 } from "./rigel-v2-native-skills.mjs"
+import { availableCategoryNames } from "./rigel-v2-native-categories.mjs"
+import { resolveDelegationToolName } from "./rigel-v2-native-flow-guards.mjs"
+import { TEAM_MODE_CREATE_CALL } from "./rigel-v2-native-team-mode-command.mjs"
 
 const temporaryRoots = []
 
@@ -226,6 +229,39 @@ describe("#given requested skills for a delegated child", () => {
 })
 
 describe("#given the V2 native skill surface", () => {
+  test("#when a loaded skill names a stale harness call #then the registered runtime content gains the resolved contract while matching content stays unchanged", async () => {
+    const root = makeRoot()
+    const home = makeRoot()
+    const projectDir = path.join(root, "work")
+    const staleBody = "task({ category: 'quick' })\nteam_create({ inline_spec: {} })"
+    const matchingBody = "custom_delegate({ category: 'quick' })\nteam_create({ team_name: 'review', members: [{ name: 'scout', category: 'quick', prompt: 'inspect' }] })"
+    writeSkill(projectDir, ".agents/skills/stale", "stale", { frontmatter: "name: stale", body: staleBody })
+    writeSkill(projectDir, ".agents/skills/matching", "matching", { frontmatter: "name: matching", body: matchingBody })
+    const added = []
+    const context = {
+      location: { directory: projectDir },
+      skill: { transform: async (callback) => { callback({ add: (info) => added.push(info), list: () => [] }); return { dispose() {} } } },
+    }
+    const runtimeEnv = { RIGEL_NATIVE_TASK_NAME: "custom_delegate" }
+    const userCategories = { quick: { disable: true }, focused: { model: "example/focused" } }
+
+    await registerNativeSkills(context, {
+      directory: projectDir,
+      home,
+      env: { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") },
+      runtimeEnv,
+      userCategories,
+    })
+
+    const stale = added.find((skill) => skill.name === "stale")
+    const matching = added.find((skill) => skill.name === "matching")
+    expect(stale?.content).toContain(resolveDelegationToolName(runtimeEnv))
+    expect(stale?.content).toContain(TEAM_MODE_CREATE_CALL)
+    expect(availableCategoryNames(userCategories).every((name) => stale?.content.includes(JSON.stringify(name)))).toBe(true)
+    expect(stale?.content).toEndWith(staleBody)
+    expect(matching?.content).toBe(matchingBody)
+  })
+
   test("#when registering #then each discovered skill becomes an embedded SkillV2Info and host names are preserved", async () => {
     const root = makeRoot()
     const home = makeRoot()

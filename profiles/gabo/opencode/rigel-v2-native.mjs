@@ -651,6 +651,8 @@ export default {
         // so the host's real skill inventory is never read.
         home: context?.options?.skillsHome,
         env: context?.options?.skillsEnv,
+        runtimeEnv: process.env,
+        userCategories,
       })
       : { skills: [], registered: [], dispose: undefined }
     // Runtime host-skill source (V1 runtime-skill-resolver parity): skills that
@@ -661,6 +663,7 @@ export default {
       context,
       baseSkills: skillRegistry.skills,
       disabledSkills: readNativeDisabled(manifest).skills,
+      contract: { env: process.env, userCategories },
     })
     const skillMcpManager = createSkillMcpManager({ storage: context?.storage })
     const skillMcpRegistration = await registerSkillMcpServers(context, skillRegistry.skills)
