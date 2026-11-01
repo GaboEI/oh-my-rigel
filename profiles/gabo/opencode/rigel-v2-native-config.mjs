@@ -441,6 +441,18 @@ function validateExperimental(value, path, diagnostics) {
   return parsed
 }
 
+const KNOWN_UNHONORED = new Set([
+  "max_parallel_members",
+  "max_members",
+  "max_messages_per_run",
+  "max_wall_clock_minutes",
+  "max_member_turns",
+  "base_dir",
+  "message_payload_max_bytes",
+  "recipient_unread_max_bytes",
+  "mailbox_poll_interval_ms",
+])
+
 function validateTeamMode(value, path, diagnostics) {
   if (!isPlainRecord(value)) {
     warn(diagnostics, `config: ${path}: team_mode ignored (invalid value)`)
@@ -458,6 +470,9 @@ function validateTeamMode(value, path, diagnostics) {
     warn(diagnostics, `config: ${path}: team_mode.tmux_visualization ignored (invalid value)`)
   } else if ("tmux_visualization" in value) {
     validated.tmux_visualization = value.tmux_visualization
+  }
+  for (const key of KNOWN_UNHONORED) {
+    if (key in value) warn(diagnostics, `config: ${path}: team_mode.${key} ignored (not honored by native runtime)`)
   }
   return validated
 }

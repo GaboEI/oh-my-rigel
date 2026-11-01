@@ -224,6 +224,36 @@ describe("#given invalid values", () => {
   })
 })
 
+describe("#given recognized native team-mode fields without a runtime implementation", () => {
+  test("#when the view is resolved #then each discarded field is reported while only supported fields project", () => {
+    // given
+    const fixture = makeFixture()
+    const unhonored = {
+      max_parallel_members: 4,
+      max_members: 8,
+      max_messages_per_run: 100000,
+      max_wall_clock_minutes: 1440,
+      max_member_turns: 5000,
+      base_dir: "/tmp/teams",
+      message_payload_max_bytes: 32768,
+      recipient_unread_max_bytes: 262144,
+      mailbox_poll_interval_ms: 3000,
+    }
+    fixture.writeUser(JSON.stringify({
+      "[opencode]": {
+        team_mode: { enabled: true, tmux_visualization: false, ...unhonored },
+      },
+    }))
+    // when
+    const view = fixture.resolve()
+    // then
+    expect(view.team_mode).toEqual({ enabled: true, tmux_visualization: false })
+    for (const key of Object.keys(unhonored)) {
+      expect(view.diagnostics.some((line) => line.includes(`team_mode.${key}`) && line.includes("not honored by native runtime"))).toBe(true)
+    }
+  })
+})
+
 describe("#given a JSONC file", () => {
   test("#when the view is resolved #then comments and trailing commas are accepted", () => {
     // given
