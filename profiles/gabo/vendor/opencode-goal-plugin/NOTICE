@@ -5,13 +5,13 @@ regenerated deterministically from `pin.json` plus the pinned tarballs. The
 vendorizer refuses to materialize a tree whose NOTICE does not match this output,
 and refuses a pin whose recorded integrity does not match the vendored bytes.
 
-## @prevalentware/opencode-goal-plugin 0.1.60
+## @prevalentware/opencode-goal-plugin 0.1.91
 - role: artifact (the vendored engine)
 - license: MIT
-- source: npm tag v0.1.60 -> commit cf22feaaa7ab3367053a9a99913cbc40e5c3224e
-- integrity: sha512-mDEwq3DdZtUPtty26FFf7SptSnTATeJYZGXOYEMVt/utjB7YwTzxiZwur6D65hxYEzhC6Qw7uSMi2wrP3OK0og==
-- vendored tarball: tarballs/prevalentware-opencode-goal-plugin-0.1.60.tgz
-- sha256: 292680c8a777113f92c82811a8683c4f9da368023d966fb0ead059c5243c9689
+- source: npm tag v0.1.91 -> commit ccdd288fd595f41d1482e03088612b7eb7704cde
+- integrity: sha512-rE2wUeRxjLwwQ5C+K5deJzzq7iCAxtqcIlH4NkBVU972otaw3WsawopqitiQxl2YFxS7M4TSaCuJA3DbLPpwDQ==
+- vendored tarball: tarballs/prevalentware-opencode-goal-plugin-0.1.91.tgz
+- sha256: 81ff56d1c22c5ac8d7c80cf59d8e58618e0c28d2c8d139c55c4f73a98e95148a
 
 ## @opentui/solid 0.6.4
 - role: peer dependency (satisfied by the host TUI)

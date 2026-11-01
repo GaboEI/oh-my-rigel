@@ -3,58 +3,59 @@
  * Goal-state gate for the isolated V2 laboratory acceptance.
  *
  * Three explicit modes:
- *   - "managed": a config references the vendored, Rigel-managed community
- *     engine (a `vendor/opencode-goal-plugin` path inside the Rigel state tree).
- *     This is the PR B owner: the retired V1 goals.json MUST stay absent.
- *   - "internal": no engine is registered and OmO's internal `goal.enabled` is
- *     true (the inherited Goal is quarantined, so this only records that no
- *     external/community engine is present). Requires POSITIVE reads of all
- *     three config files, the external state path and the exact retired cache
- *     path to be absent; the external goals.json MUST stay absent.
- *   - "legacy": the retired external plugin is referenced in a config, or its
- *     state or exact cache path exists. The historical schema-version-1
- *     invariant applies.
- * The managed mode is detected first: its artifact path also contains the
- * package name, so it must not be misread as the retired external package.
- * Any other combination, including a config that is missing or unreadable, is
- * "unknown" and fails the gate instead of silently assuming a mode.
+ *   - "managed": the complete Rigel-owned shim shape is live: one server shim,
+ *     one CLI/TUI shim, and exactly one `-opencode.goal` marker. This makes the
+ *     vendored third-party Goal the sole configured owner.
+ *   - "legacy": the retired external package/state/cache is still present. The
+ *     historical schema-version-1 invariant applies.
+ *   - "unknown": every incomplete, duplicate, malformed, or unreadable shape.
+ *     It fails closed instead of treating `goal.enabled` as evidence that the
+ *     host builtin is disabled.
  */
 import fs from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-
-const EXTERNAL_GOAL_MARKERS = [
-  "@prevalentware/opencode-goal-plugin",
-  "opencode-goal-plugin",
-  "allow_goal_execution_from_plan",
-]
-
-/**
- * The vendored, Rigel-managed community engine. Its config entry points at the
- * artifact INSIDE the Rigel state tree (`<stateRoot>/versions/<v>/runtime/vendor/
- * opencode-goal-plugin/...`), so a `vendor/opencode-goal-plugin` path fragment
- * distinguishes the MANAGED engine from the retired external package/cache.
- */
-const MANAGED_GOAL_MARKERS = [
-  "vendor/opencode-goal-plugin",
-]
+import {
+  DISABLED_BUILTIN_GOAL,
+  GOAL_ENGINE_SHIM_DIRNAME,
+  GOAL_TUI_SHIM_DIRNAME,
+  isRetiredExternalGoalPackage,
+  pluginEntrySpec,
+  assertGoalStatePathSafe,
+  resolveGoalStatePath,
+} from "./rigel-v2-goal-registration.mjs"
+import { parseJsonc } from "./notification-activation-config.mjs"
 
 export const EXTERNAL_GOAL_STATE = ".local/share/opencode-goal-plugin"
 export const EXTERNAL_GOAL_CACHE = ".cache/opencode/packages/@prevalentware/opencode-goal-plugin@latest"
 
+function isShimEntry(entry, dirname) {
+  const spec = pluginEntrySpec(entry)
+  if (typeof spec !== "string") return false
+  const normalized = spec.split("\\").join("/")
+  return normalized.endsWith(`/${dirname}`)
+}
+
 export function readGoalConfig(filePath) {
-  let text
+  let parsed
   try {
     if (!fs.statSync(filePath).isFile()) return { readable: false, referenced: false, managed: false }
-    text = fs.readFileSync(filePath, "utf8")
-  } catch {
-    return { readable: false, referenced: false, managed: false }
+    parsed = parseJsonc(fs.readFileSync(filePath, "utf8"))
+  } catch (error) {
+    return { readable: false, referenced: false, managed: false, missing: error?.code === "ENOENT" }
   }
+  const plugins = Array.isArray(parsed.plugin) ? parsed.plugin : Array.isArray(parsed.plugins) ? parsed.plugins : []
+  const specs = plugins.map(pluginEntrySpec).filter((spec) => typeof spec === "string")
   return {
     readable: true,
-    referenced: EXTERNAL_GOAL_MARKERS.some((marker) => text.includes(marker)),
-    managed: MANAGED_GOAL_MARKERS.some((marker) => text.includes(marker)),
+    referenced: specs.some(isRetiredExternalGoalPackage),
+    managed: specs.some((spec) => spec.includes("rigel-goal-")),
+    plugins,
   }
+}
+
+function resolveRigelStateRoot(home, options) {
+  return path.resolve(options.stateRoot || process.env.RIGEL_V2_USER_ROOT || path.join(process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), "oh-my-rigel"))
 }
 
 export function internalGoalEnabled(omoConfigPath) {
@@ -79,31 +80,54 @@ export function internalGoalEnabled(omoConfigPath) {
 
 export function detectGoalMode(home, options = {}) {
   const cfgDir = options.configDir ?? path.join(home, ".config/opencode")
-  const configPaths = ["opencode.json", "tui.json", "cli.json"].map((name) => path.join(cfgDir, name))
-  const configs = configPaths.map((file) => ({ file, ...readGoalConfig(file) }))
+  const configPaths = [
+    { name: "opencode.json", required: true },
+    { name: "tui.json", required: false },
+    { name: "cli.json", required: true },
+  ]
+  const configs = configPaths.map(({ name, required }) => {
+    const file = path.join(cfgDir, name)
+    return { file, required, ...readGoalConfig(file) }
+  })
   const referenced = configs.filter((entry) => entry.referenced).map((entry) => entry.file)
-  const managed = configs.filter((entry) => entry.managed).map((entry) => entry.file)
-  const unreadable = configs.filter((entry) => !entry.readable).map((entry) => entry.file)
+  const unreadable = configs.filter((entry) => !entry.readable && (entry.required || !entry.missing)).map((entry) => entry.file)
   const stateDirs = options.stateDirs ?? [
     path.join(home, EXTERNAL_GOAL_STATE),
     path.join(home, EXTERNAL_GOAL_CACHE),
   ]
   const presentDirs = stateDirs.filter((dir) => fs.existsSync(dir))
-  const enabled = internalGoalEnabled(options.omoConfigPath ?? path.join(home, ".omo/omo.jsonc"))
-  // PR B: the vendored, Rigel-managed engine owns the Goal. It is checked before
-  // the legacy/external detection because its path also contains the package
-  // name; the retired external cache/state must stay absent.
-  if (managed.length > 0) {
-    return { mode: "managed", referenced, managed, presentDirs, unreadable, internalGoalEnabled: enabled }
+  const [opencode, , cli] = configs
+  const serverEntries = opencode.plugins?.filter((entry) => isShimEntry(entry, GOAL_ENGINE_SHIM_DIRNAME)) ?? []
+  const cliEntries = cli.plugins?.filter((entry) => isShimEntry(entry, GOAL_TUI_SHIM_DIRNAME)) ?? []
+  const goalMarkerCount = cli.plugins?.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length ?? 0
+  const stateRoot = resolveRigelStateRoot(home, options)
+  const goalStatePath = resolveGoalStatePath(stateRoot)
+  const configuredGoalStatePath = Object.prototype.hasOwnProperty.call(options, "goalStatePath") ? options.goalStatePath : goalStatePath
+  let goalStatePathMatchesRoot = false
+  try {
+    goalStatePathMatchesRoot = configuredGoalStatePath === goalStatePath
+    assertGoalStatePathSafe(configuredGoalStatePath, stateRoot)
+  } catch {
+    goalStatePathMatchesRoot = false
+  }
+  const managed = {
+    serverEntries: serverEntries.length,
+    cliEntries: cliEntries.length,
+    goalMarkerCount,
+    goalStatePath,
+    configuredGoalStatePath,
+    goalStatePathMatchesRoot,
   }
   if (referenced.length > 0 || presentDirs.length > 0) {
-    return { mode: "legacy", referenced, managed, presentDirs, unreadable, internalGoalEnabled: enabled }
+    return { mode: "legacy", referenced, managed, presentDirs, unreadable }
+  }
+  if (unreadable.length === 0 && managed.serverEntries === 1 && managed.cliEntries === 1 && managed.goalMarkerCount === 1 && managed.goalStatePathMatchesRoot) {
+    return { mode: "managed", referenced, managed, presentDirs, unreadable }
   }
   if (unreadable.length > 0) {
-    return { mode: "unknown", referenced, managed, presentDirs, unreadable, internalGoalEnabled: enabled, reason: "external goal removal cannot be asserted: a config file is missing or unreadable" }
+    return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal cannot be asserted: a config file is missing, unreadable, or invalid" }
   }
-  if (enabled) return { mode: "internal", referenced, managed, presentDirs, unreadable, internalGoalEnabled: true }
-  return { mode: "unknown", referenced, managed, presentDirs, unreadable, internalGoalEnabled: false, reason: "internal goal.enabled is not true" }
+  return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal requires one server shim, one CLI shim, one builtin-disable marker, and the canonical Goal state path" }
 }
 
 export function probeGoalState(home, goalsFile) {
@@ -121,18 +145,12 @@ export function probeGoalState(home, goalsFile) {
 
 export function verifyGoalInvariant(mode, before, after) {
   if (mode === "managed") {
-    // The vendored engine's state lives inside the Rigel state tree, never at the
-    // retired V1 path. The invariant is that the V1 goals.json stays absent.
+    // The shim-managed engine's state lives inside the Rigel state tree, never
+    // at the retired V1 path. The invariant is that the V1 goals.json stays absent.
     if (before.present || after.present) {
       return { pass: false, reason: `managed goal mode requires the retired V1 goals.json absent; before.present=${before.present} after.present=${after.present}` }
     }
-    return { pass: true, reason: "managed goal mode: vendored engine registered; V1 goals.json absent before and after (invariant held)" }
-  }
-  if (mode === "internal") {
-    if (before.present || after.present) {
-      return { pass: false, reason: `internal goal mode requires the external goals.json absent; before.present=${before.present} after.present=${after.present}` }
-    }
-    return { pass: true, reason: "internal goal mode: external goals.json absent before and after (invariant held)" }
+    return { pass: true, reason: "managed goal mode: third-party shim shape verified; V1 goals.json absent before and after (invariant held)" }
   }
   if (mode === "legacy") {
     if (!before.present || !after.present) {
@@ -146,14 +164,21 @@ export function verifyGoalInvariant(mode, before, after) {
     }
     return { pass: true, reason: `legacy goal mode: schema 1 and count ${after.count} unchanged` }
   }
-  return { pass: false, reason: "unknown goal mode: external plugin not configured and internal goal.enabled is not true" }
+  return { pass: false, reason: "unknown goal mode: the complete managed shim shape was not verified" }
 }
 
 function main(argv) {
   const [command, arg, arg2, arg3] = argv
   const home = process.env.HOME
   if (command === "--mode") {
-    process.stdout.write(detectGoalMode(arg ?? home).mode)
+    const configFile = process.env.RIGEL_V2_CONFIG
+    const stateRoot = process.env.RIGEL_V2_USER_ROOT
+    const configuredGoalStatePath = process.env.OPENCODE_GOAL_STATE_PATH
+    process.stdout.write(detectGoalMode(arg ?? home, {
+      ...(typeof configFile === "string" && configFile ? { configDir: path.dirname(configFile) } : {}),
+      ...(typeof stateRoot === "string" && stateRoot ? { stateRoot } : {}),
+      ...(configuredGoalStatePath !== undefined ? { goalStatePath: configuredGoalStatePath } : {}),
+    }).mode)
     return 0
   }
   if (command === "--probe") {

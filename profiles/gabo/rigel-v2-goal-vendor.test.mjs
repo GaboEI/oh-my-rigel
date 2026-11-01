@@ -55,9 +55,9 @@ describe("#given the pinned goal artifact vendored in-tree", () => {
       expect(sha256Hex(tarball)).toBe(GOAL_VENDOR_ARTIFACT.tarballSha256)
 
       const pin = readPin()
-      expect(pin.artifact.version).toBe("0.1.60")
-      expect(pin.artifact.tag).toBe("v0.1.60")
-      expect(pin.artifact.commit).toBe("cf22feaaa7ab3367053a9a99913cbc40e5c3224e")
+      expect(pin.artifact.version).toBe("0.1.91")
+      expect(pin.artifact.tag).toBe("v0.1.91")
+      expect(pin.artifact.commit).toBe("ccdd288fd595f41d1482e03088612b7eb7704cde")
       expect(pin.artifact.license).toBe("MIT")
       expect(pin.artifact.name).toBe("@prevalentware/opencode-goal-plugin")
     })

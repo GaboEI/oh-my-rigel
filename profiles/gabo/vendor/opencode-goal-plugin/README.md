@@ -12,12 +12,12 @@ is not activated. Activation is a separate, atomic change.
 | Field | Value |
 |---|---|
 | package | `@prevalentware/opencode-goal-plugin` |
-| version | `0.1.60` |
-| git tag | `v0.1.60` |
-| commit | `cf22feaaa7ab3367053a9a99913cbc40e5c3224e` |
+| version | `0.1.91` |
+| git tag | `v0.1.91` |
+| commit | `ccdd288fd595f41d1482e03088612b7eb7704cde` |
 | license | MIT (upstream text travels byte-identical in `LICENSE`) |
-| `dist.integrity` | `sha512-mDEwq3DdZtUPtty26FFf7SptSnTATeJYZGXOYEMVt/utjB7YwTzxiZwur6D65hxYEzhC6Qw7uSMi2wrP3OK0og==` |
-| tarball sha256 | `292680c8a777113f92c82811a8683c4f9da368023d966fb0ead059c5243c9689` |
+| `dist.integrity` | `sha512-rE2wUeRxjLwwQ5C+K5deJzzq7iCAxtqcIlH4NkBVU972otaw3WsawopqitiQxl2YFxS7M4TSaCuJA3DbLPpwDQ==` |
+| tarball sha256 | `81ff56d1c22c5ac8d7c80cf59d8e58618e0c28d2c8d139c55c4f73a98e95148a` |
 
 `pin.json` is the recorded snapshot of that provenance plus the closure, and
 `NOTICE` is its deterministic attribution. The vendorizer refuses to run when the
