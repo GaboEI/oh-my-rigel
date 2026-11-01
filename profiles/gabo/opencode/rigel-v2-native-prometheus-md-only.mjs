@@ -1,5 +1,6 @@
 import { relative, resolve, isAbsolute } from "node:path"
 import { patchToolArgs } from "./rigel-v2-native-tool-args.mjs"
+import { resolveDelegationToolName } from "./rigel-v2-native-flow-guards.mjs"
 
 /**
  * Native OpenCode V2 port of the V1 `prometheus-md-only` hook.
@@ -53,6 +54,15 @@ Return your findings and recommendations. The actual implementation will be hand
 
 `
 
+/** Resolved once: the reminder must never name a tool the session does not expose. */
+const DELEGATION_TOOL_NAME = resolveDelegationToolName()
+
+/** `subagent_type`, not `agent` - the tool schema accepts only the former. */
+function workflowCallRow(agentName) {
+  const body = `- ${DELEGATION_TOOL_NAME}(subagent_type="${agentName}", ...)`
+  return `│      │    ${body}${" ".repeat(Math.max(0, 58 - body.length))}│`
+}
+
 export const PROMETHEUS_WORKFLOW_REMINDER = `
 
 ---
@@ -72,14 +82,14 @@ export const PROMETHEUS_WORKFLOW_REMINDER = `
 │      │    - Record decisions to .omo/drafts/                   │
 ├──────┼──────────────────────────────────────────────────────────────┤
 │  2   │ METIS CONSULTATION: Pre-generation gap analysis              │
-│      │    - task(agent="Metis - Plan Consultant", ...)     │
+${workflowCallRow("Metis - Plan Consultant")}
 │      │    - Identify missed questions, guardrails, assumptions      │
 ├──────┼──────────────────────────────────────────────────────────────┤
 │  3   │ PLAN GENERATION: Write to .omo/plans/*.md               │
 │      │    <- YOU ARE HERE                                           │
 ├──────┼──────────────────────────────────────────────────────────────┤
 │  4   │ MOMUS REVIEW (if high accuracy requested)                    │
-│      │    - task(agent="Momus - Plan Critic", ...)         │
+${workflowCallRow("Momus - Plan Critic")}
 │      │    - Loop until OKAY verdict                                 │
 ├──────┼──────────────────────────────────────────────────────────────┤
 │  5   │ SUMMARY: Present to user                                     │
