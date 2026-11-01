@@ -45,8 +45,9 @@ export const GOAL_STATE_SCHEMA_VERSIONS = Object.freeze([1, 2, 3])
  * export (or `main`). The vendored artifact exports only `./server` and `./tui`,
  * so pointing the entry at the artifact directory or at `dist/server.js` makes
  * the host skip it ("configured plugin path must be a directory"). This shim is
- * a tiny Rigel-owned directory (NOT a vendor patch) whose `.` export re-exports
- * the vendored server, so the host loads it exactly once.
+ * a tiny Rigel-owned directory (NOT a vendor patch) whose `.` export wraps the
+ * vendored server to harden its goal tools, so the host loads it exactly once
+ * without changing vendored bytes.
  */
 export const GOAL_ENGINE_SHIM_DIRNAME = "rigel-goal-engine"
 
@@ -180,9 +181,10 @@ export function isGoalEngineShimPath(candidate) {
 
 /**
  * Lay the loader shim next to the deployed runtime and return its directory. The
- * shim's `server.js` re-exports the vendored server's default (the hybrid
- * `{ id, server, setup }` definition), so the host resolves a `.` entrypoint and
- * loads the engine exactly once. Idempotent; never touches the vendored bytes.
+ * shim's `server.js` wraps the vendored server's default (the hybrid `{ id,
+ * server, setup }` definition) to harden its goal tools while the host resolves
+ * a `.` entrypoint and loads the engine exactly once. Idempotent; never touches
+ * vendored bytes.
  */
 export function materializeGoalEngineShim({ runtimeDir, engineEntry }) {
   const shimDir = path.join(runtimeDir, GOAL_ENGINE_SHIM_DIRNAME)
@@ -192,7 +194,16 @@ export function materializeGoalEngineShim({ runtimeDir, engineEntry }) {
     `${JSON.stringify({ name: "rigel-goal-engine", type: "module", exports: { ".": "./server.js" } }, null, 2)}\n`,
     { mode: 0o600 },
   )
-  fs.writeFileSync(path.join(shimDir, "server.js"), `export { default } from ${JSON.stringify(engineEntry)}\n`, { mode: 0o600 })
+  fs.writeFileSync(
+    path.join(shimDir, "guard.js"),
+    fs.readFileSync(new URL("./rigel-goal-budget-guard.mjs", import.meta.url), "utf8"),
+    { mode: 0o600 },
+  )
+  fs.writeFileSync(
+    path.join(shimDir, "server.js"),
+    `import guard from "./guard.js"\nimport vendor from ${JSON.stringify(engineEntry)}\nexport default guard(vendor)\n`,
+    { mode: 0o600 },
+  )
   return shimDir
 }
 

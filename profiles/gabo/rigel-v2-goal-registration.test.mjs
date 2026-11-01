@@ -224,6 +224,20 @@ describe("#given the two-slot family registration", () => {
     expect(isGoalEngineEntry([shim, {}])).toBe(true)
   })
 
+  test("#given a runtime dir #when the goal engine shim is materialized #then server.js imports the guard and calls it on the vendor default, and guard.js is a non-empty copy of the guard module", () => {
+    const runtimeDir = tempDir()
+    const shim = materializeGoalEngineShim({ runtimeDir, engineEntry: ENGINE })
+    const server = fs.readFileSync(path.join(shim, "server.js"), "utf8")
+    const copiedGuard = fs.readFileSync(path.join(shim, "guard.js"), "utf8")
+    const sourceGuard = fs.readFileSync(new URL("./rigel-goal-budget-guard.mjs", import.meta.url), "utf8")
+
+    expect(server).toContain('import guard from "./guard.js"')
+    expect(server).toContain(`import vendor from ${JSON.stringify(ENGINE)}`)
+    expect(server).toContain("export default guard(vendor)")
+    expect(copiedGuard.length).toBeGreaterThan(0)
+    expect(copiedGuard).toBe(sourceGuard)
+  })
+
   test("#when the TUI loader shim is laid #then it is a directory whose `.`/`./tui` export re-exports the vendored TUI", () => {
     const runtimeDir = tempDir()
     const shim = materializeGoalTuiShim({ runtimeDir, tuiEntry: `${ARTIFACT}/src/tui.ts` })
