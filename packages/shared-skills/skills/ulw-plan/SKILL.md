@@ -62,6 +62,10 @@ node "<skill-root>/scripts/scaffold-plan.mjs" <slug> [--clear|--unclear] --draft
 
 Both invocations are resume-safe no-ops for artifacts already present. Do NOT hand-build them; use `--reset` only for a structural reset (`--reset --force` discards edits). If a same-named non-artifact file exists, choose another slug.
 
+**If your agent cannot run shell commands**, you are not exempt from this step. Some harnesses deny `shell`/`bash` to the planning agent, so the script above is unreachable from the only agent required to run it. In that case write the same skeleton yourself with `write`, using exactly the headers and order documented under **Plan template** in `references/full-workflow.md` - no other headers, none reordered, and the four `F<n>.` verifier rows as given there.
+
+This is the ONLY sanctioned exception to "do not hand-build". It exists because the script's own precondition can be denied by the harness, and it does not license improvising the structure: without a shell you reproduce the template verbatim, and you never invent sections.
+
 ## Plan artifact producer contract
 
 When producing the plan, encode every executable item as a column-zero Markdown task row: implementation rows MUST match `- [ ] N. <title>` (where `N` is a positive decimal integer), and final-verifier rows MUST match `- [ ] F<number>. <title>`. Prose headings, numbered paragraphs, and ordinary bullets are not task substitutes and MUST NOT be counted as implementation or final-verifier tasks. Before handoff, run a structural self-check over the plan: verify that every implementation row and final-verifier row is column-zero, matches its required grammar, and appears in the intended `## Todos` or `## Final verification wave` section; verify that no prose heading or bullet is being used as a task; verify that every implementation row carries a nested `Recommended task executor category:` line (final-verifier rows default to `unspecified-high` when unannotated); and repair the plan before handoff if any check fails.
