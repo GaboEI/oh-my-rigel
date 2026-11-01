@@ -139,13 +139,27 @@ describe("#given explicit user overrides", () => {
 })
 
 describe("#given the two-slot family registration", () => {
-  test("#when the server entry is registered #then it is a single tuple and re-registering is idempotent", () => {
+  test("#when the server entry is registered #then it is a single tuple with one builtin-disable marker and re-registering is idempotent", () => {
     const once = registerGoalServerEntry(["/runtime"], { engineEntry: ENGINE, options: resolveGoalOptions({}) })
-    expect(once).toHaveLength(2)
+    expect(once).toHaveLength(3)
     expect(once[0]).toBe("/runtime")
     const twice = registerGoalServerEntry(once, { engineEntry: ENGINE, options: resolveGoalOptions({}) })
     expect(twice.filter(isGoalEngineEntry)).toHaveLength(1)
+    expect(twice.filter((entry) => entry === DISABLED_BUILTIN_GOAL)).toHaveLength(1)
     expect(twice[0]).toBe("/runtime")
+  })
+
+  test("#when native and legacy server fields coexist #then foreign entries retain source order and the result normalizes to native plugins", () => {
+    const registered = registerGoalServerEntry({
+      plugins: ["native-first.mjs", DISABLED_BUILTIN_GOAL, DISABLED_BUILTIN_GOAL],
+      plugin: ["legacy-first.mjs", [ARTIFACT, {}]],
+    }, { engineEntry: ENGINE, options: resolveGoalOptions({}) })
+
+    expect(registered.plugin).toBeUndefined()
+    expect(registered.plugins.slice(0, 2)).toEqual(["native-first.mjs", DISABLED_BUILTIN_GOAL])
+    expect(registered.plugins).toContain("legacy-first.mjs")
+    expect(registered.plugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL)).toHaveLength(1)
+    expect(registered.plugins.filter(isGoalEngineEntry)).toHaveLength(1)
   })
 
   test("#when a version transition replaces the entry #then no second engine remains", () => {
@@ -165,13 +179,14 @@ describe("#given the two-slot family registration", () => {
     expect(twice).toEqual(once)
   })
 
-  test("#when the goal entries are removed #then both configs and the marker are clean but foreign entries stay", () => {
-    const config = { plugin: ["/runtime", [ENGINE, {}]] }
+  test("#when the goal entries are removed #then both config planes lose duplicate markers and goal entries while foreign entries stay", () => {
+    const config = { plugins: ["native-server.mjs", DISABLED_BUILTIN_GOAL, DISABLED_BUILTIN_GOAL, [ENGINE, {}]], plugin: ["legacy-server.mjs", { package: ARTIFACT }] }
     const cli = { plugins: [{ package: "/runtime", options: {} }, DISABLED_BUILTIN_GOAL, { package: ARTIFACT }] }
     const stripped = removeGoalEntries(config, cli)
-    expect(countGoalEntries(config, cli)).toEqual({ config: 1, cli: 1 })
+    expect(countGoalEntries(config, cli)).toEqual({ config: 2, cli: 1 })
     expect(countGoalEntries(stripped.config, stripped.cli)).toEqual({ config: 0, cli: 0 })
-    expect(stripped.config.plugin).toEqual(["/runtime"])
+    expect(stripped.config.plugin).toBeUndefined()
+    expect(stripped.config.plugins).toEqual(["native-server.mjs", "legacy-server.mjs"])
     expect(stripped.cli.plugins).toEqual([{ package: "/runtime", options: {} }])
   })
 

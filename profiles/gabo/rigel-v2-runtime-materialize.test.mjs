@@ -155,8 +155,10 @@ describe("stageGoalVendor", () => {
     expect(result.goalVendor.treeDigest).toMatch(/^[0-9a-f]{64}$/)
     expect(fs.existsSync(result.goalVendor.engineEntry)).toBe(true)
     const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
-    expect(config.plugin.filter((entry) => entry === runtimeDir)).toHaveLength(1)
-    const goalEntries = config.plugin.filter((entry) => Array.isArray(entry))
+    expect(config.plugin).toBeUndefined()
+    expect(config.plugins.filter((entry) => entry === runtimeDir)).toHaveLength(1)
+    expect(config.plugins.filter((entry) => entry === "-opencode.goal")).toHaveLength(1)
+    const goalEntries = config.plugins.filter((entry) => Array.isArray(entry))
     expect(goalEntries).toHaveLength(1)
     // The host loads a directory entrypoint, so the entry points at the Rigel-owned
     // shim whose `.` export re-exports the vendored server.
@@ -200,8 +202,10 @@ describe("stageGoalVendor", () => {
 
     // then exactly one runtime entry and one goal entry survive (C3)
     const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
-    expect(config.plugin.filter((entry) => entry === runtimeDir)).toHaveLength(1)
-    expect(config.plugin.filter((entry) => Array.isArray(entry))).toHaveLength(1)
+    expect(config.plugin).toBeUndefined()
+    expect(config.plugins.filter((entry) => entry === runtimeDir)).toHaveLength(1)
+    expect(config.plugins.filter((entry) => entry === "-opencode.goal")).toHaveLength(1)
+    expect(config.plugins.filter((entry) => Array.isArray(entry))).toHaveLength(1)
     const cli = JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8"))
     const goalCli = cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))
     expect(goalCli).toHaveLength(1)

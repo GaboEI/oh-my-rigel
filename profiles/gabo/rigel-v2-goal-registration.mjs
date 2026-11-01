@@ -8,8 +8,8 @@
  *   - the two-slot family model: the RiGel runtime slot owns every entry under
  *     the state root EXCEPT the vendored engine subtree, and the goal slot owns
  *     exactly the vendored engine subtree. Both `opencode.json` and `cli.json`
- *     are written this way, so exactly one runtime entry and one goal entry
- *     survive a reinstall and a version transition;
+ *     are written this way, so exactly one runtime entry, goal entry, and
+ *     builtin-disable marker survive a reinstall and a version transition;
  *   - the safe resolution of `OPENCODE_GOAL_STATE_PATH` inside the Rigel state
  *     tree, and the transactional adoption-by-copy of a compatible external
  *     state (source left byte-identical).
@@ -63,7 +63,7 @@ export const GOAL_ENGINE_SHIM_DIRNAME = "rigel-goal-engine"
  */
 export const GOAL_TUI_SHIM_DIRNAME = "rigel-goal-tui"
 
-/** Explicit CLI marker that disables OpenCode's competing builtin Goal plugin. */
+/** Explicit server/CLI marker that disables OpenCode's competing builtin Goal plugin. */
 export const DISABLED_BUILTIN_GOAL = "-opencode.goal"
 
 /**
@@ -244,16 +244,46 @@ export function isGoalEngineEntry(entry) {
 }
 
 /**
- * Register the goal engine's SERVER entry in `opencode.json` `plugin` exactly
- * once, as a `[specifier, options]` tuple (the V2 config schema's options form
- * for that key). A prior version's goal entry is replaced in place, so a
- * version transition never appends a second engine.
+ * Normalize server plugins from the native V2 `plugins` field and its V1
+ * `plugin` predecessor. A document containing both is migrated to the native
+ * field without dropping a foreign entry from either list; native entries stay
+ * first and each source list preserves its original order.
  */
-export function registerGoalServerEntry(plugins, { engineEntry, options }) {
-  const list = Array.isArray(plugins) ? plugins : []
+export function serverPluginEntries(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return []
+  const native = Array.isArray(config.plugins) ? config.plugins : []
+  const legacy = Array.isArray(config.plugin) ? config.plugin : []
+  return [...native, ...legacy]
+}
+
+function withServerPluginEntries(config, plugins) {
+  const next = { ...(config && typeof config === "object" && !Array.isArray(config) ? config : {}) }
+  next.plugins = plugins
+  delete next.plugin
+  return next
+}
+
+/**
+ * Register the goal engine's SERVER entry in `opencode.json` `plugins` exactly
+ * once, as a `[specifier, options]` tuple (the V2 config schema's options form
+ * for that key), and retain exactly one server-plane builtin-disable marker.
+ * A prior version's goal entry is replaced in place, so a version transition
+ * never appends a second engine. Array input remains supported for the narrow
+ * list-level callers; document input is normalized to native V2 `plugins`.
+ */
+export function registerGoalServerEntry(configOrPlugins, { engineEntry, options }) {
+  const list = Array.isArray(configOrPlugins) ? configOrPlugins : serverPluginEntries(configOrPlugins)
   const next = []
   let placed = false
+  let markerPlaced = false
   for (const entry of list) {
+    if (entry === DISABLED_BUILTIN_GOAL) {
+      if (!markerPlaced) {
+        next.push(DISABLED_BUILTIN_GOAL)
+        markerPlaced = true
+      }
+      continue
+    }
     if (isGoalEngineEntry(entry)) {
       if (!placed) {
         next.push([engineEntry, options])
@@ -263,8 +293,9 @@ export function registerGoalServerEntry(plugins, { engineEntry, options }) {
     }
     next.push(entry)
   }
+  if (!markerPlaced) next.push(DISABLED_BUILTIN_GOAL)
   if (!placed) next.push([engineEntry, options])
-  return next
+  return Array.isArray(configOrPlugins) ? next : withServerPluginEntries(configOrPlugins, next)
 }
 
 /**
@@ -310,10 +341,12 @@ export function registerGoalCliEntry(cliConfig, { tuiShimDir }) {
   return next
 }
 
-/** Remove every goal-engine entry and the Goal builtin-disable marker from `opencode.json` and `cli.json`. */
+/** Remove every goal-engine entry and every Goal builtin-disable marker from `opencode.json` and `cli.json`. */
 export function removeGoalEntries(config, cliConfig) {
-  const nextConfig = { ...(config && typeof config === "object" ? config : {}) }
-  if (Array.isArray(nextConfig.plugin)) nextConfig.plugin = nextConfig.plugin.filter((entry) => !isGoalEngineEntry(entry))
+  const hadServerPlugins = Array.isArray(config?.plugins) || Array.isArray(config?.plugin)
+  const nextConfig = hadServerPlugins
+    ? withServerPluginEntries(config, serverPluginEntries(config).filter((entry) => entry !== DISABLED_BUILTIN_GOAL && !isGoalEngineEntry(entry)))
+    : { ...(config && typeof config === "object" ? config : {}) }
   const nextCli = { ...(cliConfig && typeof cliConfig === "object" ? cliConfig : {}) }
   if (Array.isArray(nextCli.plugins)) nextCli.plugins = nextCli.plugins.filter((entry) => entry !== DISABLED_BUILTIN_GOAL && !isGoalEngineEntry(entry))
   return { config: nextConfig, cli: nextCli }
@@ -321,7 +354,7 @@ export function removeGoalEntries(config, cliConfig) {
 
 /** Count the goal-engine entries in an `opencode.json` / `cli.json` pair. */
 export function countGoalEntries(config, cliConfig) {
-  const configEntries = Array.isArray(config?.plugin) ? config.plugin.filter(isGoalEngineEntry).length : 0
+  const configEntries = serverPluginEntries(config).filter(isGoalEngineEntry).length
   const cliEntries = Array.isArray(cliConfig?.plugins) ? cliConfig.plugins.filter(isGoalEngineEntry).length : 0
   return { config: configEntries, cli: cliEntries }
 }

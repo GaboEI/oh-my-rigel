@@ -203,7 +203,7 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
 
       test("#then the goal engine is the sole owner: exactly one entry in each config, carrying the Rigel defaults", () => {
         const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
-        const goalServer = config.plugin.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+        const goalServer = config.plugins.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
         expect(goalServer).toHaveLength(1)
         expect(goalServer[0][1]).toEqual({
           auto_continue: true,
@@ -217,7 +217,9 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
           allow_goal_execution_from_plan: false,
         })
         // The foreign plugin the clean config declared is preserved.
-        expect(config.plugin).toContain("rigel-foreign-plugin")
+        expect(config.plugin).toBeUndefined()
+        expect(config.plugins).toContain("rigel-foreign-plugin")
+        expect(config.plugins.filter((entry) => entry === "-opencode.goal")).toHaveLength(1)
         const cli = JSON.parse(fs.readFileSync(path.join(path.dirname(configFile), "cli.json"), "utf8"))
         const goalCli = cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))
         expect(goalCli).toHaveLength(1)
@@ -227,8 +229,10 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
         const emitted = JSON.parse(install.stdout)
         const checks = Object.fromEntries(emitted.status.checks.map((check) => [check.name, check.pass]))
         expect(checks["goal.singleServerEntry"]).toBe(true)
+        expect(checks["goal.serverBuiltinDisabled"]).toBe(true)
         expect(checks["goal.singleCliEntry"]).toBe(true)
-        expect(checks["goal.statePathInsideRoot"]).toBe(true)
+        expect(checks["goal.cliBuiltinDisabled"]).toBe(true)
+        expect(checks["goal.statePathMatchesRoot"]).toBe(true)
         expect(emitted.status.pass).toBe(true)
         const state = JSON.parse(fs.readFileSync(path.join(stateRoot, "install-state.json"), "utf8"))
         expect(state.goalStatePath.startsWith(stateRoot)).toBe(true)
@@ -298,7 +302,7 @@ describe("rigel-v2-user-install goal lifecycle: absorb, idempotent reinstall, un
   const stateRoot = path.join(base, "state")
   let env
   const readConfig = () => JSON.parse(fs.readFileSync(configFile, "utf8"))
-  const goalEntries = (config) => config.plugin.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+  const goalEntries = (config) => config.plugins.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
 
   beforeAll(() => {
     fs.mkdirSync(home, { recursive: true, mode: 0o700 })
@@ -329,8 +333,9 @@ describe("rigel-v2-user-install goal lifecycle: absorb, idempotent reinstall, un
       const config = readConfig()
       expect(goalEntries(config)).toHaveLength(1)
       // The retired external specifier is gone; the foreign plugin is preserved.
-      expect(config.plugin.some((entry) => Array.isArray(entry) && String(entry[0]).includes("@prevalentware/opencode-goal-plugin@"))).toBe(false)
-      expect(config.plugin).toContain("rigel-foreign-plugin")
+      expect(config.plugins.some((entry) => Array.isArray(entry) && String(entry[0]).includes("@prevalentware/opencode-goal-plugin@"))).toBe(false)
+      expect(config.plugins).toContain("rigel-foreign-plugin")
+      expect(config.plugins.filter((entry) => entry === "-opencode.goal")).toHaveLength(1)
     }, 300_000)
 
     test("#when reinstalled #then the goal entry is replaced in place, never duplicated", () => {
@@ -344,7 +349,8 @@ describe("rigel-v2-user-install goal lifecycle: absorb, idempotent reinstall, un
       expect(uninstall.status, `uninstall failed: ${uninstall.stderr || uninstall.stdout}`).toBe(0)
       const config = readConfig()
       expect(goalEntries(config)).toHaveLength(0)
-      expect(config.plugin).toContain("rigel-foreign-plugin")
+      expect(config.plugins).toContain("rigel-foreign-plugin")
+      expect(config.plugins).not.toContain("-opencode.goal")
       const cli = JSON.parse(fs.readFileSync(path.join(path.dirname(configFile), "cli.json"), "utf8"))
       expect(cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))).toHaveLength(0)
     }, 300_000)
@@ -358,7 +364,7 @@ describe("rigel-v2-user-install goal upgrade + rollback", () => {
   const stateRoot = path.join(base, "state")
   let env
   const readConfig = () => JSON.parse(fs.readFileSync(configFile, "utf8"))
-  const goalEntries = (config) => config.plugin.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+  const goalEntries = (config) => config.plugins.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
 
   beforeAll(() => {
     fs.mkdirSync(home, { recursive: true, mode: 0o700 })

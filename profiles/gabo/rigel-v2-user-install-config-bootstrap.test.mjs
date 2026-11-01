@@ -125,8 +125,9 @@ describe("installer config bootstrap: absent explicit config", () => {
       test("#then it creates a valid config and installs without error", () => {
         expect(install.status, `install failed: ${install.stderr || install.stdout}`).toBe(0)
         expect(fs.existsSync(configFile)).toBe(true)
-        expect(Array.isArray(config.plugin)).toBe(true)
-        expect(config.plugin).toContain(runtimeDirAt(stateRoot))
+        expect(config.plugin).toBeUndefined()
+        expect(Array.isArray(config.plugins)).toBe(true)
+        expect(config.plugins).toContain(runtimeDirAt(stateRoot))
         // The installer never writes an `mcp` block: the bundled MCP servers are
         // registered at runtime, so the user's own `config.mcp.obsidian` (the
         // protected fingerprint component) is never touched.
@@ -170,13 +171,14 @@ describe("installer config bootstrap: existing config is preserved", () => {
     describe("#when the installer registers the runtime", () => {
       test("#then the install succeeds and the runtime entry is added", () => {
         expect(install.status, `install failed: ${install.stderr || install.stdout}`).toBe(0)
-        expect(config.plugin).toContain(runtimeDirAt(stateRoot))
+        expect(config.plugin).toBeUndefined()
+        expect(config.plugins).toContain(runtimeDirAt(stateRoot))
       })
 
       test("#then the pre-existing content is preserved, not reset", () => {
         expect(config.$schema).toBe(original.$schema)
         expect(config.theme).toBe("custom")
-        expect(config.plugin).toContain("rigel-foreign-plugin")
+        expect(config.plugins).toContain("rigel-foreign-plugin")
         // The user-owned obsidian MCP server is preserved byte-identically: the
         // installer only adds the runtime plugin entry.
         expect(config.mcp).toEqual(original.mcp)
@@ -492,8 +494,9 @@ describe("clean install with external Context7", () => {
         expect(configAfter.$schema).toBe(original.$schema)
         expect(configAfter.theme).toBe("custom")
         expect(configAfter.mcp.context7).toEqual(original.mcp.context7)
-        expect(configAfter.plugin).toContain("rigel-foreign-plugin")
-        expect(configAfter.plugin).toContain(runtimeDirAt(stateRoot))
+        expect(configAfter.plugin).toBeUndefined()
+        expect(configAfter.plugins).toContain("rigel-foreign-plugin")
+        expect(configAfter.plugins).toContain(runtimeDirAt(stateRoot))
       })
 
       test("#then the manifest MCP denylist does not carry Context7", () => {

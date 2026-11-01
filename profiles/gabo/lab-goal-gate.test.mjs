@@ -10,7 +10,7 @@ const createdHomes = []
 const gatePath = fileURLToPath(new URL("./lab-goal-gate.mjs", import.meta.url))
 
 const managedConfigs = {
-  "opencode.json": `{"plugin":[["/state/versions/1/runtime/rigel-goal-engine",{"auto_continue":true}]]}`,
+  "opencode.json": `{"plugins":["-opencode.goal",["/state/versions/1/runtime/rigel-goal-engine",{"auto_continue":true}]]}`,
   "tui.json": "{}",
   "cli.json": `{"plugins":["-opencode.goal",{"package":"/state/versions/1/runtime/rigel-goal-tui"}]}`,
 }
@@ -21,10 +21,10 @@ afterEach(() => {
   }
 })
 
-function makeHome({ configs = {}, omoGoalEnabled = null, stateDirs = [], cacheDirs = [] } = {}) {
+function makeHome({ configs = {}, configDir, omoGoalEnabled = null, stateDirs = [], cacheDirs = [] } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-goal-gate-"))
   createdHomes.push(home)
-  const cfgDir = path.join(home, ".config/opencode")
+  const cfgDir = configDir ?? path.join(home, ".config/opencode")
   fs.mkdirSync(cfgDir, { recursive: true })
   for (const [name, content] of Object.entries(configs)) {
     fs.writeFileSync(path.join(cfgDir, name), content)
@@ -41,7 +41,7 @@ function makeHome({ configs = {}, omoGoalEnabled = null, stateDirs = [], cacheDi
 
 function detectModeAtCliBoundary(home, overrides = {}) {
   const env = { ...process.env, HOME: home }
-  for (const name of ["RIGEL_V2_CONFIG", "RIGEL_V2_USER_ROOT", "OPENCODE_GOAL_STATE_PATH", "XDG_DATA_HOME"]) delete env[name]
+  for (const name of ["RIGEL_V2_CONFIG", "RIGEL_V2_USER_ROOT", "OPENCODE_GOAL_STATE_PATH", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]) delete env[name]
   Object.assign(env, overrides)
   const result = spawnSync(process.execPath, [gatePath, "--mode", home], { encoding: "utf8", env })
   expect(result.status).toBe(0)
@@ -83,7 +83,8 @@ describe("Rigel lab goal gate: mode detection", () => {
     expect(detected.managed).toEqual({
       serverEntries: 1,
       cliEntries: 1,
-      goalMarkerCount: 1,
+      serverGoalMarkerCount: 1,
+      cliGoalMarkerCount: 1,
       goalStatePath: path.join(stateRoot, "goal-state", "goals.json"),
       configuredGoalStatePath: path.join(stateRoot, "goal-state", "goals.json"),
       goalStatePathMatchesRoot: true,
@@ -103,6 +104,22 @@ describe("Rigel lab goal gate: mode detection", () => {
     const goalStatePath = path.join(xdgDataHome, "oh-my-rigel", "goal-state", "goals.json")
 
     expect(detectModeAtCliBoundary(home, { XDG_DATA_HOME: xdgDataHome, OPENCODE_GOAL_STATE_PATH: goalStatePath })).toBe("managed")
+  })
+
+  test("#given an XDG-rooted managed config #when the CLI gate resolves config and state roots #then it accepts the server marker", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-goal-gate-"))
+    createdHomes.push(home)
+    const xdgConfigHome = path.join(home, "xdg-config")
+    const configDir = path.join(xdgConfigHome, "opencode")
+    fs.mkdirSync(configDir, { recursive: true })
+    for (const [name, content] of Object.entries(managedConfigs)) fs.writeFileSync(path.join(configDir, name), content)
+    const xdgDataHome = path.join(home, "xdg-data")
+
+    expect(detectModeAtCliBoundary(home, {
+      XDG_CONFIG_HOME: xdgConfigHome,
+      XDG_DATA_HOME: xdgDataHome,
+      OPENCODE_GOAL_STATE_PATH: path.join(xdgDataHome, "oh-my-rigel", "goal-state", "goals.json"),
+    })).toBe("managed")
   })
 
   test("#given RIGEL_V2_USER_ROOT and XDG_DATA_HOME #when the CLI gate resolves state #then RIGEL_V2_USER_ROOT wins", () => {
@@ -168,11 +185,31 @@ describe("Rigel lab goal gate: mode detection", () => {
     expect(detectGoalMode(home).mode).toBe("unknown")
   })
 
-  test("#given a shim shape without the builtin-disable marker #when detecting #then mode is unknown", () => {
+  test("#given a shim shape without the server builtin-disable marker #when detecting #then mode is unknown", () => {
     const home = makeHome({
       configs: {
         "opencode.json": `{"plugin":[["/state/versions/1/runtime/rigel-goal-engine",{}]]}`,
         "tui.json": "{}",
+        "cli.json": `{"plugins":["-opencode.goal",{"package":"/state/versions/1/runtime/rigel-goal-tui"}]}`,
+      },
+    })
+    expect(detectGoalMode(home).mode).toBe("unknown")
+  })
+
+  test("#given duplicate server builtin-disable markers #when detecting #then mode is unknown", () => {
+    const home = makeHome({
+      configs: {
+        ...managedConfigs,
+        "opencode.json": `{"plugins":["-opencode.goal","-opencode.goal",["/state/versions/1/runtime/rigel-goal-engine",{}]]}`,
+      },
+    })
+    expect(detectGoalMode(home).mode).toBe("unknown")
+  })
+
+  test("#given a shim shape without the defense-in-depth CLI marker #when detecting #then mode is unknown", () => {
+    const home = makeHome({
+      configs: {
+        ...managedConfigs,
         "cli.json": `{"plugins":[{"package":"/state/versions/1/runtime/rigel-goal-tui"}]}`,
       },
     })

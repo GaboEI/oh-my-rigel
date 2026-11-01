@@ -45,6 +45,7 @@ import {
   removeGoalEntries,
   resolveGoalOptions,
   resolveGoalStatePath,
+  serverPluginEntries,
 } from "./rigel-v2-goal-registration.mjs"
 import { renderCleanInstallProfile } from "./rigel-v2-clean-install-profile.mjs"
 import {
@@ -461,14 +462,14 @@ function goalEnginePaths(runtimeDir) {
 function removeOurConfigEntries(configFile, stateRoot) {
   const canonicalState = canonicalize(stateRoot)
   const config = fs.existsSync(configFile) ? readJson(configFile) : {}
-  if (Array.isArray(config.plugin)) {
-    config.plugin = config.plugin.filter((entry) => !(typeof entry === "string" && under(canonicalize(entry), canonicalState)))
-  }
   const cliConfigFile = path.join(path.dirname(configFile), "cli.json")
   const cli = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
   // The goal engine is its own slot: strip it from both configs regardless of the
   // runtime-family filter, which deliberately ignores it.
   const stripped = removeGoalEntries(config, cli)
+  if (Array.isArray(stripped.config.plugins)) {
+    stripped.config.plugins = stripped.config.plugins.filter((entry) => !(typeof entry === "string" && under(canonicalize(entry), canonicalState)))
+  }
   writeJsonAtomic(configFile, stripped.config)
   if (fs.existsSync(cliConfigFile)) {
     writeJsonAtomic(cliConfigFile, removeRigelCliEntries(stripped.cli, { familyRoot: stateRoot }))
@@ -635,14 +636,16 @@ function statusOf(state, paths) {
 
   // opencode.json: exactly one Rigel-family entry, and it is the active runtime.
   const config = fs.existsSync(paths.configFile) ? readJson(paths.configFile) : {}
-  const configPlugins = Array.isArray(config.plugin) ? config.plugin : []
+  const configPlugins = serverPluginEntries(config)
   const configFamily = configPlugins.filter((entry) => typeof entry === "string" && under(canonicalize(entry), canonicalState))
   checks.push({ name: "config.registersRuntime", pass: configPlugins.includes(state.pluginEntry) })
   checks.push({ name: "config.singleRigelEntry", pass: configFamily.length === 1 && configFamily[0] === state.pluginEntry })
   // The third-party Goal is loaded through Rigel's server shim, exactly once.
   const goalServerEntries = configPlugins.filter(isGoalEngineEntry)
+  const serverGoalMarkerCount = configPlugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length
   const goalPaths = goalEnginePaths(runtime)
   checks.push({ name: "goal.singleServerEntry", pass: goalServerEntries.length === 1 && pluginEntrySpec(goalServerEntries[0]) === goalPaths.engineEntry })
+  checks.push({ name: "goal.serverBuiltinDisabled", pass: serverGoalMarkerCount === 1 })
 
   // cli.json: exactly one Rigel-family companion entry pointing at the SAME
   // runtime as the server config, no historical notification suppression, and
@@ -653,12 +656,12 @@ function statusOf(state, paths) {
   const cliPlugins = Array.isArray(cli.plugins) ? cli.plugins : []
   const cliFamily = cliPlugins.filter((entry) => !isGoalEngineEntry(entry) && entry && typeof entry === "object" && typeof entry.package === "string" && under(canonicalize(entry.package), canonicalState))
   const notificationMarkerCount = cliPlugins.filter((entry) => entry === "-opencode.notifications").length
-  const goalMarkerCount = cliPlugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length
+  const cliGoalMarkerCount = cliPlugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length
   const goalCliEntries = cliPlugins.filter(isGoalEngineEntry)
   checks.push({ name: "cli.singleRigelEntry", pass: cliFamily.length === 1 })
   checks.push({ name: "cli.runtimeMatchesConfig", pass: cliFamily.length === 1 && cliFamily[0].package === state.pluginEntry })
   checks.push({ name: "cli.noBuiltinNotifierSuppression", pass: notificationMarkerCount === 0 })
-  checks.push({ name: "goal.builtinDisabled", pass: goalMarkerCount === 1 })
+  checks.push({ name: "goal.cliBuiltinDisabled", pass: cliGoalMarkerCount === 1 })
   checks.push({ name: "goal.singleCliEntry", pass: goalCliEntries.length === 1 && pluginEntrySpec(goalCliEntries[0]) === goalPaths.tuiEntry })
 
   const currentDigest = fs.existsSync(runtime) ? treeDigest(runtime) : null
@@ -763,11 +766,11 @@ function main() {
     if (expected !== undefined && expected !== actual) fail(`el runtime de la versión previa no coincide byte a byte (${target})`)
     lifecycle(transactionFiles, (txn) => {
       const config = fs.existsSync(paths.configFile) ? readJson(paths.configFile) : {}
-      config.plugin = registerRuntimePluginEntry(Array.isArray(config.plugin) ? config.plugin : [], { runtimeDir: targetRuntime, familyRoot: paths.stateRoot })
+      config.plugins = registerRuntimePluginEntry(serverPluginEntries(config), { runtimeDir: targetRuntime, familyRoot: paths.stateRoot })
+      delete config.plugin
       const goalPaths = goalEnginePaths(targetRuntime)
-      const goalOverrides = { ...goalEntryOptions((config.plugin ?? []).find(isGoalEngineEntry)), ...resolveGoalOptionOverrides(profileFile, process.env) }
-      config.plugin = registerGoalServerEntry(config.plugin, { engineEntry: goalPaths.engineEntry, options: resolveGoalOptions({ overrides: goalOverrides }) })
-      writeJson(paths.configFile, config)
+      const goalOverrides = { ...goalEntryOptions(config.plugins.find(isGoalEngineEntry)), ...resolveGoalOptionOverrides(profileFile, process.env) }
+      writeJson(paths.configFile, registerGoalServerEntry(config, { engineEntry: goalPaths.engineEntry, options: resolveGoalOptions({ overrides: goalOverrides }) }))
       txn.failAt("rollback:after-config")
       const cliBefore = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
       const notificationOptions = resolveRuntimeNotificationOptions(profileFile, process.env)

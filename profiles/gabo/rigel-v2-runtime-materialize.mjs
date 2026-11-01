@@ -25,6 +25,7 @@ import {
   registerGoalCliEntry,
   registerGoalServerEntry,
   resolveGoalOptions,
+  serverPluginEntries,
 } from "./rigel-v2-goal-registration.mjs"
 import {
   parseJsonc,
@@ -209,15 +210,16 @@ export function materializeNativeRuntime({
 
   const before = readJson(configFile)
   const candidate = structuredClone(before)
-  const plugins = Array.isArray(candidate.plugin) ? candidate.plugin : []
-  candidate.plugin = registerRuntimePluginEntry(plugins, { runtimeDir, familyRoot: familyRoot ?? runtimeDir })
+  const plugins = serverPluginEntries(candidate)
+  candidate.plugins = registerRuntimePluginEntry(plugins, { runtimeDir, familyRoot: familyRoot ?? runtimeDir })
+  delete candidate.plugin
 
   // The vendored goal engine is registered exactly once: a server tuple in
   // `opencode.json` carrying the resolved Rigel-managed options, and a TUI
   // object in `cli.json`. An existing entry's options and the profile's
   // `goal_engine` block are honored as overrides, so a reinstall/update never
   // overwrites a user choice; the Rigel defaults fill the rest.
-  const existingGoalOptions = goalEntryOptions(candidate.plugin.find(isGoalEngineEntry))
+  const existingGoalOptions = goalEntryOptions(candidate.plugins.find(isGoalEngineEntry))
   const goalOverrides = { ...existingGoalOptions, ...resolveGoalOptionOverrides(profileFile, env) }
   const goalOptions = resolveGoalOptions({ overrides: goalOverrides })
   // The host resolves a `plugin` entry to an ENTRYPOINT; the vendored artifact
@@ -230,8 +232,8 @@ export function materializeNativeRuntime({
   // `src/tui.ts` with no `.`, so the same Rigel-owned shim pattern is required
   // for the community goal sidebar to render.
   const goalTuiShimDir = materializeGoalTuiShim({ runtimeDir, tuiEntry: goalVendor.tuiEntry })
-  candidate.plugin = registerGoalServerEntry(candidate.plugin, { engineEntry: goalShimDir, options: goalOptions })
-  writeTextAtomic(configFile, `${JSON.stringify(candidate, null, 2)}\n`, { mode: 0o600 })
+  const serverConfig = registerGoalServerEntry(candidate, { engineEntry: goalShimDir, options: goalOptions })
+  writeTextAtomic(configFile, `${JSON.stringify(serverConfig, null, 2)}\n`, { mode: 0o600 })
 
   const notificationOptions = resolveRuntimeNotificationOptions(profileFile, env)
   const cliConfigFile = path.join(path.dirname(configFile), "cli.json")
