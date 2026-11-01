@@ -203,9 +203,9 @@ describe("rigel-v2-user-install runtime manifest with explicit --state", () => {
 
       test("#then the goal engine is the sole owner: exactly one entry in each config, carrying the Rigel defaults", () => {
         const config = JSON.parse(fs.readFileSync(configFile, "utf8"))
-        const goalServer = config.plugins.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+        const goalServer = config.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-engine"))
         expect(goalServer).toHaveLength(1)
-        expect(goalServer[0][1]).toEqual({
+        expect(goalServer[0].options).toEqual({
           auto_continue: true,
           defer_while_tasks_active: true,
           max_auto_turns: 1000,
@@ -302,7 +302,7 @@ describe("rigel-v2-user-install goal lifecycle: absorb, idempotent reinstall, un
   const stateRoot = path.join(base, "state")
   let env
   const readConfig = () => JSON.parse(fs.readFileSync(configFile, "utf8"))
-  const goalEntries = (config) => config.plugins.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+  const goalEntries = (config) => config.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-engine"))
 
   beforeAll(() => {
     fs.mkdirSync(home, { recursive: true, mode: 0o700 })
@@ -333,7 +333,7 @@ describe("rigel-v2-user-install goal lifecycle: absorb, idempotent reinstall, un
       const config = readConfig()
       expect(goalEntries(config)).toHaveLength(1)
       // The retired external specifier is gone; the foreign plugin is preserved.
-      expect(config.plugins.some((entry) => Array.isArray(entry) && String(entry[0]).includes("@prevalentware/opencode-goal-plugin@"))).toBe(false)
+      expect(config.plugins.some((entry) => entry && typeof entry === "object" && String(entry.package).includes("@prevalentware/opencode-goal-plugin@"))).toBe(false)
       expect(config.plugins).toContain("rigel-foreign-plugin")
       expect(config.plugins.filter((entry) => entry === "-opencode.goal")).toHaveLength(1)
     }, 300_000)
@@ -364,7 +364,7 @@ describe("rigel-v2-user-install goal upgrade + rollback", () => {
   const stateRoot = path.join(base, "state")
   let env
   const readConfig = () => JSON.parse(fs.readFileSync(configFile, "utf8"))
-  const goalEntries = (config) => config.plugins.filter((entry) => Array.isArray(entry) && String(entry[0]).includes("rigel-goal-engine"))
+  const goalEntries = (config) => config.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-engine"))
 
   beforeAll(() => {
     fs.mkdirSync(home, { recursive: true, mode: 0o700 })
@@ -394,7 +394,7 @@ describe("rigel-v2-user-install goal upgrade + rollback", () => {
       expect(upgrade.status, `upgrade failed: ${upgrade.stderr || upgrade.stdout}`).toBe(0)
       const entries = goalEntries(readConfig())
       expect(entries).toHaveLength(1)
-      expect(entries[0][0]).toContain("/versions/2/")
+      expect(entries[0].package).toContain("/versions/2/")
     }, 300_000)
 
     test("#when rolled back #then exactly one goal entry survives, repointed at the previous version and status is green", () => {
@@ -402,7 +402,7 @@ describe("rigel-v2-user-install goal upgrade + rollback", () => {
       expect(rollback.status, `rollback failed: ${rollback.stderr || rollback.stdout}`).toBe(0)
       const entries = goalEntries(readConfig())
       expect(entries).toHaveLength(1)
-      expect(entries[0][0]).toContain("/versions/1/")
+      expect(entries[0].package).toContain("/versions/1/")
       const emitted = JSON.parse(rollback.stdout)
       expect(emitted.status.pass).toBe(true)
     }, 300_000)

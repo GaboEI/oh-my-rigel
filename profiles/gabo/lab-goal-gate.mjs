@@ -20,6 +20,8 @@ import {
   DISABLED_BUILTIN_GOAL,
   GOAL_ENGINE_SHIM_DIRNAME,
   GOAL_TUI_SHIM_DIRNAME,
+  hasValidNativePluginEntries,
+  hasValidServerPluginShapes,
   isRetiredExternalGoalPackage,
   pluginEntrySpec,
   serverPluginEntries,
@@ -53,6 +55,8 @@ export function readGoalConfig(filePath) {
     referenced: specs.some(isRetiredExternalGoalPackage),
     managed: specs.some((spec) => spec.includes("rigel-goal-")),
     plugins,
+    serverPluginShapesValid: hasValidServerPluginShapes(parsed),
+    nativePluginShapesValid: parsed.plugins === undefined || hasValidNativePluginEntries(parsed.plugins),
   }
 }
 
@@ -129,13 +133,13 @@ export function detectGoalMode(home, options = {}) {
   if (referenced.length > 0 || presentDirs.length > 0) {
     return { mode: "legacy", referenced, managed, presentDirs, unreadable }
   }
-  if (unreadable.length === 0 && managed.serverEntries === 1 && managed.cliEntries === 1 && managed.serverGoalMarkerCount === 1 && managed.cliGoalMarkerCount === 1 && managed.goalStatePathMatchesRoot) {
+  if (unreadable.length === 0 && opencode.serverPluginShapesValid && cli.nativePluginShapesValid && managed.serverEntries === 1 && managed.cliEntries === 1 && managed.serverGoalMarkerCount === 1 && managed.cliGoalMarkerCount === 1 && managed.goalStatePathMatchesRoot) {
     return { mode: "managed", referenced, managed, presentDirs, unreadable }
   }
   if (unreadable.length > 0) {
     return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal cannot be asserted: a config file is missing, unreadable, or invalid" }
   }
-  return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal requires one server shim, one CLI shim, one server marker, one CLI marker, and the canonical Goal state path" }
+  return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal requires host-valid plugin shapes, one server shim, one CLI shim, one server marker, one CLI marker, and the canonical Goal state path" }
 }
 
 export function probeGoalState(home, goalsFile) {

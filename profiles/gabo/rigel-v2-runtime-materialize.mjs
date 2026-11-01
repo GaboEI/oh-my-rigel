@@ -214,8 +214,8 @@ export function materializeNativeRuntime({
   candidate.plugins = registerRuntimePluginEntry(plugins, { runtimeDir, familyRoot: familyRoot ?? runtimeDir })
   delete candidate.plugin
 
-  // The vendored goal engine is registered exactly once: a server tuple in
-  // `opencode.json` carrying the resolved Rigel-managed options, and a TUI
+  // The vendored goal engine is registered exactly once: a native server object
+  // in `opencode.json` carrying the resolved Rigel-managed options, and a TUI
   // object in `cli.json`. An existing entry's options and the profile's
   // `goal_engine` block are honored as overrides, so a reinstall/update never
   // overwrites a user choice; the Rigel defaults fill the rest.

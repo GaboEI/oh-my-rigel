@@ -151,8 +151,8 @@ export function resolveGoalOptions({ defaults = RIGEL_GOAL_DEFAULTS, overrides }
 
 /** Read the low-priority overrides an existing goal entry already carries. */
 export function goalEntryOptions(entry) {
-  if (Array.isArray(entry) && entry.length === 2 && entry[1] && typeof entry[1] === "object" && !Array.isArray(entry[1])) return entry[1]
-  if (entry && typeof entry === "object" && !Array.isArray(entry) && entry.options && typeof entry.options === "object") return entry.options
+  if (isLegacyPluginTuple(entry)) return entry[1]
+  if (isNativePluginObject(entry) && entry.options !== undefined) return entry.options
   return {}
 }
 
@@ -214,11 +214,51 @@ export function materializeGoalTuiShim({ runtimeDir, tuiEntry }) {
   return shimDir
 }
 
-/** The specifier a plugin entry (string | [spec, options] | {package}) resolves to. */
+function isOptionsObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+/** OpenCode 2 native `plugins` object form: `{ package, options? }`. */
+export function isNativePluginObject(entry) {
+  return isOptionsObject(entry)
+    && typeof entry.package === "string"
+    && (entry.options === undefined || isOptionsObject(entry.options))
+}
+
+/** OpenCode 1 singular `plugin` options form: `[specifier, options]`. */
+export function isLegacyPluginTuple(entry) {
+  return Array.isArray(entry)
+    && entry.length === 2
+    && typeof entry[0] === "string"
+    && isOptionsObject(entry[1])
+}
+
+/** The exact accepted entry kinds for native OpenCode 2 `plugins`. */
+export function hasValidNativePluginEntries(entries) {
+  return Array.isArray(entries) && entries.every((entry) => typeof entry === "string" || isNativePluginObject(entry))
+}
+
+/** The exact accepted entry kinds for legacy singular OpenCode 1 `plugin`. */
+export function hasValidLegacyPluginEntries(entries) {
+  return Array.isArray(entries) && entries.every((entry) => typeof entry === "string" || isLegacyPluginTuple(entry))
+}
+
+/**
+ * Mirror OpenCode 2.0.32's per-key plugin normalizer contract. The native
+ * plural key accepts strings and `{ package, options? }` objects; the legacy
+ * singular key accepts strings and `[specifier, options]` tuples.
+ */
+export function hasValidServerPluginShapes(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return false
+  return (config.plugins === undefined || hasValidNativePluginEntries(config.plugins))
+    && (config.plugin === undefined || hasValidLegacyPluginEntries(config.plugin))
+}
+
+/** The specifier a plugin entry (string | legacy tuple | native object) resolves to. */
 export function pluginEntrySpec(entry) {
   if (typeof entry === "string") return entry
-  if (Array.isArray(entry)) return typeof entry[0] === "string" ? entry[0] : undefined
-  if (entry && typeof entry === "object" && typeof entry.package === "string") return entry.package
+  if (isLegacyPluginTuple(entry)) return entry[0]
+  if (isNativePluginObject(entry)) return entry.package
   return undefined
 }
 
@@ -243,17 +283,22 @@ export function isGoalEngineEntry(entry) {
   return isGoalVendorPath(spec) || isGoalEngineShimPath(spec) || isRetiredExternalGoalPackage(spec)
 }
 
+function toNativePluginEntry(entry) {
+  return isLegacyPluginTuple(entry) ? { package: entry[0], options: entry[1] } : entry
+}
+
 /**
  * Normalize server plugins from the native V2 `plugins` field and its V1
  * `plugin` predecessor. A document containing both is migrated to the native
  * field without dropping a foreign entry from either list; native entries stay
- * first and each source list preserves its original order.
+ * first and each source list preserves its original order. Legacy tuples are
+ * converted to native objects before they are written under `plugins`.
  */
 export function serverPluginEntries(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) return []
   const native = Array.isArray(config.plugins) ? config.plugins : []
   const legacy = Array.isArray(config.plugin) ? config.plugin : []
-  return [...native, ...legacy]
+  return [...native, ...legacy.map(toNativePluginEntry)]
 }
 
 function withServerPluginEntries(config, plugins) {
@@ -265,8 +310,8 @@ function withServerPluginEntries(config, plugins) {
 
 /**
  * Register the goal engine's SERVER entry in `opencode.json` `plugins` exactly
- * once, as a `[specifier, options]` tuple (the V2 config schema's options form
- * for that key), and retain exactly one server-plane builtin-disable marker.
+ * once, as an OpenCode 2 native `{ package, options }` object, and retain
+ * exactly one server-plane builtin-disable marker.
  * A prior version's goal entry is replaced in place, so a version transition
  * never appends a second engine. Array input remains supported for the narrow
  * list-level callers; document input is normalized to native V2 `plugins`.
@@ -286,7 +331,7 @@ export function registerGoalServerEntry(configOrPlugins, { engineEntry, options 
     }
     if (isGoalEngineEntry(entry)) {
       if (!placed) {
-        next.push([engineEntry, options])
+        next.push({ package: engineEntry, options })
         placed = true
       }
       continue
@@ -294,7 +339,7 @@ export function registerGoalServerEntry(configOrPlugins, { engineEntry, options 
     next.push(entry)
   }
   if (!markerPlaced) next.push(DISABLED_BUILTIN_GOAL)
-  if (!placed) next.push([engineEntry, options])
+  if (!placed) next.push({ package: engineEntry, options })
   return Array.isArray(configOrPlugins) ? next : withServerPluginEntries(configOrPlugins, next)
 }
 

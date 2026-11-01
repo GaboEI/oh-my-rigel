@@ -38,6 +38,8 @@ import {
   adoptGoalState,
   assertGoalStatePathSafe,
   goalEntryOptions,
+  hasValidNativePluginEntries,
+  hasValidServerPluginShapes,
   isGoalEngineEntry,
   pluginEntrySpec,
   registerGoalCliEntry,
@@ -637,6 +639,7 @@ function statusOf(state, paths) {
   // opencode.json: exactly one Rigel-family entry, and it is the active runtime.
   const config = fs.existsSync(paths.configFile) ? readJson(paths.configFile) : {}
   const configPlugins = serverPluginEntries(config)
+  checks.push({ name: "config.hostValidPluginShapes", pass: hasValidServerPluginShapes(config) })
   const configFamily = configPlugins.filter((entry) => typeof entry === "string" && under(canonicalize(entry), canonicalState))
   checks.push({ name: "config.registersRuntime", pass: configPlugins.includes(state.pluginEntry) })
   checks.push({ name: "config.singleRigelEntry", pass: configFamily.length === 1 && configFamily[0] === state.pluginEntry })
@@ -654,6 +657,7 @@ function statusOf(state, paths) {
   const cliConfigFile = path.join(path.dirname(paths.configFile), "cli.json")
   const cli = fs.existsSync(cliConfigFile) ? readJson(cliConfigFile) : { plugins: [] }
   const cliPlugins = Array.isArray(cli.plugins) ? cli.plugins : []
+  checks.push({ name: "cli.hostValidPluginShapes", pass: hasValidNativePluginEntries(cli.plugins) })
   const cliFamily = cliPlugins.filter((entry) => !isGoalEngineEntry(entry) && entry && typeof entry === "object" && typeof entry.package === "string" && under(canonicalize(entry.package), canonicalState))
   const notificationMarkerCount = cliPlugins.filter((entry) => entry === "-opencode.notifications").length
   const cliGoalMarkerCount = cliPlugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length

@@ -10,7 +10,7 @@ const createdHomes = []
 const gatePath = fileURLToPath(new URL("./lab-goal-gate.mjs", import.meta.url))
 
 const managedConfigs = {
-  "opencode.json": `{"plugins":["-opencode.goal",["/state/versions/1/runtime/rigel-goal-engine",{"auto_continue":true}]]}`,
+  "opencode.json": `{"plugins":["-opencode.goal",{"package":"/state/versions/1/runtime/rigel-goal-engine","options":{"auto_continue":true}}]}`,
   "tui.json": "{}",
   "cli.json": `{"plugins":["-opencode.goal",{"package":"/state/versions/1/runtime/rigel-goal-tui"}]}`,
 }
@@ -200,7 +200,17 @@ describe("Rigel lab goal gate: mode detection", () => {
     const home = makeHome({
       configs: {
         ...managedConfigs,
-        "opencode.json": `{"plugins":["-opencode.goal","-opencode.goal",["/state/versions/1/runtime/rigel-goal-engine",{}]]}`,
+        "opencode.json": `{"plugins":["-opencode.goal","-opencode.goal",{"package":"/state/versions/1/runtime/rigel-goal-engine","options":{}}]}`,
+      },
+    })
+    expect(detectGoalMode(home).mode).toBe("unknown")
+  })
+
+  test("#given a legacy tuple under native plugins #when detecting #then mode is unknown before OpenCode emits a malformed-entry diagnostic", () => {
+    const home = makeHome({
+      configs: {
+        ...managedConfigs,
+        "opencode.json": `{"plugins":["-opencode.goal",["/state/versions/1/runtime/rigel-goal-engine",{}]]}`,
       },
     })
     expect(detectGoalMode(home).mode).toBe("unknown")
@@ -269,7 +279,7 @@ describe("Rigel lab goal gate: probing an existing goals.json", () => {
 describe("Rigel lab goal gate: reference detection", () => {
   test("#given a config with the retired plugin package #when scanning #then it is readable and referenced", () => {
     const home = makeHome({ configs: { "opencode.json": `{"plugin":["@prevalentware/opencode-goal-plugin@latest"]}` } })
-    expect(readGoalConfig(path.join(home, ".config/opencode/opencode.json"))).toEqual({ readable: true, referenced: true, managed: false, plugins: ["@prevalentware/opencode-goal-plugin@latest"] })
+    expect(readGoalConfig(path.join(home, ".config/opencode/opencode.json"))).toEqual({ readable: true, referenced: true, managed: false, plugins: ["@prevalentware/opencode-goal-plugin@latest"], serverPluginShapesValid: true, nativePluginShapesValid: true })
   })
 
   test("#given a missing config #when scanning #then it is not readable", () => {

@@ -20,6 +20,9 @@ import {
   assertGoalStatePathSafe,
   countGoalEntries,
   goalEntryOptions,
+  hasValidLegacyPluginEntries,
+  hasValidNativePluginEntries,
+  hasValidServerPluginShapes,
   isGoalEngineEntry,
   isV1GoalStatePath,
   materializeGoalEngineShim,
@@ -125,7 +128,7 @@ describe("#given explicit user overrides", () => {
   })
 
   test("#when an existing entry and a profile override are merged #then the user choice is preserved (conservative update)", () => {
-    const existing = goalEntryOptions([ENGINE, { max_auto_turns: 7, auto_continue: false }])
+    const existing = goalEntryOptions({ package: ENGINE, options: { max_auto_turns: 7, auto_continue: false } })
     const options = resolveGoalOptions({ overrides: { ...existing, min_continue_interval_seconds: 9 } })
     expect(options.max_auto_turns).toBe(7)
     expect(options.auto_continue).toBe(false)
@@ -136,30 +139,49 @@ describe("#given explicit user overrides", () => {
   test("#when a string entry is inspected #then it carries no options", () => {
     expect(goalEntryOptions(ENGINE)).toEqual({})
   })
+
+  test("#when a legacy tuple is inspected #then its options remain readable during migration", () => {
+    expect(goalEntryOptions([ENGINE, { max_auto_turns: 7 }])).toEqual({ max_auto_turns: 7 })
+  })
 })
 
 describe("#given the two-slot family registration", () => {
-  test("#when the server entry is registered #then it is a single tuple with one builtin-disable marker and re-registering is idempotent", () => {
+  test("#when the server entry is registered #then it is a single native object with one builtin-disable marker and re-registering is idempotent", () => {
     const once = registerGoalServerEntry(["/runtime"], { engineEntry: ENGINE, options: resolveGoalOptions({}) })
     expect(once).toHaveLength(3)
     expect(once[0]).toBe("/runtime")
+    expect(once.find(isGoalEngineEntry)).toEqual({ package: ENGINE, options: resolveGoalOptions({}) })
     const twice = registerGoalServerEntry(once, { engineEntry: ENGINE, options: resolveGoalOptions({}) })
     expect(twice.filter(isGoalEngineEntry)).toHaveLength(1)
     expect(twice.filter((entry) => entry === DISABLED_BUILTIN_GOAL)).toHaveLength(1)
     expect(twice[0]).toBe("/runtime")
   })
 
+  test("#when OpenCode 2.0.32 normalizes per-key plugin entries #then native plugins reject tuples while legacy plugin accepts them", () => {
+    const native = { package: ENGINE, options: { auto_continue: true } }
+    const legacy = [ENGINE, { auto_continue: true }]
+    expect(hasValidNativePluginEntries(["foreign-plugin", native])).toBe(true)
+    expect(hasValidNativePluginEntries(["foreign-plugin", legacy])).toBe(false)
+    expect(hasValidLegacyPluginEntries(["foreign-plugin", legacy])).toBe(true)
+    expect(hasValidLegacyPluginEntries(["foreign-plugin", native])).toBe(false)
+    expect(hasValidServerPluginShapes({ plugins: ["foreign-plugin", native], plugin: ["legacy-plugin", legacy] })).toBe(true)
+    expect(hasValidServerPluginShapes({ plugins: ["foreign-plugin", legacy] })).toBe(false)
+  })
+
   test("#when native and legacy server fields coexist #then foreign entries retain source order and the result normalizes to native plugins", () => {
     const registered = registerGoalServerEntry({
       plugins: ["native-first.mjs", DISABLED_BUILTIN_GOAL, DISABLED_BUILTIN_GOAL],
-      plugin: ["legacy-first.mjs", [ARTIFACT, {}]],
+      plugin: ["legacy-first.mjs", ["legacy-options.mjs", { enabled: true }], [ARTIFACT, {}]],
     }, { engineEntry: ENGINE, options: resolveGoalOptions({}) })
 
     expect(registered.plugin).toBeUndefined()
     expect(registered.plugins.slice(0, 2)).toEqual(["native-first.mjs", DISABLED_BUILTIN_GOAL])
     expect(registered.plugins).toContain("legacy-first.mjs")
+    expect(registered.plugins).toContainEqual({ package: "legacy-options.mjs", options: { enabled: true } })
     expect(registered.plugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL)).toHaveLength(1)
     expect(registered.plugins.filter(isGoalEngineEntry)).toHaveLength(1)
+    expect(registered.plugins.find(isGoalEngineEntry)).toEqual({ package: ENGINE, options: resolveGoalOptions({}) })
+    expect(hasValidServerPluginShapes(registered)).toBe(true)
   })
 
   test("#when a version transition replaces the entry #then no second engine remains", () => {
@@ -167,7 +189,7 @@ describe("#given the two-slot family registration", () => {
     const first = registerGoalServerEntry(["/v1/runtime"], { engineEntry: ENGINE, options: resolveGoalOptions({}) })
     const second = registerGoalServerEntry(first, { engineEntry: engine2, options: resolveGoalOptions({}) })
     expect(second.filter(isGoalEngineEntry)).toHaveLength(1)
-    expect(second.find(isGoalEngineEntry)[0]).toBe(engine2)
+    expect(second.find(isGoalEngineEntry).package).toBe(engine2)
   })
 
   test("#when the CLI entry is registered #then it is a single shim with one builtin-disable marker", () => {
@@ -180,7 +202,7 @@ describe("#given the two-slot family registration", () => {
   })
 
   test("#when the goal entries are removed #then both config planes lose duplicate markers and goal entries while foreign entries stay", () => {
-    const config = { plugins: ["native-server.mjs", DISABLED_BUILTIN_GOAL, DISABLED_BUILTIN_GOAL, [ENGINE, {}]], plugin: ["legacy-server.mjs", { package: ARTIFACT }] }
+    const config = { plugins: ["native-server.mjs", DISABLED_BUILTIN_GOAL, DISABLED_BUILTIN_GOAL, { package: ENGINE, options: {} }], plugin: ["legacy-server.mjs", [ARTIFACT, {}]] }
     const cli = { plugins: [{ package: "/runtime", options: {} }, DISABLED_BUILTIN_GOAL, { package: ARTIFACT }] }
     const stripped = removeGoalEntries(config, cli)
     expect(countGoalEntries(config, cli)).toEqual({ config: 2, cli: 1 })

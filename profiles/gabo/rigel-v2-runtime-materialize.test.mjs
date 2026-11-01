@@ -138,7 +138,7 @@ describe("stageGoalVendor", () => {
     const result = materializeNativeRuntime({ sourceRoot: repoRoot, runtimeDir, agentManifestPath, configFile })
 
     // then the engine is registered exactly once: one runtime string entry and
-    // one goal tuple carrying the Rigel-managed default options.
+    // one native goal object carrying the Rigel-managed default options.
     for (const prompt of [
       "ultrawork-default.md",
       "ultrawork-gpt.md",
@@ -158,12 +158,12 @@ describe("stageGoalVendor", () => {
     expect(config.plugin).toBeUndefined()
     expect(config.plugins.filter((entry) => entry === runtimeDir)).toHaveLength(1)
     expect(config.plugins.filter((entry) => entry === "-opencode.goal")).toHaveLength(1)
-    const goalEntries = config.plugins.filter((entry) => Array.isArray(entry))
+    const goalEntries = config.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-engine"))
     expect(goalEntries).toHaveLength(1)
     // The host loads a directory entrypoint, so the entry points at the Rigel-owned
     // shim whose `.` export re-exports the vendored server.
     const shimDir = path.join(runtimeDir, "rigel-goal-engine")
-    expect(goalEntries[0][0]).toBe(shimDir)
+    expect(goalEntries[0].package).toBe(shimDir)
     expect(fs.existsSync(path.join(shimDir, "server.js"))).toBe(true)
     expect(fs.readFileSync(path.join(shimDir, "server.js"), "utf8")).toContain(result.goalVendor.engineEntry)
     expect(result.goalOptions).toEqual({
@@ -177,7 +177,7 @@ describe("stageGoalVendor", () => {
       restricted_agents: [],
       allow_goal_execution_from_plan: false,
     })
-    expect(goalEntries[0][1]).toEqual(result.goalOptions)
+    expect(goalEntries[0].options).toEqual(result.goalOptions)
     expect("default_token_budget" in result.goalOptions).toBe(false)
     expect("max_goal_duration_seconds" in result.goalOptions).toBe(false)
 
@@ -205,7 +205,7 @@ describe("stageGoalVendor", () => {
     expect(config.plugin).toBeUndefined()
     expect(config.plugins.filter((entry) => entry === runtimeDir)).toHaveLength(1)
     expect(config.plugins.filter((entry) => entry === "-opencode.goal")).toHaveLength(1)
-    expect(config.plugins.filter((entry) => Array.isArray(entry))).toHaveLength(1)
+    expect(config.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-engine"))).toHaveLength(1)
     const cli = JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8"))
     const goalCli = cli.plugins.filter((entry) => entry && typeof entry === "object" && String(entry.package).includes("rigel-goal-tui"))
     expect(goalCli).toHaveLength(1)
