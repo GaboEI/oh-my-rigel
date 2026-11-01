@@ -51,6 +51,7 @@
     "omoAdapt": ["playwright", "review-work", "init-deep", "ulw-plan", "ulw-research", "ulw-execute"],
     "omoProgressive": ["ast-grep", "coding-agent-sessions", "data-scientist", "lsp-setup", "programming", "refactor"],
     "omoDisabled": ["dev-browser", "ultimate-browsing"],
+    "projectAligned": ["hyperplan", "security-research"],
     "projectLocalExcluded": ["watchdogvpn-session-start", "watchdogvpn-standing-rules", "watchdogvpn-task-closure"]
   },
   "rootAuthorities": {
