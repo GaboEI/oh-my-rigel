@@ -56,10 +56,23 @@ function entryExists(candidate) {
 function pointsAt(target, source) {
   try { return fs.realpathSync(target) === fs.realpathSync(source) } catch { return false }
 }
+/**
+ * List valid skill directories, including symlinked directories used by legacy
+ * and shared-source bridges. `Dirent.isDirectory()` reports false for links,
+ * silently dropping otherwise valid skills before they can reach V2 discovery,
+ * so each candidate is resolved with `statSync()` before the `SKILL.md` gate.
+ */
 function listSkills(directory) {
   if (!fs.existsSync(directory)) return []
   return fs.readdirSync(directory, { withFileTypes: true })
-    .filter(entry => entry.isDirectory() && isSkill(path.join(directory, entry.name)))
+    .filter((entry) => {
+      const candidate = path.join(directory, entry.name)
+      try {
+        return fs.statSync(candidate).isDirectory() && isSkill(candidate)
+      } catch {
+        return false
+      }
+    })
     .map(entry => entry.name)
     .sort()
 }
