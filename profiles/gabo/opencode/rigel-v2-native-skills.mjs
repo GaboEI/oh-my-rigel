@@ -437,15 +437,24 @@ function sortSkillsForListing(skills) {
   )
 }
 
+/**
+ * `skills.paths` is the OpenCode configuration key for configured skill
+ * directories. `skills.sources` remains as a legacy fallback for older Rigel
+ * configurations while users migrate to the host schema.
+ */
 function configuredSkillDirs(config, directory) {
-  const sources = config?.skills?.sources
-  if (!Array.isArray(sources)) return []
+  const paths = config?.skills?.paths
+  const legacySources = config?.skills?.sources
+  if (!Array.isArray(paths) && !Array.isArray(legacySources)) return []
   const dirs = []
-  for (const source of sources) {
+  const seen = new Set()
+  for (const source of [...(Array.isArray(paths) ? paths : []), ...(Array.isArray(legacySources) ? legacySources : [])]) {
     const rawPath = typeof source === "string" ? source : source?.path
     if (typeof rawPath !== "string" || !rawPath.trim()) continue
-    const resolved = path.isAbsolute(rawPath) ? rawPath : path.resolve(directory, rawPath)
-    if (directoryExists(resolved)) dirs.push(resolved)
+    const resolved = path.resolve(directory, rawPath)
+    if (seen.has(resolved) || !directoryExists(resolved)) continue
+    seen.add(resolved)
+    dirs.push(resolved)
   }
   return dirs
 }

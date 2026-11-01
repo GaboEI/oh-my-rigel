@@ -124,17 +124,46 @@ describe("#given skills in multiple scope directories", () => {
     expect(namesOutsideProject).toContain("user-wide")
   })
 
-  test("#when configured skill sources declare a directory #then its skills join discovery below project scope", () => {
+  test("#given a configured skills.paths directory outside the standard roots #when discovery runs #then that directory's skills are discovered", () => {
     const root = makeRoot()
     const configured = path.join(root, "configured-skills")
-    writeSkill(configured, "from-config", "configured", { frontmatter: "name: configured", body: "CONFIGURED_BODY" })
+    const home = makeRoot()
+    writeSkill(configured, "from-paths", "configured-paths", { frontmatter: "name: configured-paths", body: "PATHS_BODY" })
     const skills = discoverSkills({
       directory: root,
-      home: makeRoot(),
-      env: { HOME: makeRoot(), XDG_CONFIG_HOME: path.join(root, "empty") },
-      config: { skills: { sources: [{ path: "configured-skills" }] } },
+      home,
+      env: { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") },
+      config: { skills: { paths: ["configured-skills"] } },
     })
-    expect(matchSkillByName(skills, "configured")).toMatchObject({ scope: "config", rawBody: "CONFIGURED_BODY" })
+    expect(matchSkillByName(skills, "configured-paths")).toMatchObject({ scope: "config", rawBody: "PATHS_BODY" })
+  })
+
+  test("#given the legacy skills.sources key #when discovery runs #then it is still honored", () => {
+    const root = makeRoot()
+    const configured = path.join(root, "legacy-skills")
+    const home = makeRoot()
+    writeSkill(configured, "from-sources", "configured-sources", { frontmatter: "name: configured-sources", body: "SOURCES_BODY" })
+    const skills = discoverSkills({
+      directory: root,
+      home,
+      env: { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") },
+      config: { skills: { sources: [{ path: "legacy-skills" }] } },
+    })
+    expect(matchSkillByName(skills, "configured-sources")).toMatchObject({ scope: "config", rawBody: "SOURCES_BODY" })
+  })
+
+  test("#given both keys pointing at the same directory #when discovery runs #then the skill is discovered exactly once", () => {
+    const root = makeRoot()
+    const configured = path.join(root, "shared-skills")
+    const home = makeRoot()
+    writeSkill(configured, "shared", "shared-configured", { frontmatter: "name: shared-configured", body: "SHARED_BODY" })
+    const skills = discoverSkills({
+      directory: root,
+      home,
+      env: { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") },
+      config: { skills: { paths: ["shared-skills"], sources: [{ path: "shared-skills" }] } },
+    })
+    expect(skills.filter((skill) => skill.name === "shared-configured")).toHaveLength(1)
   })
 })
 
