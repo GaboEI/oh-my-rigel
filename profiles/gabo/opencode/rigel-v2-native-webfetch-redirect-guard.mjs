@@ -79,10 +79,14 @@ function makeAbortController(timeoutSeconds, externalSignal) {
   const controller = new AbortController()
   let timedOut = false
   let removeAbortListener = () => {}
-  const timeout = setTimeout(() => {
+  let timeout
+  let remainingMs = timeoutSeconds * 1000
+  let resumedAt
+
+  const expire = () => {
     timedOut = true
     controller.abort(new Error("Request timed out"))
-  }, timeoutSeconds * 1000)
+  }
 
   if (externalSignal) {
     if (externalSignal.aborted) {
@@ -97,8 +101,25 @@ function makeAbortController(timeoutSeconds, externalSignal) {
   return {
     signal: controller.signal,
     timedOut: () => timedOut,
-    dispose() {
+    pause() {
+      if (timeout === undefined) return
       clearTimeout(timeout)
+      timeout = undefined
+      remainingMs -= Date.now() - resumedAt
+      resumedAt = undefined
+      if (remainingMs <= 0) expire()
+    },
+    resume() {
+      if (controller.signal.aborted || timeout !== undefined) return
+      if (remainingMs <= 0) {
+        expire()
+        return
+      }
+      resumedAt = Date.now()
+      timeout = setTimeout(expire, remainingMs)
+    },
+    dispose() {
+      if (timeout !== undefined) clearTimeout(timeout)
       removeAbortListener()
     },
   }
@@ -213,6 +234,33 @@ async function assertPermission(permission, input, url, toolContext) {
   })
 }
 
+async function assertPermissionOutsideTimeout(timeout, permission, input, url, toolContext) {
+  timeout.pause()
+  const permissionPromise = assertPermission(permission, input, url, toolContext)
+  let removeAbortListener = () => {}
+  try {
+    const aborted = new Promise((_, reject) => {
+      const rejectOnAbort = () => reject(timeout.signal.reason ?? new Error("Request aborted"))
+      if (timeout.signal.aborted) {
+        rejectOnAbort()
+        return
+      }
+      timeout.signal.addEventListener("abort", rejectOnAbort, { once: true })
+      removeAbortListener = () => timeout.signal.removeEventListener("abort", rejectOnAbort)
+    })
+    await Promise.race([permissionPromise, aborted])
+  } finally {
+    removeAbortListener()
+  }
+  if (timeout.signal.aborted) {
+    throw timeout.signal.reason ?? new Error("Request aborted")
+  }
+  timeout.resume()
+  if (timeout.signal.aborted) {
+    throw timeout.signal.reason ?? new Error("Request aborted")
+  }
+}
+
 /** Execute native webfetch with permission checked before every HTTP hop. */
 export function createPermissionedWebFetchExecutor({ permission, fetch: fetchImpl = globalThis.fetch } = {}) {
   return async (input, toolContext = {}) => {
@@ -228,7 +276,7 @@ export function createPermissionedWebFetchExecutor({ permission, fetch: fetchImp
     try {
       await reportProgress(toolContext, { phase: "fetching", url: originalUrl, format, timeoutSeconds })
       while (true) {
-        await assertPermission(permission, input, currentUrl, toolContext)
+        await assertPermissionOutsideTimeout(timeout, permission, input, currentUrl, toolContext)
         let response = await fetchImpl(currentUrl, {
           method: "GET",
           headers: buildWebFetchHeaders(format),
@@ -239,7 +287,7 @@ export function createPermissionedWebFetchExecutor({ permission, fetch: fetchImp
           response.headers?.get?.("cf-mitigated") === "challenge"
         if (isCloudflareChallenge) {
           await cancelBody(response)
-          await assertPermission(permission, input, currentUrl, toolContext)
+          await assertPermissionOutsideTimeout(timeout, permission, input, currentUrl, toolContext)
           response = await fetchImpl(currentUrl, {
             method: "GET",
             headers: buildWebFetchHeaders(format, "opencode"),

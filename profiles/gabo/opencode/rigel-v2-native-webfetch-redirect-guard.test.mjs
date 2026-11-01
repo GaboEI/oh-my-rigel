@@ -186,6 +186,101 @@ describe("Rigel native V2 webfetch redirect guard", () => {
     expect(permissionCalls).toHaveLength(1)
   })
 
+  test("does not charge initial permission approval against the request timeout", async () => {
+    const { permission } = permissionHarness()
+    permission.assert = async () => await new Promise((resolve) => setTimeout(resolve, 1_100))
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url, init) => {
+        requests.push({ url, aborted: init.signal.aborted })
+        return response("approved")
+      },
+    })
+
+    const result = await execute({ url: initialUrl, timeout: 1, format: "text" }, toolContext)
+
+    expect(requests).toEqual([{ url: initialUrl, aborted: false }])
+    expect(result.output.output).toBe("approved")
+  })
+
+  test("does not charge redirect permission approval against the shared request timeout", async () => {
+    const { permission } = permissionHarness()
+    const requests = []
+    permission.assert = async ({ resources }) => {
+      if (resources[0] !== initialUrl) await new Promise((resolve) => setTimeout(resolve, 1_100))
+    }
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url, init) => {
+        requests.push({ url, aborted: init.signal.aborted })
+        if (url === initialUrl) return response("redirect", { status: 302, headers: { Location: "/final" } })
+        return response("approved redirect")
+      },
+    })
+
+    const result = await execute({ url: initialUrl, timeout: 1, format: "text" }, toolContext)
+
+    expect(requests).toEqual([
+      { url: initialUrl, aborted: false },
+      { url: "https://allowed.example/final", aborted: false },
+    ])
+    expect(result.output.output).toBe("approved redirect")
+  })
+
+  test("does not issue a request if the caller aborts while permission is pending", async () => {
+    const external = new AbortController()
+    const { permission } = permissionHarness()
+    let approve
+    permission.assert = async () => await new Promise((resolve) => { approve = resolve })
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url) => {
+        requests.push(url)
+        return response("must not be fetched")
+      },
+    })
+
+    const pending = execute({ url: initialUrl, timeout: 1, format: "text" }, { ...toolContext, signal: external.signal })
+    await new Promise((resolve) => setImmediate(resolve))
+    external.abort(new Error("caller aborted while approval was pending"))
+    approve()
+
+    await expect(pending).rejects.toThrow("Request aborted")
+    expect(requests).toEqual([])
+  })
+
+  test("releases a pending permission wait when the caller aborts", async () => {
+    const external = new AbortController()
+    const { permission } = permissionHarness()
+    let permissionStarted
+    const started = new Promise((resolve) => { permissionStarted = resolve })
+    permission.assert = async () => {
+      permissionStarted()
+      await new Promise(() => {})
+    }
+    const requests = []
+    const execute = createPermissionedWebFetchExecutor({
+      permission,
+      fetch: async (url) => {
+        requests.push(url)
+        return response("must not be fetched")
+      },
+    })
+
+    const pending = execute({ url: initialUrl, timeout: 1, format: "text" }, { ...toolContext, signal: external.signal })
+    await started
+    external.abort(new Error("caller aborted while approval was pending"))
+    const outcome = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise((resolve) => setTimeout(() => resolve("still pending"), 50)),
+    ])
+
+    expect(outcome).toBe("rejected")
+    expect(requests).toEqual([])
+  })
+
   test("enforces the requested timeout when the request does not settle", async () => {
     const { permission } = permissionHarness()
     const execute = createPermissionedWebFetchExecutor({
