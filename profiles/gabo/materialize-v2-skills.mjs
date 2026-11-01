@@ -9,9 +9,11 @@
  * skills are linked from this checkout; the cross-harness shared pool is linked
  * only for the skills `skillPolicy` authorizes (omoAdopt + omoAdapt +
  * omoProgressive), so the OmO skills the profile confirms reach the live
- * inventory while omoDisabled/unclassified pool skills stay out.  The manifest
- * makes every managed entry auditable and lets a future uninstall remove only
- * Rigel-owned links.
+ * inventory while omoDisabled/unclassified pool skills stay out. A fourth,
+ * project-aligned family links only explicitly allowlisted project skills: a
+ * shipped instruction that names a skill must be satisfiable by the install.
+ * The manifest makes every managed entry auditable and lets a future uninstall
+ * remove only Rigel-owned links.
  */
 import os from "node:os"
 import fs from "node:fs"
@@ -22,6 +24,7 @@ const home = process.env.HOME || os.homedir()
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const rigelSkills = path.join(sourceRoot, "profiles/gabo/skills")
 const sharedSkills = path.join(sourceRoot, "packages/shared-skills/skills")
+const projectSkills = path.join(sourceRoot, ".agents/skills")
 const manifestFile = path.join(sourceRoot, "profiles/gabo/integration-manifest.json")
 const legacySkills = path.join(home, ".config/opencode/skills")
 const targetRoot = path.join(home, ".agents/skills")
@@ -44,6 +47,18 @@ function authorizedSharedSkills() {
   for (const key of ["omoAdopt", "omoAdapt", "omoProgressive"]) {
     if (Array.isArray(policy[key])) names.push(...policy[key])
   }
+  return new Set(names.filter((name) => typeof name === "string"))
+}
+
+/** The project skills explicitly required by shipped Rigel V2 instructions. */
+function authorizedProjectAlignedSkills() {
+  let policy
+  try {
+    policy = JSON.parse(fs.readFileSync(manifestFile, "utf8")).skillPolicy ?? {}
+  } catch {
+    policy = {}
+  }
+  const names = Array.isArray(policy.projectAligned) ? policy.projectAligned : []
   return new Set(names.filter((name) => typeof name === "string"))
 }
 
@@ -156,6 +171,15 @@ for (const name of listSkills(sharedSkills)) {
   if (!authorized.has(name)) continue
   if (linkedTargets.has(name)) continue
   deliverName({ name, source: path.join(sharedSkills, name), kind: "shared", target: path.join(targetRoot, name), previousManaged, managed, preserved, linkedTargets })
+}
+
+// Project skills are exposed only when a shipped Rigel V2 instruction requires
+// them. Earlier legacy/Rigel/shared deliveries keep their existing precedence.
+const projectAligned = authorizedProjectAlignedSkills()
+for (const name of listSkills(projectSkills)) {
+  if (!projectAligned.has(name)) continue
+  if (linkedTargets.has(name)) continue
+  deliverName({ name, source: path.join(projectSkills, name), kind: "project-aligned", target: path.join(targetRoot, name), previousManaged, managed, preserved, linkedTargets })
 }
 
 fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 })
