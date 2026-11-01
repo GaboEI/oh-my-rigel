@@ -55,6 +55,13 @@ function writeConfig(file, plugins) {
   return file
 }
 
+/** Write a config that declares plugins under the native V2 `plugins` key. */
+function writeNativeConfig(file, plugins) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, `${JSON.stringify({ plugins }, null, 2)}\n`)
+  return file
+}
+
 beforeAll(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-launch-audit-"))
 })
@@ -82,6 +89,7 @@ describe("launch config-chain audit", () => {
     } catch (error) {
       refusal = error instanceof Error ? error.message : String(error)
     }
+    expect(typeof refusal).toBe("string")
     expect(refusal).toContain("2 Rigel runtimes")
     expect(refusal).toContain(installed)
     expect(refusal).toContain(candidate)
@@ -95,6 +103,47 @@ describe("launch config-chain audit", () => {
     const report = assertSingleRigelRuntimeInLaunch({ env: { HOME: path.join(caseRoot, "home") } })
 
     expect(report.runtimes).toEqual([path.resolve(runtime)])
+  })
+
+  test("#given a config that declares its runtime under the native plugins key #when the launch chain is audited #then the runtime is still counted", () => {
+    // given: the installer now writes ONLY the native `plugins` key, so an audit
+    // that reads the legacy `plugin` key alone would see zero runtimes and skip
+    // the collision and goal-state agreement checks entirely.
+    const caseRoot = fs.mkdtempSync(path.join(root, "native-key-"))
+    const runtime = fakeRuntime(path.join(caseRoot, "state", "versions", "native", "runtime"))
+    writeNativeConfig(path.join(caseRoot, "home", ".config", "opencode", "opencode.json"), [runtime])
+
+    const report = assertSingleRigelRuntimeInLaunch({ env: { HOME: path.join(caseRoot, "home") } })
+
+    expect(report.runtimes).toEqual([path.resolve(runtime)])
+  })
+
+  test("#given two native-key config sources that each declare a runtime #when the launch chain is audited #then it refuses", () => {
+    const caseRoot = fs.mkdtempSync(path.join(root, "native-collision-"))
+    const installed = fakeRuntime(path.join(caseRoot, "installed", "versions", "2", "runtime"))
+    const candidate = fakeRuntime(path.join(caseRoot, "candidate", "versions", "candidate", "runtime"))
+    writeNativeConfig(path.join(caseRoot, "home", ".config", "opencode", "opencode.json"), [installed])
+    const overrideConfig = writeNativeConfig(path.join(caseRoot, "sandbox", "opencode.json"), [candidate])
+
+    let refusal
+    try {
+      assertSingleRigelRuntimeInLaunch({ env: { HOME: path.join(caseRoot, "home"), OPENCODE_CONFIG: overrideConfig } })
+    } catch (error) {
+      refusal = error instanceof Error ? error.message : String(error)
+    }
+    expect(typeof refusal).toBe("string")
+    expect(refusal).toContain("2 Rigel runtimes")
+    expect(refusal).toContain(installed)
+    expect(refusal).toContain(candidate)
+  })
+
+  test("#given a native object-form runtime entry #when the plugin list is resolved #then the package path is recognized", () => {
+    const caseRoot = fs.mkdtempSync(path.join(root, "native-object-"))
+    const runtime = fakeRuntime(path.join(caseRoot, "state", "versions", "native", "runtime"))
+
+    const runtimes = rigelRuntimeEntries([{ package: runtime, options: { enabled: true } }])
+
+    expect(runtimes).toEqual([path.resolve(runtime)])
   })
 
   test("#given the same runtime declared by two config sources #when the launch chain is audited #then it is counted once", () => {

@@ -4,8 +4,9 @@
  *
  * Three explicit modes:
  *   - "managed": the complete Rigel-owned shim shape is live: one server shim,
- *     one CLI/TUI shim, and exactly one `-opencode.goal` marker. This makes the
- *     vendored third-party Goal the sole configured owner.
+ *     one CLI/TUI shim, and exactly one server-plane plus one defense-in-depth
+ *     CLI `-opencode.goal` marker. This makes the vendored third-party Goal the
+ *     sole configured owner.
  *   - "legacy": the retired external package/state/cache is still present. The
  *     historical schema-version-1 invariant applies.
  *   - "unknown": every incomplete, duplicate, malformed, or unreadable shape.
@@ -19,8 +20,11 @@ import {
   DISABLED_BUILTIN_GOAL,
   GOAL_ENGINE_SHIM_DIRNAME,
   GOAL_TUI_SHIM_DIRNAME,
+  hasValidNativePluginEntries,
+  hasValidServerPluginShapes,
   isRetiredExternalGoalPackage,
   pluginEntrySpec,
+  serverPluginEntries,
   assertGoalStatePathSafe,
   resolveGoalStatePath,
 } from "./rigel-v2-goal-registration.mjs"
@@ -44,18 +48,24 @@ export function readGoalConfig(filePath) {
   } catch (error) {
     return { readable: false, referenced: false, managed: false, missing: error?.code === "ENOENT" }
   }
-  const plugins = Array.isArray(parsed.plugin) ? parsed.plugin : Array.isArray(parsed.plugins) ? parsed.plugins : []
+  const plugins = serverPluginEntries(parsed)
   const specs = plugins.map(pluginEntrySpec).filter((spec) => typeof spec === "string")
   return {
     readable: true,
     referenced: specs.some(isRetiredExternalGoalPackage),
     managed: specs.some((spec) => spec.includes("rigel-goal-")),
     plugins,
+    serverPluginShapesValid: hasValidServerPluginShapes(parsed),
+    nativePluginShapesValid: parsed.plugins === undefined || hasValidNativePluginEntries(parsed.plugins),
   }
 }
 
 function resolveRigelStateRoot(home, options) {
   return path.resolve(options.stateRoot || process.env.RIGEL_V2_USER_ROOT || path.join(process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), "oh-my-rigel"))
+}
+
+function resolveConfigDir(home, options) {
+  return options.configDir ?? path.join(home, ".config", "opencode")
 }
 
 export function internalGoalEnabled(omoConfigPath) {
@@ -79,7 +89,7 @@ export function internalGoalEnabled(omoConfigPath) {
 }
 
 export function detectGoalMode(home, options = {}) {
-  const cfgDir = options.configDir ?? path.join(home, ".config/opencode")
+  const cfgDir = resolveConfigDir(home, options)
   const configPaths = [
     { name: "opencode.json", required: true },
     { name: "tui.json", required: false },
@@ -99,7 +109,8 @@ export function detectGoalMode(home, options = {}) {
   const [opencode, , cli] = configs
   const serverEntries = opencode.plugins?.filter((entry) => isShimEntry(entry, GOAL_ENGINE_SHIM_DIRNAME)) ?? []
   const cliEntries = cli.plugins?.filter((entry) => isShimEntry(entry, GOAL_TUI_SHIM_DIRNAME)) ?? []
-  const goalMarkerCount = cli.plugins?.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length ?? 0
+  const serverGoalMarkerCount = opencode.plugins?.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length ?? 0
+  const cliGoalMarkerCount = cli.plugins?.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length ?? 0
   const stateRoot = resolveRigelStateRoot(home, options)
   const goalStatePath = resolveGoalStatePath(stateRoot)
   const configuredGoalStatePath = Object.prototype.hasOwnProperty.call(options, "goalStatePath") ? options.goalStatePath : goalStatePath
@@ -113,7 +124,8 @@ export function detectGoalMode(home, options = {}) {
   const managed = {
     serverEntries: serverEntries.length,
     cliEntries: cliEntries.length,
-    goalMarkerCount,
+    serverGoalMarkerCount,
+    cliGoalMarkerCount,
     goalStatePath,
     configuredGoalStatePath,
     goalStatePathMatchesRoot,
@@ -121,13 +133,13 @@ export function detectGoalMode(home, options = {}) {
   if (referenced.length > 0 || presentDirs.length > 0) {
     return { mode: "legacy", referenced, managed, presentDirs, unreadable }
   }
-  if (unreadable.length === 0 && managed.serverEntries === 1 && managed.cliEntries === 1 && managed.goalMarkerCount === 1 && managed.goalStatePathMatchesRoot) {
+  if (unreadable.length === 0 && opencode.serverPluginShapesValid && cli.nativePluginShapesValid && managed.serverEntries === 1 && managed.cliEntries === 1 && managed.serverGoalMarkerCount === 1 && managed.cliGoalMarkerCount === 1 && managed.goalStatePathMatchesRoot) {
     return { mode: "managed", referenced, managed, presentDirs, unreadable }
   }
   if (unreadable.length > 0) {
     return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal cannot be asserted: a config file is missing, unreadable, or invalid" }
   }
-  return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal requires one server shim, one CLI shim, one builtin-disable marker, and the canonical Goal state path" }
+  return { mode: "unknown", referenced, managed, presentDirs, unreadable, reason: "managed Goal requires host-valid plugin shapes, one server shim, one CLI shim, one server marker, one CLI marker, and the canonical Goal state path" }
 }
 
 export function probeGoalState(home, goalsFile) {
@@ -174,8 +186,9 @@ function main(argv) {
     const configFile = process.env.RIGEL_V2_CONFIG
     const stateRoot = process.env.RIGEL_V2_USER_ROOT
     const configuredGoalStatePath = process.env.OPENCODE_GOAL_STATE_PATH
+    const xdgConfigHome = process.env.XDG_CONFIG_HOME
     process.stdout.write(detectGoalMode(arg ?? home, {
-      ...(typeof configFile === "string" && configFile ? { configDir: path.dirname(configFile) } : {}),
+      ...(typeof configFile === "string" && configFile ? { configDir: path.dirname(configFile) } : typeof xdgConfigHome === "string" && xdgConfigHome ? { configDir: path.join(xdgConfigHome, "opencode") } : {}),
       ...(typeof stateRoot === "string" && stateRoot ? { stateRoot } : {}),
       ...(configuredGoalStatePath !== undefined ? { goalStatePath: configuredGoalStatePath } : {}),
     }).mode)

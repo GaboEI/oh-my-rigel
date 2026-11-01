@@ -31,6 +31,25 @@ const checks = []
 const created = []
 let probeSessionId = null
 
+/** One plugin specifier: bare string, legacy `[spec, options]` tuple, or native `{package, options}` object. */
+function pluginSpec(entry) {
+  if (typeof entry === "string") return entry
+  if (Array.isArray(entry) && typeof entry[0] === "string") return entry[0]
+  if (entry && typeof entry === "object" && typeof entry.package === "string") return entry.package
+  return undefined
+}
+/**
+ * Effective server plugin specifiers of a config document. The installer writes
+ * the native `plugins` key and drops `plugin`, so reading `plugin` alone sees
+ * nothing after the first install. Order mirrors the host normalizer: legacy
+ * entries first, then native ones.
+ */
+function configPluginSpecs(config) {
+  const legacy = Array.isArray(config?.plugin) ? config.plugin : []
+  const native = Array.isArray(config?.plugins) ? config.plugins : []
+  return [...legacy, ...native].map(pluginSpec).filter((spec) => typeof spec === "string")
+}
+
 function check(name, pass, detail) {
   checks.push({ name, pass: Boolean(pass), detail: detail === undefined ? "" : String(detail) })
 }
@@ -98,7 +117,7 @@ try {
   const runtimeDir = path.join(tmpLab, "rigel", "runtime", "rigel-v2-native")
   const configAfter = JSON.parse(fs.readFileSync(tmpConfig, "utf8"))
   const state = JSON.parse(fs.readFileSync(stateFile, "utf8"))
-  check("A03.config.generatedWithRuntime", Array.isArray(configAfter.plugin) && configAfter.plugin.includes(runtimeDir), JSON.stringify(configAfter.plugin))
+  check("A03.config.generatedWithRuntime", configPluginSpecs(configAfter).includes(runtimeDir), JSON.stringify(configAfter.plugins))
   check("A03.state.scopedToTempLab", state.configFile === tmpConfig && state.labRoot === tmpLab && state.pluginEntry === runtimeDir, `${state.labRoot} / ${state.pluginEntry}`)
   check("A03.runtime.materialized", fs.existsSync(path.join(runtimeDir, "index.js")))
   const launcher = path.join(tmpLab, "rigel", "bin", "rigel-v2")
@@ -127,8 +146,8 @@ try {
   const configAfterUninstall = JSON.parse(fs.readFileSync(tmpConfig, "utf8"))
   check("A04.uninstall.refusesNothingWrong", uninstall.status === 0 && uninstallPayload?.ok === true, uninstall.stderr || uninstall.stdout.slice(0, 120))
   check("A04.uninstall.runtimeRemoved", !fs.existsSync(runtimeDir))
-  check("A04.uninstall.configUnregistered", !(Array.isArray(configAfterUninstall.plugin) && configAfterUninstall.plugin.includes(runtimeDir)), JSON.stringify(configAfterUninstall.plugin))
-  check("A04.uninstall.neverTouchesV1", !configAfterUninstall.plugin.some((entry) => String(entry).startsWith(path.join(os.homedir(), ".local", "share", "opencode"))))
+  check("A04.uninstall.configUnregistered", !configPluginSpecs(configAfterUninstall).includes(runtimeDir), JSON.stringify(configAfterUninstall.plugins))
+  check("A04.uninstall.neverTouchesV1", !configPluginSpecs(configAfterUninstall).some((entry) => entry.startsWith(path.join(os.homedir(), ".local", "share", "opencode"))))
   const reinstall = install()
   check("A04.uninstall.reinstallWorks", reinstall.every((result) => result.status === 0) && fs.existsSync(runtimeDir))
 
