@@ -298,7 +298,11 @@ export function serverPluginEntries(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) return []
   const native = Array.isArray(config.plugins) ? config.plugins : []
   const legacy = Array.isArray(config.plugin) ? config.plugin : []
-  return [...native, ...legacy.map(toNativePluginEntry)]
+  // The host normalizer concatenates legacy entries first, then native ones
+  // (`plugins = [...legacy, ...native]`). Keeping that order here means a
+  // document migrated from `plugin` to `plugins` keeps exactly the effective
+  // plugin list and precedence it had before the migration.
+  return [...legacy.map(toNativePluginEntry), ...native]
 }
 
 function withServerPluginEntries(config, plugins) {
@@ -343,12 +347,6 @@ export function registerGoalServerEntry(configOrPlugins, { engineEntry, options 
   return Array.isArray(configOrPlugins) ? next : withServerPluginEntries(configOrPlugins, next)
 }
 
-/**
- * Register the goal engine's CLI/TUI entry in `cli.json` `plugins` exactly once
- * as an object pointing at the Rigel-owned TUI shim directory (the host resolves
- * its `.`/`./tui` export to the vendored TUI). A prior version's goal entry is
- * replaced in place.
- */
 /**
  * Register the goal engine's CLI/TUI entry in `cli.json` `plugins` exactly once
  * as an object pointing at the Rigel-owned TUI shim directory (the host resolves

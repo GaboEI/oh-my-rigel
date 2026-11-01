@@ -175,8 +175,9 @@ describe("#given the two-slot family registration", () => {
     }, { engineEntry: ENGINE, options: resolveGoalOptions({}) })
 
     expect(registered.plugin).toBeUndefined()
-    expect(registered.plugins.slice(0, 2)).toEqual(["native-first.mjs", DISABLED_BUILTIN_GOAL])
-    expect(registered.plugins).toContain("legacy-first.mjs")
+    // Host normalizer order: legacy entries first, then native entries.
+    expect(registered.plugins.slice(0, 2)).toEqual(["legacy-first.mjs", { package: "legacy-options.mjs", options: { enabled: true } }])
+    expect(registered.plugins).toContain("native-first.mjs")
     expect(registered.plugins).toContainEqual({ package: "legacy-options.mjs", options: { enabled: true } })
     expect(registered.plugins.filter((entry) => entry === DISABLED_BUILTIN_GOAL)).toHaveLength(1)
     expect(registered.plugins.filter(isGoalEngineEntry)).toHaveLength(1)
@@ -208,7 +209,7 @@ describe("#given the two-slot family registration", () => {
     expect(countGoalEntries(config, cli)).toEqual({ config: 2, cli: 1 })
     expect(countGoalEntries(stripped.config, stripped.cli)).toEqual({ config: 0, cli: 0 })
     expect(stripped.config.plugin).toBeUndefined()
-    expect(stripped.config.plugins).toEqual(["native-server.mjs", "legacy-server.mjs"])
+    expect(stripped.config.plugins).toEqual(["legacy-server.mjs", "native-server.mjs"])
     expect(stripped.cli.plugins).toEqual([{ package: "/runtime", options: {} }])
   })
 

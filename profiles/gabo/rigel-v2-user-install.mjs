@@ -840,7 +840,7 @@ function main() {
         for (const { backup } of staged) fs.rmSync(backup, { recursive: true, force: true })
         const remaining = fs.existsSync(paths.stateRoot) ? fs.readdirSync(paths.stateRoot).sort() : []
         const config = fs.existsSync(paths.configFile) ? readJson(paths.configFile) : {}
-        emit({ ok: true, command, removed: ["versions", "bin", "install-state.json", ...(ownedSg ? ["ast-grep"] : [])], removedSkills: skills.removed, preserved: remaining, remainingPluginEntries: Array.isArray(config.plugin) ? config.plugin : [] }, flags)
+        emit({ ok: true, command, removed: ["versions", "bin", "install-state.json", ...(ownedSg ? ["ast-grep"] : [])], removedSkills: skills.removed, preserved: remaining, remainingPluginEntries: serverPluginEntries(config) }, flags)
       } catch (error) {
         for (const { abs, backup } of [...staged].reverse()) {
           try {

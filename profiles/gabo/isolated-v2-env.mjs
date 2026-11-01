@@ -249,10 +249,11 @@ export function isRigelRuntimeDir(candidate, { existsSync = fs.existsSync } = {}
   }
 }
 
-/** The path of one plugin entry: a bare string, or `[path, options]`. */
+/** The path of one plugin entry: a bare string, a legacy `[path, options]` tuple, or a native `{package, options}` object. */
 function pluginEntryPath(entry) {
   if (typeof entry === "string") return entry
   if (Array.isArray(entry) && typeof entry[0] === "string") return entry[0]
+  if (entry && typeof entry === "object" && typeof entry.package === "string") return entry.package
   return undefined
 }
 
@@ -288,7 +289,13 @@ export function launchConfigSources({ env = process.env, readJson, existsSync = 
     let plugins = []
     try {
       const parsed = read(file)
-      if (Array.isArray(parsed?.plugin)) plugins = parsed.plugin
+      // Mirror the host normalizer exactly: the legacy `plugin` key first, then
+      // the native `plugins` key. A document migrated by the installer writes
+      // only `plugins`, so reading `plugin` alone would see zero plugins and
+      // silently skip runtime-collision and goal-state agreement checks.
+      const legacy = Array.isArray(parsed?.plugin) ? parsed.plugin : []
+      const native = Array.isArray(parsed?.plugins) ? parsed.plugins : []
+      plugins = [...legacy, ...native]
     } catch {
       plugins = []
     }
