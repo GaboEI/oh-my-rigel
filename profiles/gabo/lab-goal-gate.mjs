@@ -41,8 +41,8 @@ export function readGoalConfig(filePath) {
   try {
     if (!fs.statSync(filePath).isFile()) return { readable: false, referenced: false, managed: false }
     parsed = parseJsonc(fs.readFileSync(filePath, "utf8"))
-  } catch {
-    return { readable: false, referenced: false, managed: false }
+  } catch (error) {
+    return { readable: false, referenced: false, managed: false, missing: error?.code === "ENOENT" }
   }
   const plugins = Array.isArray(parsed.plugin) ? parsed.plugin : Array.isArray(parsed.plugins) ? parsed.plugins : []
   const specs = plugins.map(pluginEntrySpec).filter((spec) => typeof spec === "string")
@@ -52,6 +52,10 @@ export function readGoalConfig(filePath) {
     managed: specs.some((spec) => spec.includes("rigel-goal-")),
     plugins,
   }
+}
+
+function resolveRigelStateRoot(home, options) {
+  return path.resolve(options.stateRoot || process.env.RIGEL_V2_USER_ROOT || path.join(process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), "oh-my-rigel"))
 }
 
 export function internalGoalEnabled(omoConfigPath) {
@@ -76,21 +80,27 @@ export function internalGoalEnabled(omoConfigPath) {
 
 export function detectGoalMode(home, options = {}) {
   const cfgDir = options.configDir ?? path.join(home, ".config/opencode")
-  const configPaths = ["opencode.json", "tui.json", "cli.json"].map((name) => path.join(cfgDir, name))
-  const configs = configPaths.map((file) => ({ file, ...readGoalConfig(file) }))
+  const configPaths = [
+    { name: "opencode.json", required: true },
+    { name: "tui.json", required: false },
+    { name: "cli.json", required: true },
+  ]
+  const configs = configPaths.map(({ name, required }) => {
+    const file = path.join(cfgDir, name)
+    return { file, required, ...readGoalConfig(file) }
+  })
   const referenced = configs.filter((entry) => entry.referenced).map((entry) => entry.file)
-  const unreadable = configs.filter((entry) => !entry.readable).map((entry) => entry.file)
+  const unreadable = configs.filter((entry) => !entry.readable && (entry.required || !entry.missing)).map((entry) => entry.file)
   const stateDirs = options.stateDirs ?? [
     path.join(home, EXTERNAL_GOAL_STATE),
     path.join(home, EXTERNAL_GOAL_CACHE),
   ]
   const presentDirs = stateDirs.filter((dir) => fs.existsSync(dir))
-  const opencode = configs[0]
-  const cli = configs[2]
+  const [opencode, , cli] = configs
   const serverEntries = opencode.plugins?.filter((entry) => isShimEntry(entry, GOAL_ENGINE_SHIM_DIRNAME)) ?? []
   const cliEntries = cli.plugins?.filter((entry) => isShimEntry(entry, GOAL_TUI_SHIM_DIRNAME)) ?? []
   const goalMarkerCount = cli.plugins?.filter((entry) => entry === DISABLED_BUILTIN_GOAL).length ?? 0
-  const stateRoot = options.stateRoot ?? path.join(home, ".local", "share", "oh-my-rigel")
+  const stateRoot = resolveRigelStateRoot(home, options)
   const goalStatePath = resolveGoalStatePath(stateRoot)
   const configuredGoalStatePath = Object.prototype.hasOwnProperty.call(options, "goalStatePath") ? options.goalStatePath : goalStatePath
   let goalStatePathMatchesRoot = false

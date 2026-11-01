@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { detectGoalMode, probeGoalState, verifyGoalInvariant, readGoalConfig, internalGoalEnabled } from "./lab-goal-gate.mjs"
 
 const createdHomes = []
+const gatePath = fileURLToPath(new URL("./lab-goal-gate.mjs", import.meta.url))
 
 const managedConfigs = {
   "opencode.json": `{"plugin":[["/state/versions/1/runtime/rigel-goal-engine",{"auto_continue":true}]]}`,
@@ -36,6 +39,16 @@ function makeHome({ configs = {}, omoGoalEnabled = null, stateDirs = [], cacheDi
   return home
 }
 
+function detectModeAtCliBoundary(home, overrides = {}) {
+  const env = { ...process.env, HOME: home }
+  for (const name of ["RIGEL_V2_CONFIG", "RIGEL_V2_USER_ROOT", "OPENCODE_GOAL_STATE_PATH", "XDG_DATA_HOME"]) delete env[name]
+  Object.assign(env, overrides)
+  const result = spawnSync(process.execPath, [gatePath, "--mode", home], { encoding: "utf8", env })
+  expect(result.status).toBe(0)
+  expect(result.stderr).toBe("")
+  return result.stdout
+}
+
 describe("Rigel lab goal gate: mode detection", () => {
   test("#given the former internal-only shape #when detecting #then it fails closed as unknown", () => {
     const home = makeHome({ configs: { "opencode.json": "{}", "tui.json": "{}", "cli.json": "{}" }, omoGoalEnabled: true })
@@ -64,16 +77,43 @@ describe("Rigel lab goal gate: mode detection", () => {
 
   test("#given one server shim, one CLI shim, and the builtin-disable marker #when detecting #then mode is managed", () => {
     const home = makeHome({ configs: managedConfigs })
-    const detected = detectGoalMode(home)
+    const stateRoot = path.join(home, ".local", "share", "oh-my-rigel")
+    const detected = detectGoalMode(home, { stateRoot })
     expect(detected.mode).toBe("managed")
     expect(detected.managed).toEqual({
       serverEntries: 1,
       cliEntries: 1,
       goalMarkerCount: 1,
-      goalStatePath: path.join(home, ".local", "share", "oh-my-rigel", "goal-state", "goals.json"),
-      configuredGoalStatePath: path.join(home, ".local", "share", "oh-my-rigel", "goal-state", "goals.json"),
+      goalStatePath: path.join(stateRoot, "goal-state", "goals.json"),
+      configuredGoalStatePath: path.join(stateRoot, "goal-state", "goals.json"),
       goalStatePathMatchesRoot: true,
     })
+  })
+
+  test("#given a managed install without optional tui.json #when detecting #then mode is managed", () => {
+    const { "tui.json": _optionalTui, ...configs } = managedConfigs
+    const home = makeHome({ configs })
+
+    expect(detectGoalMode(home).mode).toBe("managed")
+  })
+
+  test("#given an XDG-rooted managed install #when the CLI gate resolves state #then it accepts the XDG state root", () => {
+    const home = makeHome({ configs: managedConfigs })
+    const xdgDataHome = path.join(home, "xdg-data")
+    const goalStatePath = path.join(xdgDataHome, "oh-my-rigel", "goal-state", "goals.json")
+
+    expect(detectModeAtCliBoundary(home, { XDG_DATA_HOME: xdgDataHome, OPENCODE_GOAL_STATE_PATH: goalStatePath })).toBe("managed")
+  })
+
+  test("#given RIGEL_V2_USER_ROOT and XDG_DATA_HOME #when the CLI gate resolves state #then RIGEL_V2_USER_ROOT wins", () => {
+    const home = makeHome({ configs: managedConfigs })
+    const stateRoot = path.join(home, "rigel-state")
+
+    expect(detectModeAtCliBoundary(home, {
+      RIGEL_V2_USER_ROOT: stateRoot,
+      XDG_DATA_HOME: path.join(home, "wrong-xdg-data"),
+      OPENCODE_GOAL_STATE_PATH: path.join(stateRoot, "goal-state", "goals.json"),
+    })).toBe("managed")
   })
 
   test("#given a noncanonical Goal state path inside the configured root #when detecting #then mode is unknown", () => {
@@ -104,10 +144,23 @@ describe("Rigel lab goal gate: mode detection", () => {
     expect(detectGoalMode(home).mode).toBe("unknown")
   })
 
-  test("#given an unreadable config file #when detecting #then mode is unknown, never internal", () => {
-    const home = makeHome({ configs: { "opencode.json": "{}", "tui.json": "{}" }, omoGoalEnabled: true })
-    fs.mkdirSync(path.join(home, ".config/opencode/cli.json"))
-    expect(detectGoalMode(home).mode).toBe("unknown")
+  test("#given an unreadable required config #when detecting #then mode is unknown", () => {
+    for (const requiredConfig of ["opencode.json", "cli.json"]) {
+      const home = makeHome({ configs: managedConfigs })
+      const configPath = path.join(home, ".config/opencode", requiredConfig)
+      fs.rmSync(configPath)
+      fs.mkdirSync(configPath)
+
+      expect(detectGoalMode(home).mode).toBe("unknown")
+    }
+  })
+
+  test("#given a malformed required config #when detecting #then mode is unknown", () => {
+    for (const requiredConfig of ["opencode.json", "cli.json"]) {
+      const home = makeHome({ configs: { ...managedConfigs, [requiredConfig]: "{" } })
+
+      expect(detectGoalMode(home).mode).toBe("unknown")
+    }
   })
 
   test("#given no complete managed shim shape #when detecting #then mode is unknown", () => {
@@ -184,7 +237,7 @@ describe("Rigel lab goal gate: reference detection", () => {
 
   test("#given a missing config #when scanning #then it is not readable", () => {
     const home = makeHome({})
-    expect(readGoalConfig(path.join(home, ".config/opencode/tui.json"))).toEqual({ readable: false, referenced: false, managed: false })
+    expect(readGoalConfig(path.join(home, ".config/opencode/tui.json"))).toEqual({ readable: false, referenced: false, managed: false, missing: true })
   })
 
   test("#given internal goal enabled in JSONC with comments #when parsing #then it is true", () => {
