@@ -92,7 +92,13 @@ export function normalizeReplyListenerConfig(raw) {
   }
 }
 
-const OPENCLAW_KEYS = new Set(["enabled", "gateways", "hooks", "replyListener", "channels"])
+/**
+ * Root keys `openclaw` may declare. `channels` and `replyPolicy` are the NEW
+ * namespace's blocks: they are allowed here so a configuration that carries them
+ * is not rejected, and their semantics live in their own resolvers (this
+ * normalizer stays the authority for the legacy shape only).
+ */
+const OPENCLAW_KEYS = new Set(["enabled", "gateways", "hooks", "replyListener", "channels", "replyPolicy"])
 const GATEWAY_KEYS = new Set(["type", "url", "method", "headers", "command", "timeout"])
 const HOOK_KEYS = new Set(["enabled", "gateway", "instruction"])
 const REPLY_LISTENER_KEYS = new Set([

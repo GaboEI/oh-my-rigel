@@ -22,6 +22,11 @@
  *     (`channels.<name>` → Discord/Telegram endpoints) and handed to the
  *     outbound route. A legacy config resolves none, which is what keeps
  *     "legacy only" free of any new Discord/Telegram send.
+ *   - the NEW namespace's reply authorization (U6) is resolved ONCE here too
+ *     (`replyPolicy.<identity>.allowedAuthors`), reported when it authorizes
+ *     nobody, and handed to the inbound listener as the ONLY source of
+ *     authorized authors. A config that never declares it keeps the legacy
+ *     silent disablement.
  *
  * The single strict gate is the normalized config: `normalizeOpenclawConfig`
  * returns `null` unless `enabled === true`, so an absent or disabled block means
@@ -40,6 +45,7 @@ import { createOpenclawAgentRegistry, resolveOpenclawAgentNamespace } from "./ri
 import { createOpenclawAgentQueue } from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import { createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
 import { describeOpenclawChannelDiagnostic, resolveOpenclawNotificationChannels } from "./rigel-v2-native-openclaw-notification.mjs"
+import { authorizeDiscordAuthors, describeOpenclawReplyPolicyDiagnostic, resolveOpenclawReplyPolicy } from "./rigel-v2-native-openclaw-reply-policy.mjs"
 
 /**
  * Build the new namespace's core over the same storage domain the chat registry
@@ -154,6 +160,38 @@ export function createNativeOpenclaw({
     log(`[oh-my-rigel] Native V2 openclaw ${describeOpenclawChannelDiagnostic(diagnostic)}`)
   }
 
+  // The NEW namespace's REPLY POLICY (U6). `openclaw.replyPolicy.<identity>` is
+  // the authorization the reply surface applies (`Contrato_Transportes_OpenClaw.md`
+  // §5.1), resolved once here like every other setup-time decision. Declaring it
+  // is what makes Discord authorization explicit, and a declared policy that
+  // authorizes nobody is a REPORTED configuration error instead of the silent
+  // disablement the legacy gate has always produced.
+  const replyPolicy = enabled
+    ? resolveOpenclawReplyPolicy(config?.replyPolicy)
+    : { declared: false, identities: [], diagnostics: [] }
+  for (const diagnostic of replyPolicy.diagnostics) {
+    log(`[oh-my-rigel] Native V2 openclaw ${describeOpenclawReplyPolicyDiagnostic(diagnostic)}`)
+  }
+
+  // §5.2 rule 1: `channels` declared means the new namespace is in play, and its
+  // inbound half may not be silently off. A Discord reply port with credentials
+  // and no authorized author at all is a configuration error the operator has to
+  // see; a configuration that never mentions `channels` keeps the legacy silence
+  // (that is `unauthorizedInNewNamespace`, which is false without the namespace).
+  const agentNamespace = resolveOpenclawAgentNamespace(config)
+  const legacyAuthorizedAuthors = Array.isArray(normalized?.replyListener?.authorizedDiscordUserIds)
+    ? normalized.replyListener.authorizedDiscordUserIds
+    : []
+  const hasDiscordInbound = Boolean(secrets.replyListener?.discordBotToken && secrets.replyListener?.discordChannelId)
+  const unauthorizedInNewNamespace = enabled
+    && hasDiscordInbound
+    && agentNamespace.declared
+    && !replyPolicy.declared
+    && legacyAuthorizedAuthors.length === 0
+  if (unauthorizedInNewNamespace) {
+    log("[oh-my-rigel] Native V2 openclaw Discord replies stay off: openclaw.channels is declared but openclaw.replyListener.authorizedDiscordUserIds is empty, so no author is authorized")
+  }
+
   // Mirror the fatals setup just announced into the document, so `/openclaw-status`
   // can explain WHY a surface is down. `emitLine:false` is deliberate: the line
   // above is the banner, and a second line for one transition would break the
@@ -181,6 +219,21 @@ export function createNativeOpenclaw({
       detail: diagnostic.path,
     })
   }
+  if (unauthorizedInNewNamespace) {
+    setupFatals.push({ surface: "discord", errorClass: "missing-authorized-authors", detail: "openclaw.replyListener.authorizedDiscordUserIds" })
+  }
+  for (const diagnostic of replyPolicy.diagnostics) {
+    setupFatals.push({
+      // A missing authorization disables the Discord reply surface, so the
+      // document says `discord`; a structural mistake about an identity this
+      // runtime does not serve is a configuration fault with no disabled
+      // surface, so it reports under `replyPolicy`. The exact path always
+      // travels as `detail`, never an author id.
+      surface: diagnostic.identity === "discord-bot" ? "discord" : "replyPolicy",
+      errorClass: diagnostic.reason,
+      detail: diagnostic.path,
+    })
+  }
 
   // The registry is the durable correlation store; `ctx.storage` is the V2
   // domain, and an absent one still works from the in-process index.
@@ -193,7 +246,6 @@ export function createNativeOpenclaw({
   // `gateways`/`hooks`/`replyListener` config has no `channels` key, so nothing
   // below is constructed for it, and `openclaw.enabled` stays the single global
   // switch (Contrato_Transportes_OpenClaw.md §5.2 rule 4).
-  const agentNamespace = resolveOpenclawAgentNamespace(config)
   const agentCore = enabled && agentNamespace.declared
     ? createAgentCore({ context, namespace: agentNamespace, now, log, status: statusDocument })
     : null
@@ -224,6 +276,10 @@ export function createNativeOpenclaw({
     log,
     now,
     statusDocument,
+    // §U6: the new namespace's authorization REPLACES the legacy author list
+    // when it is declared. Undefined here means "legacy governs", which is the
+    // path every pinned listener test and every pre-U6 configuration takes.
+    ...(replyPolicy.declared ? { discordAuthorization: authorizeDiscordAuthors(replyPolicy) } : {}),
     ...(typeof env?.RIGEL_OPENCLAW_DISCORD_API_BASE === "string"
       ? { discordApiBase: env.RIGEL_OPENCLAW_DISCORD_API_BASE }
       : {}),
@@ -304,6 +360,13 @@ export function createNativeOpenclaw({
     // deliberately absent from every observability surface.
     if (notifications.channels.length > 0) {
       value.channels = notifications.channels.map((channel) => ({ name: channel.name, transport: channel.transport, events: [...channel.events] }))
+    }
+    // Reply authorization (U6): whether the new namespace supplied it, and whether
+    // it actually authorizes anyone. Booleans and a source name only — the author
+    // ids are configuration, not observability.
+    if (replyPolicy.declared) {
+      const authorization = authorizeDiscordAuthors(replyPolicy)
+      value.authorization = { discord: { source: authorization.source, explicit: authorization.explicit } }
     }
     return value
   }
