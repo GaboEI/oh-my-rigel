@@ -32,9 +32,31 @@
  *     move, the message stays retryable until its ack lands.
  *   - Both sets are bounded, oldest first, so a stuck head cannot grow the
  *     document without limit. A truncated entry costs one duplicate at worst.
+ *   - The write is the gate, not the intent. A record leaves the retry set only
+ *     AFTER `storage.set` resolves, so a transient failure is retried by the next
+ *     flush instead of being forgotten by it, and every write reports whether the
+ *     durable half actually landed (`persisted` / `in-memory` / `failed`). Retrying
+ *     is bounded by the flush itself (one attempt per record per poll window) and
+ *     reporting is bounded by the episode: the first failure names itself, the
+ *     `OPENCLAW_CURSOR_MAX_PERSIST_ATTEMPTS`th says once that the document is
+ *     behind, and the write that lands names the recovery. Nothing is lost in that
+ *     state (the in-process frontier still governs), nothing is silently claimed
+ *     durable either, and `unsaved()` is how the caller reports the degradation
+ *     instead of a healthy poll.
+ *   - A resume position expires where the platform rebuilds its id space. Telegram
+ *     reassigns `update_id` after a week of inactivity, so an offset kept from before
+ *     that reassignment filters out every new update. `resumeCursorFor` retires such
+ *     a position after `OPENCLAW_CURSOR_MAX_AGE_MS` of no durable write (or when the
+ *     record carries no readable timestamp, which cannot prove freshness) and the
+ *     duplicate memory is kept, so the re-read window costs an ack retry at worst.
+ *     Discord is exempt: its snowflake ids only grow, so an old `after=` value can
+ *     never skip a newer message.
  *
- * §9.3 applies here too: a suppressed duplicate is NOT reported. This module
- * logs only an unreadable persisted record or a failed write, never a dedup hit.
+ * §9.3 applies here too: a suppressed duplicate is NOT reported, and a retry is
+ * logged only as the first failure of an episode. This module logs an unreadable
+ * persisted record, the first failed write of an episode, the point at which the
+ * durable cursor is declared behind, a recovery and a retirement, never a dedup hit
+ * and never once per poll.
  */
 import { createHash } from "node:crypto"
 
@@ -46,6 +68,26 @@ export const OPENCLAW_CURSOR_VERSION = 1
 export const OPENCLAW_CURSOR_MAX_TRACKED = 512
 /** Platforms whose cursor shape this build understands. */
 export const OPENCLAW_CURSOR_PLATFORMS = Object.freeze(["discord", "telegram"])
+/**
+ * Consecutive failed writes after which the store says once that the durable
+ * cursor is behind. It is a REPORTING threshold, not a stop: a record keeps being
+ * retried once per flush, because a domain that heals has to be able to become
+ * durable again without restarting the process.
+ */
+export const OPENCLAW_CURSOR_MAX_PERSIST_ATTEMPTS = 3
+/**
+ * How long a persisted position stays usable as a resume point. One week is the
+ * window Telegram documents for keeping a bot's update history: past it the
+ * `update_id` space may have been rebuilt, so the stored offset would filter out
+ * every new update instead of resuming after the last one.
+ */
+export const OPENCLAW_CURSOR_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+/**
+ * Platforms whose resume position expires. Only the ones that rebuild their id
+ * space: a Discord snowflake only grows, so a stale `after=` value can never skip
+ * a newer message and retiring it would only re-read a window for nothing.
+ */
+export const OPENCLAW_CURSOR_AGE_LIMITED_PLATFORMS = Object.freeze(["telegram"])
 
 const LOG_PREFIX = "[oh-my-rigel]"
 
@@ -95,15 +137,21 @@ export function openclawCursorKey(platform, channel) {
  * which is exactly the pre-U8 behaviour and the independent rollback.
  *
  * `hydrate()` must be awaited once before the poller starts. Every advance or
- * dedup record is persisted before its promise resolves, so a caller that awaits
- * the transition can rely on it having landed.
+ * dedup record is persisted before its promise resolves, and each transition
+ * reports what became of its write: `persisted` (it landed), `in-memory` (no
+ * storage domain was provided, so nothing durable was owed) or `failed` (a write
+ * was owed and did not land, so the record stays queued for the next flush).
  */
-export function createOpenclawCursorStore({ storage, now = () => Date.now(), log = () => {}, maxTracked } = {}) {
+export function createOpenclawCursorStore({ storage, now = () => Date.now(), log = () => {}, maxTracked, maxCursorAgeMs } = {}) {
   const records = new Map()
+  // Records whose in-memory state is ahead of storage: a deferred advance, or a
+  // write that has not landed yet. `unsaved()` exposes exactly this set.
   const dirty = new Set()
+  const failedWrites = new Map()
   const canScan = Boolean(storage && typeof storage.scan === "function")
   const canPersist = Boolean(storage && typeof storage.set === "function")
   const limit = Number.isSafeInteger(maxTracked) && maxTracked > 0 ? maxTracked : OPENCLAW_CURSOR_MAX_TRACKED
+  const maxAgeMs = Number.isFinite(maxCursorAgeMs) && maxCursorAgeMs > 0 ? maxCursorAgeMs : OPENCLAW_CURSOR_MAX_AGE_MS
   let hydration
 
   function say(message) {
@@ -174,10 +222,33 @@ export function createOpenclawCursorStore({ storage, now = () => Date.now(), log
     }
   }
 
+  function persistErrorClass(error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+
+  /**
+   * Write one record and report what became of the write.
+   *
+   * The record leaves the retry set only when the write LANDED. A failure keeps it
+   * queued, so the next `flush()` retries it exactly once: one attempt per record
+   * per poll window is a bound the window itself provides, and it is the only way a
+   * store whose domain heals can ever become durable again. Reporting is bounded
+   * separately: the first failure of an episode names itself, `MAX_PERSIST_ATTEMPTS`
+   * consecutive failures say once that the durable half is behind, and the write
+   * that finally lands names the recovery. Every outcome is honest about durability,
+   * because that is the question `markDelivered` exists to answer.
+   *
+   * @returns {"persisted" | "in-memory" | "failed"}
+   */
   async function persist(record) {
     record.updatedAt = new Date(now()).toISOString()
-    dirty.delete(indexKey(record.platform, record.channel))
-    if (!canPersist) return
+    const key = indexKey(record.platform, record.channel)
+    if (!canPersist) {
+      // No storage domain: nothing durable is owed, so nothing is pending. This is
+      // the pre-U8 behaviour and the independent rollback, not a degraded state.
+      dirty.delete(key)
+      return "in-memory"
+    }
     try {
       await storage.set(openclawCursorKey(record.platform, record.channel), {
         v: record.v,
@@ -189,10 +260,31 @@ export function createOpenclawCursorStore({ storage, now = () => Date.now(), log
         updatedAt: record.updatedAt,
       })
     } catch (error) {
-      // The in-process cursor stays authoritative for this run; the failure is
-      // named instead of swallowed so a broken storage domain is not silent.
-      say(`cursor persist failed: ${error instanceof Error ? error.message : String(error)}`)
+      const failures = (failedWrites.get(key) ?? 0) + 1
+      failedWrites.set(key, failures)
+      // Safe hold: the record stays queued and the in-process frontier keeps
+      // governing, so a broken domain costs latency in durability, never a message.
+      dirty.add(key)
+      if (failures === 1) say(`cursor persist failed: ${persistErrorClass(error)}; keeping the cursor queued`)
+      else if (failures === OPENCLAW_CURSOR_MAX_PERSIST_ATTEMPTS) {
+        say(`cursor persist failed ${failures} times: the durable cursor is behind, retrying once per window until it lands`)
+      }
+      return "failed"
     }
+    const wasFailing = failedWrites.get(key)
+    failedWrites.delete(key)
+    dirty.delete(key)
+    if (wasFailing !== undefined) say("cursor persist recovered")
+    return "persisted"
+  }
+
+  /**
+   * How many records are ahead of storage right now. Called after `flush()`, a
+   * non-zero answer is the reason a poll must report a degraded cursor instead of a
+   * healthy one: the advance is in memory and the document is not.
+   */
+  function unsaved() {
+    return dirty.size
   }
 
   /** The persisted advance boundary for a port, or `null` when none is recorded. */
@@ -200,6 +292,41 @@ export function createOpenclawCursorStore({ storage, now = () => Date.now(), log
     if (typeof platform !== "string" || platform.length === 0) return null
     if (channel === undefined || channel === null || `${channel}`.length === 0) return null
     return recordFor(platform, `${channel}`).cursor
+  }
+
+  /**
+   * Whether a persisted position may still be resumed from. A platform that
+   * rebuilds its id space can hand out ids below a stored position, and an offset
+   * above every new id filters the whole update feed out, so a position that has
+   * not been written for `maxAgeMs` is retired instead of obeyed. A record with no
+   * readable timestamp cannot prove it is fresh either, and trusting it could skip
+   * messages for good, so it is retired as well: the cost is one re-read window,
+   * which the duplicate memory turns into an ack retry at worst.
+   */
+  function isStaleResume(record) {
+    if (record.cursor === null) return false
+    if (!OPENCLAW_CURSOR_AGE_LIMITED_PLATFORMS.includes(record.platform)) return false
+    const writtenAt = typeof record.updatedAt === "string" ? Date.parse(record.updatedAt) : Number.NaN
+    if (!Number.isFinite(writtenAt)) return true
+    return now() - writtenAt > maxAgeMs
+  }
+
+  /**
+   * The advance boundary the poller may resume from, and whether the stored one was
+   * retired. A retired position is cleared in memory and queued, so the document
+   * says "no resume point" instead of repeating a stale one on every start, while
+   * `delivered` and `acked` survive: they are what keeps the re-read from injecting
+   * a reply that already reached its session.
+   */
+  function resumeCursorFor(platform, channel) {
+    if (typeof platform !== "string" || platform.length === 0) return { cursor: null, expired: false }
+    if (channel === undefined || channel === null || `${channel}`.length === 0) return { cursor: null, expired: false }
+    const record = recordFor(platform, `${channel}`)
+    if (!isStaleResume(record)) return { cursor: record.cursor, expired: false }
+    record.cursor = null
+    dirty.add(indexKey(record.platform, record.channel))
+    say(`cursor retired: a ${platform} position older than ${maxAgeMs} ms is not a resume point`)
+    return { cursor: null, expired: true }
   }
 
   /** `new` (never seen), `delivered` (injected, ack owed) or `acked` (finished). */
@@ -229,21 +356,30 @@ export function createOpenclawCursorStore({ storage, now = () => Date.now(), log
   /**
    * Record that a reply reached the session and its acknowledgement is still
    * owed. Persisted at once: this is the record that stops a restart from
-   * injecting the same reply twice.
+   * injecting the same reply twice, so its answer is the durability of that mark
+   * and not a plain acknowledgement of the call.
+   *
+   * @returns {"persisted" | "in-memory" | "failed"}. An id that is not a tracked
+   *   identifier records nothing, so no durable write is owed and it answers
+   *   `"in-memory"` like a store with no storage domain; only `"failed"` says a
+   *   write was owed and did not land.
    */
   async function markDelivered(platform, channel, messageId) {
-    if (!isTrackedId(messageId)) return false
+    if (!isTrackedId(messageId)) return "in-memory"
     const record = recordFor(platform, `${channel}`)
     if (!record.delivered.includes(messageId)) record.delivered.push(messageId)
     trim(record.delivered)
-    await persist(record)
-    return true
+    return persist(record)
   }
 
   /**
    * Record a completed acknowledgement and set the frontier the caller computed.
    * `cursor` is the contiguous frontier, not necessarily this message's id: a
    * message acknowledged behind an unresolved predecessor may not move it.
+   *
+   * @returns {"persisted" | "in-memory" | "failed"} what became of the write that
+   *   makes this acknowledgement durable, which is the same answer `markDelivered`
+   *   gives and never a claim the storage domain did not honour.
    */
   async function commitAck(platform, channel, { messageId, cursor }) {
     const record = recordFor(platform, `${channel}`)
@@ -253,25 +389,29 @@ export function createOpenclawCursorStore({ storage, now = () => Date.now(), log
       trim(record.acked)
     }
     if (cursor !== undefined) record.cursor = cursor
-    await persist(record)
-    return true
+    return persist(record)
   }
 
-  /** Write every cursor a poll advanced in memory. Returns how many were written. */
+  /**
+   * Write every cursor a poll advanced in memory: one attempt per record per flush,
+   * so a record whose write keeps failing is retried once per poll window instead
+   * of once per message in it.
+   */
   async function flush() {
-    if (dirty.size === 0) return 0
+    if (dirty.size === 0) return { written: 0, failed: 0 }
     let written = 0
+    let failed = 0
     for (const key of [...dirty]) {
       const record = records.get(key)
       if (record === undefined) {
         dirty.delete(key)
         continue
       }
-      await persist(record)
-      written += 1
+      if ((await persist(record)) === "failed") failed += 1
+      else written += 1
     }
-    return written
+    return { written, failed }
   }
 
-  return { hydrate, cursorFor, stateOf, setCursor, markDelivered, commitAck, flush }
+  return { hydrate, cursorFor, resumeCursorFor, unsaved, stateOf, setCursor, markDelivered, commitAck, flush }
 }
