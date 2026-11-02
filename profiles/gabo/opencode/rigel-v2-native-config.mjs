@@ -1136,6 +1136,128 @@ export function resolveNativeTmuxVisualization({ manifest, ...options } = {}) {
   return readNativeTmuxVisualization(manifest)
 }
 
+// --- Native V2 gate policy (LIVE vs BAKED) ---
+// WHERE each feature gate's value comes from at RUNTIME. The manifest is baked
+// at INSTALL time, so a runtime that reads only the manifest answers an edited
+// `~/.omo/omo.jsonc` with the stale install-time value and says nothing about it.
+// This policy makes the choice EXPLICIT per gate instead of leaving it implied by
+// whichever reader a caller happened to use.
+//
+// A LIVE gate is re-resolved from the same live user+project chain the generator
+// used (`resolveNativePluginConfig`), so the runtime value is exactly what a
+// reinstall would bake now. A BAKED gate keeps the install-time manifest value.
+//
+// LIVE is only claimed where the live chain can DECLARE the key on its own, which
+// the resolved view preserves for these two and no others:
+// - `team_mode`: `validateTeamMode` keeps only the keys a layer actually wrote, so
+//   `enabled` is absent unless declared.
+// - `monitor`: `validateMonitor` materializes the block defaults, so the presence
+//   of a `monitor` block IS the declaration; a block that omits `enabled` declares
+//   the family and reads the documented `false`.
+//
+// Everything else stays BAKED, each for a recorded reason:
+// - `goal`: `quarantineNativeGates` owns the value on BOTH sides (generator and
+//   runtime), so the live chain can never change it. Resolving it live would add a
+//   second path to a gate that is deliberately forced `false`.
+// - `task_system` / `hashline_edit` / `preemptive_compaction`: the resolved view
+//   materializes their `false` default, so a declared key and an absent key are
+//   indistinguishable. A live read would report `false` for a key no layer wrote
+//   and turn an install-baked gate off, which is exactly the "no default changes"
+//   rule the tmux resolver protects. Making them LIVE needs declaration tracking
+//   in the shared loader (`resolveNativePluginConfig`), which is its own change.
+// - `interactive_bash`: its truth is host availability (a persistent-terminal
+//   factory or a `tmux` on PATH), not a config key; the baked value records only
+//   that `disabled_tools` does not forbid the family.
+export const NATIVE_GATE_POLICY = Object.freeze({
+  monitor: "live",
+  team_mode: "live",
+  goal: "baked",
+  task_system: "baked",
+  interactive_bash: "baked",
+  hashline_edit: "baked",
+  preemptive_compaction: "baked",
+})
+
+// How a LIVE gate reads its declaration out of the resolved config view.
+// `undefined` means the chain did not declare the key. Every gate the policy marks
+// `live` must appear here; a missing reader degrades to "undeclared", so the
+// manifest is kept rather than a value invented.
+const LIVE_GATE_DECLARATIONS = Object.freeze({
+  monitor: (view) => (isPlainObject(view?.monitor) ? view.monitor.enabled === true : undefined),
+  team_mode: (view) => (isPlainObject(view?.team_mode) && Object.prototype.hasOwnProperty.call(view.team_mode, "enabled")
+    ? view.team_mode.enabled === true
+    : undefined),
+})
+
+/**
+ * Read the LIVE value of every LIVE gate from the user+project chain.
+ *
+ * Two states, mirroring `readLiveTmuxVisualizationSource`:
+ * - `resolved`: the chain was read. `gates` carries ONLY the gates a layer
+ *   declared; a gate absent from `gates` is undeclared and the caller keeps the
+ *   install-time manifest value, so nothing is invented here.
+ * - `error`: the chain could not be resolved at all; the caller fails closed.
+ *
+ * BAKED gates are absent from `gates` in both states: they never read the chain.
+ */
+export function readLiveGatesSource(options = {}) {
+  try {
+    const view = resolveNativePluginConfig(options)
+    const gates = {}
+    for (const gate of GATE_KEYS) {
+      if (NATIVE_GATE_POLICY[gate] !== "live") continue
+      const read = LIVE_GATE_DECLARATIONS[gate]
+      if (typeof read !== "function") continue
+      const value = read(view)
+      if (value !== undefined) gates[gate] = value
+    }
+    return { state: "resolved", gates }
+  } catch (error) {
+    return { state: "error", reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Resolve the feature gates at RUNTIME under {@link NATIVE_GATE_POLICY}.
+ *
+ * `readNativeGates` stays the pure manifest reader: the materializer contract pins
+ * its exact shape, so this resolver WRAPS it and never rewrites it.
+ *
+ * An ERROR reading the live chain is NOT "undeclared": LIVE gates FAIL CLOSED,
+ * for the reason documented on `resolveNativeTmuxVisualization`. Falling back to
+ * the install-time manifest would re-enable a gate from a value the runtime could
+ * not confirm. Only a genuinely UNDECLARED key consults the manifest, and BAKED
+ * gates never read the chain at all, so neither case can change them.
+ *
+ * A declared value that DISAGREES with the baked manifest is reported in
+ * `diagnostics` and the live value is used: that is the whole point of a LIVE
+ * gate, and the diagnostic is what the silent version was missing. `diagnostics`
+ * is empty when the live chain agrees with the manifest or declares nothing.
+ */
+export function resolveNativeGates({ manifest, ...options } = {}) {
+  const baked = readNativeGates(manifest)
+  const live = readLiveGatesSource(options)
+  const gates = { ...baked }
+  const diagnostics = []
+  const liveGates = GATE_KEYS.filter((gate) => NATIVE_GATE_POLICY[gate] === "live")
+  if (live.state === "error") {
+    for (const gate of liveGates) gates[gate] = false
+    if (liveGates.length > 0) {
+      diagnostics.push(`Native V2 gate policy: live config unreadable (${live.reason ?? "unknown"}); ${liveGates.join(", ")} failed closed instead of using the installed manifest`)
+    }
+    return { gates: Object.freeze(gates), diagnostics }
+  }
+  for (const gate of liveGates) {
+    if (!Object.prototype.hasOwnProperty.call(live.gates, gate)) continue
+    const value = live.gates[gate] === true
+    gates[gate] = value
+    if (value !== baked[gate]) {
+      diagnostics.push(`Native V2 gate drift: ${gate} is ${value} in the live config but ${baked[gate]} in the installed manifest; using the live value. Reinstall to resync the manifest`)
+    }
+  }
+  return { gates: Object.freeze(gates), diagnostics }
+}
+
 export function readNativeMcpPolicy(manifest) {
   const raw = manifest?.metadata?.global?.mcp
   const source = isPlainObject(raw) ? raw : {}

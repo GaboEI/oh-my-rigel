@@ -38,7 +38,7 @@ import { createNativeWebFetchRedirectGuard, updateNativeWebFetchDefinition } fro
 import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-validator.mjs"
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
-import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeGates, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativeOpenclaw, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs } from "./rigel-v2-native-config.mjs"
+import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativeOpenclaw, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeGates } from "./rigel-v2-native-config.mjs"
 import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
 import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
 import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
@@ -918,7 +918,16 @@ export default {
     // Task 19: hashline is gated by the materialized `hashline_edit` gate. When
     // on, the read enhancer tags V2 read output with LINE#ID and an equivalent
     // `hashline_edit` tool validates the anchor hash before writing.
-    const nativeGates = readNativeGates(manifest)
+    //
+    // Gates resolve under the LIVE vs BAKED policy in `NATIVE_GATE_POLICY`: a gate
+    // the live config declares wins over the install-time manifest, so editing
+    // `~/.omo/omo.jsonc` no longer needs a reinstall to take effect, and a declared
+    // value that disagrees with the baked manifest is REPORTED instead of silently
+    // overridden. The chain is read at the instance's own location, which is the
+    // same location the rest of this setup is gated on.
+    const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env })
+    for (const diagnostic of gateResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
+    const nativeGates = gateResolution.gates
     // The auto-update-checker effect. V1 checked the published plugin's npm
     // dist-tags once per startup and toasted a newer version. The native runtime
     // fetches the same registry at most once per day, caches the result in
@@ -1844,6 +1853,9 @@ export default {
         manifest,
         context,
         pluginConfig: context?.config,
+        // The runtime-resolved gates (LIVE vs BAKED policy), so the families this
+        // aggregator builds agree with every other gate consumer in this setup.
+        gates: nativeGates,
         // The per-session todo registry this runtime owns (Fase 3 T5b). Without
         // it `session_info`/`session_read` can only report an empty list while
         // the task tools silently wrote nothing a session could read back.
@@ -2240,6 +2252,10 @@ export default {
       context,
       manifest,
       directory: location.directory,
+      // Same runtime-resolved gate record the rest of this setup used, so the
+      // conditional families cannot register from a stale baked value the runtime
+      // already superseded.
+      gates: nativeGates,
       // The task tools mirror every write into the same per-session registry the
       // session tools read, so a created/updated task becomes a visible todo.
       syncTodos: taskTodoSync?.syncTodos,
