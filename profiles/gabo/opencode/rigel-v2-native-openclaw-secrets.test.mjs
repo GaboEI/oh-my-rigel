@@ -307,3 +307,29 @@ describe("OpenClaw secret references", () => {
     expect(replyListener).toEqual({ discordBotToken: { env: "DISCORD_BOT_TOKEN" }, telegramBotToken: "env:TELEGRAM_BOT_TOKEN" })
   })
 })
+
+describe("OpenClaw channel credential audit", () => {
+  test("#given notification channels #when audited for installation #then their tokens are classified by path and a2a peers are left alone", () => {
+    // given
+    const openclaw = {
+      enabled: true,
+      channels: {
+        alerts: { transport: "discord", token: "env:DISCORD_BOT_TOKEN", channelId: "c1" },
+        ops: { transport: "telegram", token: "plain-tg-token", chatId: "42" },
+        broken: { transport: "telegram", token: { secret: "nope" }, chatId: "42" },
+        a2a: { enabled: true, peers: { alpha: { token: "env:A2A_TOKEN" } } },
+      },
+    }
+
+    // when
+    const audit = auditOpenclawSecretRefs(openclaw)
+
+    // then
+    expect(audit).toEqual({
+      references: ["openclaw.channels.alerts.token"],
+      plaintext: ["openclaw.channels.ops.token"],
+      invalid: ["openclaw.channels.broken.token"],
+    })
+    expect(JSON.stringify(audit)).not.toContain("plain-tg-token")
+  })
+})

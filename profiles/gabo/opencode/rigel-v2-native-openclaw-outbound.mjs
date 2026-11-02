@@ -20,6 +20,12 @@
  * injected, a failure is a `degraded` transition (one line, deduplicated by
  * error class) and a later success is the recovery transition. Delivery itself
  * is untouched: same payload, same alias order, same single attempt, no retry.
+ *
+ * U5 (§U5) adds the NEW namespace's notification route below the legacy loop:
+ * `channels.<name>` entries resolved once at setup and dispatched to the Discord
+ * and Telegram notification transports. The legacy adapter keeps its own route
+ * space (§5.2) and its payload/alias/order byte for byte; a legacy configuration
+ * resolves zero channels, so nothing new is sent for it.
  */
 import {
   buildOpenclawPayload,
@@ -43,6 +49,10 @@ export const OPENCLAW_OUTBOUND_STATUS_SURFACE = "outbound"
  */
 export function openclawDispatchErrorClass(result) {
   if (result === null || typeof result !== "object") return "dispatch-failed"
+  // A notification transport already reduced its failure to the stable class of
+  // §1; re-deriving it from text would lose the precise reason and report a
+  // refused send and a missing credential as the same generic transport error.
+  if (typeof result.errorClass === "string" && result.errorClass.length > 0) return result.errorClass
   if (typeof result.statusCode === "number") return `http-${result.statusCode}`
   const error = typeof result.error === "string" ? result.error : ""
   if (/timeout/i.test(error)) return "timeout"
@@ -50,6 +60,18 @@ export function openclawDispatchErrorClass(result) {
   if (/^No command configured$/i.test(error)) return "no-command"
   if (/^Command exited with code /i.test(error)) return "command-exit"
   return "transport-error"
+}
+
+/**
+ * The interpolation variables the legacy loop has always built: every defined
+ * context value as a string, then the hook alias and the timestamp.
+ */
+function contextVariables(context, hookEvent, timestamp) {
+  const variables = {}
+  for (const [key, value] of Object.entries(context)) if (value !== undefined) variables[key] = String(value)
+  variables.event = hookEvent
+  variables.timestamp = timestamp
+  return variables
 }
 
 export function createOpenclawOutbound({
@@ -68,6 +90,13 @@ export function createOpenclawOutbound({
    * before: no reporting and no storage access.
    */
   statusDocument,
+  /**
+   * Notification channels of the NEW `channels.<name>` namespace, already
+   * resolved by `resolveOpenclawNotificationChannels` (U5). Empty or absent, this
+   * module emits no Discord/Telegram send at all, which is what keeps a
+   * legacy-only configuration byte-identical to the pre-U5 call sequence.
+   */
+  notificationChannels = [],
 } = {}) {
   const enabled = Boolean(config && config.enabled === true)
   const debug = env?.OMO_OPENCLAW_DEBUG === "1"
@@ -107,29 +136,26 @@ export function createOpenclawOutbound({
     const replyTarget = event.replyTarget ?? env?.OPENCLAW_REPLY_TARGET
     const replyThread = event.replyThread ?? env?.OPENCLAW_REPLY_THREAD
     const tmuxSession = typeof event.tmuxSession === "string" ? event.tmuxSession : undefined
+    const context = {
+      sessionId: sessionID,
+      projectPath,
+      projectName: projectNameOf(projectPath),
+      tmuxSession,
+      prompt: event.prompt,
+      contextSummary: event.contextSummary,
+      reasoning: event.reasoning,
+      question: event.question,
+      tmuxTail: event.tmuxTail,
+      replyChannel,
+      replyTarget,
+      replyThread,
+    }
 
     let result = null
     for (const hook of hooks) {
       const resolved = resolveGateway(config, hook)
       if (!resolved) continue
-      const context = {
-        sessionId: sessionID,
-        projectPath,
-        projectName: projectNameOf(projectPath),
-        tmuxSession,
-        prompt: event.prompt,
-        contextSummary: event.contextSummary,
-        reasoning: event.reasoning,
-        question: event.question,
-        tmuxTail: event.tmuxTail,
-        replyChannel,
-        replyTarget,
-        replyThread,
-      }
-      const variables = {}
-      for (const [key, value] of Object.entries(context)) if (value !== undefined) variables[key] = String(value)
-      variables.event = hook
-      variables.timestamp = timestamp
+      const variables = contextVariables(context, hook, timestamp)
       const interpolatedInstruction = interpolateInstruction(resolved.instruction, variables)
       variables.instruction = interpolatedInstruction
       if (resolved.gateway.type === "command") {
@@ -173,7 +199,52 @@ export function createOpenclawOutbound({
     if (debug && result !== null) {
       log(`[openclaw] wake ${rawEvent} -> ${result.gateway}: ${result.success ? "ok" : result.error ?? "failed"}`)
     }
-    return result
+
+    /**
+     * The NEW namespace's notification channels (U5). §5.2 gives the two adapters
+     * separate route spaces, so this runs after the legacy loop instead of
+     * competing with it, and only for the events a channel explicitly names. A
+     * legacy configuration resolves zero channels, so this loop iterates nothing
+     * and the pinned call sequence cannot move.
+     *
+     * A delivered notification writes the same chat correlation the legacy path
+     * writes: that handle is what a later reply is matched against, which is what
+     * finally makes the Telegram reply loop reachable (confirmed defect 3).
+     */
+    const notifications = []
+    for (const channel of notificationChannels) {
+      if (!Array.isArray(channel?.events) || !channel.events.includes(rawEvent)) continue
+      const variables = contextVariables(context, rawEvent, timestamp)
+      const text = interpolateInstruction(channel.instruction, variables)
+      const delivered = await dispatchGateway({
+        gatewayName: channel.name,
+        gateway: {
+          type: channel.transport,
+          token: channel.token,
+          ...(channel.transport === "telegram" ? { chatId: channel.target } : { channelId: channel.target }),
+        },
+        message: { text },
+        fetchImpl,
+        env,
+      })
+      notifications.push(delivered)
+      await reportOutcome(delivered)
+      if (delivered !== null && delivered.success === true && typeof delivered.messageId === "string" && typeof delivered.platform === "string" && rawEvent !== "session.deleted") {
+        await registry?.register?.({
+          sessionID,
+          projectPath,
+          platform: normalizePlatform(delivered.platform),
+          messageId: delivered.messageId,
+          channelId: delivered.channelId,
+          createdAt: timestamp,
+        })
+      }
+      if (debug && delivered !== null) {
+        log(`[openclaw] notify ${rawEvent} -> ${channel.name}: ${delivered.success ? "ok" : delivered.errorClass ?? "failed"}`)
+      }
+    }
+
+    return result ?? notifications[0] ?? null
   }
 
   return { enabled, handleEvent }

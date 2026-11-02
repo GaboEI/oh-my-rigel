@@ -18,6 +18,10 @@
  *   - `agentCore` is the NEW namespace's correlation key space, bounded queue and
  *     status document. It is built only when `channels` names an identity, so a
  *     legacy config never constructs it and its call sequence cannot move.
+ *   - the NEW namespace's notification channels (U5) are resolved ONCE here
+ *     (`channels.<name>` → Discord/Telegram endpoints) and handed to the
+ *     outbound route. A legacy config resolves none, which is what keeps
+ *     "legacy only" free of any new Discord/Telegram send.
  *
  * The single strict gate is the normalized config: `normalizeOpenclawConfig`
  * returns `null` unless `enabled === true`, so an absent or disabled block means
@@ -35,6 +39,7 @@ import { createOpenclawRegistry } from "./rigel-v2-native-openclaw-registry.mjs"
 import { createOpenclawAgentRegistry, resolveOpenclawAgentNamespace } from "./rigel-v2-native-openclaw-agent-registry.mjs"
 import { createOpenclawAgentQueue } from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import { createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
+import { describeOpenclawChannelDiagnostic, resolveOpenclawNotificationChannels } from "./rigel-v2-native-openclaw-notification.mjs"
 
 /**
  * Build the new namespace's core over the same storage domain the chat registry
@@ -136,6 +141,19 @@ export function createNativeOpenclaw({
     : { replyListener: undefined, diagnostics: [], disabled: [] }
   for (const diagnostic of secrets.diagnostics) log(`[oh-my-rigel] Native V2 openclaw ${diagnostic}`)
 
+  // The NEW namespace's notification channels (U5). Resolution happens once,
+  // here at setup, never per send (§8), and it reads the RAW block because
+  // `channels` is not part of the normalized legacy shape. A legacy
+  // configuration has no `channels`, so this resolves zero endpoints and no new
+  // Discord/Telegram send can exist for it. A channel that fails a check stays
+  // disabled and reports one named line: never in silence (criterion 4).
+  const notifications = enabled
+    ? resolveOpenclawNotificationChannels(config?.channels, { env })
+    : { channels: [], diagnostics: [] }
+  for (const diagnostic of notifications.diagnostics) {
+    log(`[oh-my-rigel] Native V2 openclaw ${describeOpenclawChannelDiagnostic(diagnostic)}`)
+  }
+
   // Mirror the fatals setup just announced into the document, so `/openclaw-status`
   // can explain WHY a surface is down. `emitLine:false` is deliberate: the line
   // above is the banner, and a second line for one transition would break the
@@ -154,6 +172,13 @@ export function createNativeOpenclaw({
       surface: `credentials.${failure.surface}`,
       errorClass: failure.reason,
       detail: failure.path,
+    })
+  }
+  for (const diagnostic of notifications.diagnostics) {
+    setupFatals.push({
+      surface: `channels.${typeof diagnostic.path === "string" ? diagnostic.path.split(".")[2] : "unknown"}`,
+      errorClass: diagnostic.reason,
+      detail: diagnostic.path,
     })
   }
 
@@ -184,6 +209,7 @@ export function createNativeOpenclaw({
     now,
     isSubagentSession,
     statusDocument,
+    notificationChannels: notifications.channels,
   })
 
   // The inbound listener delivers ONLY through the internal prompt gate: the V2
@@ -200,6 +226,12 @@ export function createNativeOpenclaw({
     statusDocument,
     ...(typeof env?.RIGEL_OPENCLAW_DISCORD_API_BASE === "string"
       ? { discordApiBase: env.RIGEL_OPENCLAW_DISCORD_API_BASE }
+      : {}),
+    // The Telegram half of the same lab seam: the notification transport reads
+    // the variable itself, and the poller must dial the same base for the reply
+    // loop the notification opens to be reachable end to end.
+    ...(typeof env?.RIGEL_OPENCLAW_TELEGRAM_API_BASE === "string"
+      ? { telegramApiBase: env.RIGEL_OPENCLAW_TELEGRAM_API_BASE }
       : {}),
   })
 
@@ -268,6 +300,11 @@ export function createNativeOpenclaw({
     // Reported only when the new namespace exists, so a legacy config keeps the
     // exact three-key surface the pinned tests assert.
     if (agentCore) value.agent = agentCore.outline()
+    // Notification routes (U5): names and events only. The resolved credential is
+    // deliberately absent from every observability surface.
+    if (notifications.channels.length > 0) {
+      value.channels = notifications.channels.map((channel) => ({ name: channel.name, transport: channel.transport, events: [...channel.events] }))
+    }
     return value
   }
 
