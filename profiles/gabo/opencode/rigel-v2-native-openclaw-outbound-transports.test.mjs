@@ -163,6 +163,7 @@ describe("openclaw outbound: the Telegram reply loop is reachable", () => {
               message_id: 12,
               text: "are you done?",
               chat: { id: 42 },
+              from: { id: "u-telegram" },
               reply_to_message: { message_id: 500 },
             },
           }],
@@ -183,6 +184,9 @@ describe("openclaw outbound: the Telegram reply loop is reachable", () => {
         channels: {
           ops: { transport: "telegram", token: "bot-token", chatId: "42", instruction: "finished {{sessionId}}", events: ["session.idle"] },
         },
+        // §U7: the new namespace cannot open the Telegram poller without a user
+        // list, so the reachability test declares the author it replies as.
+        replyPolicy: { telegram: { allowedAuthors: ["u-telegram"] } },
         replyListener: { telegramBotToken: "bot-token", telegramChatId: "42" },
       },
       env: { RIGEL_OPENCLAW_TELEGRAM_API_BASE: TELEGRAM_BASE },

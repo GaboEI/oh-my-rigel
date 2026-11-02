@@ -1,6 +1,6 @@
 /**
  * Native V2 OpenClaw REPLY POLICY: explicit authorization for the reply surface
- * (`Unidades_Atomicas_OpenClaw.md` §U6).
+ * (`Unidades_Atomicas_OpenClaw.md` §U6) and its Telegram user filter (`§U7`).
  *
  * The legacy reply listener gates its Discord poller on
  * `token && channelId && authorizedDiscordUserIds.length > 0`
@@ -10,6 +10,12 @@
  * removes for the new namespace: §9.3 keeps an *unauthorized author* silent
  * (answering would be an oracle), but a configuration with no authorized author
  * at all is a configuration error and has to be named.
+ *
+ * Telegram has the same shape of defect one step further: its poller is gated on
+ * `token && chatId` and filters messages by CHAT only, so anybody who can write in
+ * that conversation reaches the session (defect 8). §U7 makes the user list
+ * mandatory in the new namespace — `openclaw.replyPolicy.telegram.allowedAuthors`
+ * — and lets legacy keep the chat-only filter it has always had.
  *
  * Two rules decide the shape here:
  *
@@ -33,13 +39,17 @@
 import { isPlainObject } from "./rigel-v2-native-openclaw-core.mjs"
 
 /**
- * Identities a `replyPolicy` block may name today. `discord-bot` is the platform
- * tag the chat correlation registry already writes for a Discord wake, so a
- * policy names the same identity the poller reads. Telegram's user filter is a
- * separate seam (`§U7`); naming it here before that unit exists would give an
- * unimplemented identity the appearance of support.
+ * Identities a `replyPolicy` block may name today. Each one is the platform tag
+ * the chat correlation registry already writes for that wake — `discord-bot` for
+ * a Discord bot message and `telegram` for a Telegram one — so a policy names
+ * exactly the identity its poller reads.
+ *
+ * `telegram` arrived with §U7. It is the same key that used to be rejected as
+ * `unsupported-identity`, and now it is the ONLY source of Telegram
+ * authorization: the legacy reply listener has no user field at all (defect 8 —
+ * it filters by chat only), so there is no legacy list for it to fall back to.
  */
-export const OPENCLAW_REPLY_POLICY_IDENTITIES = Object.freeze(["discord-bot"])
+export const OPENCLAW_REPLY_POLICY_IDENTITIES = Object.freeze(["discord-bot", "telegram"])
 
 /** Keys a `replyPolicy.<identity>` block may carry. `allowedAuthors` is the gate. */
 export const OPENCLAW_REPLY_POLICY_KEYS = Object.freeze(["allowedAuthors"])
@@ -116,6 +126,13 @@ export function resolveOpenclawReplyPolicy(rawPolicy) {
 
   // Declaring the block without naming the served identity IS the absence of
   // authorization, so it is reported rather than treated as an empty namespace.
+  //
+  // Kept Discord-scoped on purpose. It answers "the policy mentioned the
+  // namespace but authorized nobody at all", which §U6 owns for Discord; whether a
+  // specific INBOUND surface is configured is knowledge this pure resolver does
+  // not have, and inventing a `telegram` diagnostic here would report a disabled
+  // surface on installations that never configured Telegram at all. The
+  // composition reports the Telegram surface by its credentials (§U7).
   if (identities.length === 0 && !diagnostics.some((diagnostic) => diagnostic.identity === "discord-bot")) {
     diagnostics.push({ path: "openclaw.replyPolicy.discord-bot", reason: "missing-authorized-authors", identity: "discord-bot" })
   }
@@ -124,8 +141,8 @@ export function resolveOpenclawReplyPolicy(rawPolicy) {
 }
 
 /**
- * The authorization the Discord inbound poller must apply, derived from a
- * resolved policy.
+ * The authorization one identity's poller must apply, derived from a resolved
+ * policy.
  *
  * `explicit` is false when the policy was declared but authorized nobody: the
  * poller then stays down (fail closed) and the composition reports why. Returning
@@ -134,12 +151,39 @@ export function resolveOpenclawReplyPolicy(rawPolicy) {
  * reported".
  *
  * @param {ReturnType<typeof resolveOpenclawReplyPolicy>} policy
+ * @param {"discord-bot"|"telegram"} identity
  * @returns {{ source: "replyPolicy", explicit: boolean, allowedAuthors: string[] }}
  */
-export function authorizeDiscordAuthors(policy) {
+function authorizeIdentity(policy, identity) {
   const entry = Array.isArray(policy?.identities)
-    ? policy.identities.find((candidate) => candidate?.identity === "discord-bot")
+    ? policy.identities.find((candidate) => candidate?.identity === identity)
     : undefined
   const allowedAuthors = entry && Array.isArray(entry.allowedAuthors) ? [...entry.allowedAuthors] : []
   return { source: "replyPolicy", explicit: allowedAuthors.length > 0, allowedAuthors }
+}
+
+/**
+ * The Discord inbound poller's authorization (`§U6`).
+ *
+ * @param {ReturnType<typeof resolveOpenclawReplyPolicy>} policy
+ * @returns {{ source: "replyPolicy", explicit: boolean, allowedAuthors: string[] }}
+ */
+export function authorizeDiscordAuthors(policy) {
+  return authorizeIdentity(policy, "discord-bot")
+}
+
+/**
+ * The Telegram inbound poller's authorization (`§U7`).
+ *
+ * The list is of USERS (`message.from.id`), not chats: the chat filter keeps
+ * narrowing the poll to the configured conversation, and this narrows it to the
+ * people allowed to write in it. One field name for both identities
+ * (`allowedAuthors`, `Contrato_Transportes_OpenClaw.md` §5.1) so the intermediate
+ * representation keeps a single shape.
+ *
+ * @param {ReturnType<typeof resolveOpenclawReplyPolicy>} policy
+ * @returns {{ source: "replyPolicy", explicit: boolean, allowedAuthors: string[] }}
+ */
+export function authorizeTelegramAuthors(policy) {
+  return authorizeIdentity(policy, "telegram")
 }
