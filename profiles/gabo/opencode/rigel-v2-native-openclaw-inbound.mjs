@@ -58,6 +58,21 @@
  * twice. The ack payload, the ack order and the processing order are untouched:
  * a failed ack holds the cursor instead of dropping the message, and a message
  * that is already terminal never counts twice.
+ *
+ * Three failure modes of that machinery are explicit here, because each one used
+ * to be indistinguishable from a healthy poll:
+ *   - A cursor whose write could not land is reported on the platform surface
+ *     (`cursor-persist`) instead of a success, for as long as the in-memory value
+ *     is ahead of storage. Processing continues on the in-memory frontier; what is
+ *     degraded is durability, and the document says so.
+ *   - A Telegram offset that is no longer a valid resume point is retired and the
+ *     poll restarts from the platform's own pending set, reported once as
+ *     `cursor-expired`. The duplicate memory survives, so the re-read cannot inject
+ *     a reply that already reached its session.
+ *   - A reply with nothing injectable is TERMINAL, not a refusal: it spends no rate
+ *     limit token, halts nothing, and lets the cursor pass it. Halting on it re-read
+ *     the same message every cycle until the budget was gone, and the frontier then
+ *     moved past replies that had never been injected.
  */
 import {
   DEFAULT_REPLY_POLL_INTERVAL_MS,
@@ -282,18 +297,26 @@ export function createOpenclawInbound({
   }
 
   /**
-   * The single delivery path. The prefix is applied to the raw reply, then the
-   * whole string is sanitized and truncated, exactly like V1's
-   * `injectReplyIntoPane`; only the final effect differs (queued prompt instead
-   * of `send-keys`).
+   * The exact text this module would inject for a raw reply: the whole of the V1
+   * transformation (prefix, sanitize, truncate) with no side effect, so emptiness
+   * can be decided BEFORE the rate limiter is consulted. A reply with nothing to
+   * inject owes nothing, and spending a token on it is what turned one attachment
+   * into a window the poller could never get past.
    */
-  async function deliver(content, platform, sessionID) {
+  function prepareReplyText(content, platform) {
     const prefix = includePrefix ? `[reply:${platform}] ` : ""
     const sanitized = sanitizeReplyInput(prefix + (typeof content === "string" ? content : ""))
-    const truncated = sanitized.slice(0, maxMessageLength)
-    if (truncated.length === 0) return false
+    return sanitized.slice(0, maxMessageLength)
+  }
+
+  /**
+   * The single delivery path. The text arrives prepared, so `false` means exactly
+   * one thing: the gate refused this session or the host rejected the prompt, and
+   * `halt` is then the right answer for the rest of the window.
+   */
+  async function deliver(text, sessionID) {
     try {
-      return await deliverInboundReply({ sessionID, text: truncated })
+      return await deliverInboundReply({ sessionID, text })
     } catch (error) {
       log(`ERROR: inbound reply delivery failed: ${errorMessage(error)}`)
       return false
@@ -359,8 +382,8 @@ export function createOpenclawInbound({
    * Resolve one Discord message and report how the cursor must treat it.
    *
    *   "advance"      terminal: nothing is owed (no reply reference, an
-   *                  unauthorized author, an expired correlation, a rate-limit
-   *                  drop) or the acknowledgement already landed
+   *                  unauthorized author, an expired correlation, an empty reply,
+   *                  a rate-limit drop) or the acknowledgement already landed
    *   "acknowledged" the reply is in the session AND its ack landed now
    *   "hold"         the reply is in the session but the ack failed: the cursor
    *                  must not move, yet later messages still run because they
@@ -388,14 +411,23 @@ export function createOpenclawInbound({
     if (!authorizedUserIds.includes(message?.author?.id)) return { outcome: "advance" }
     const mapping = registry?.lookup?.("discord-bot", replyToMessageId)
     if (!mapping) return { outcome: "advance" }
+    const text = prepareReplyText(message.content, "discord")
+    // An attachment with no text and no prefix has nothing to inject. It is not a
+    // refusal: refusing it halted the window, and because the frontier never moved
+    // the same message came back every poll until the rate-limit budget was gone,
+    // after which the frontier passed replies that had never been injected. Nothing
+    // is owed, so it is terminal and it does not spend a token.
+    if (text.length === 0) return { outcome: "advance" }
     if (!rateLimiter.canProceed()) {
       // §9.3: an individual rate-limit drop is never reported. It only moves the
-      // aggregate counter, so the channel stays readable.
+      // aggregate counter, so the channel stays readable. The drop is terminal for
+      // this message (V1 semantics: a rate-limited reply is not retried) and moving
+      // the frontier past it is what keeps one drop from pinning the window.
       state.errors += 1
       await statusDocument?.recordRateLimit?.(OPENCLAW_DISCORD_STATUS_SURFACE)
       return { outcome: "advance" }
     }
-    if (!(await deliver(message.content, "discord", mapping.sessionID))) {
+    if (!(await deliver(text, mapping.sessionID))) {
       state.errors += 1
       await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "discord" })
       return { outcome: "halt" }
@@ -409,11 +441,35 @@ export function createOpenclawInbound({
     return { outcome: "acknowledged" }
   }
 
+  /**
+   * Report what became of one poll, in one place, so `recordSuccess` cannot be
+   * reached while the in-memory cursor is still ahead of storage. That is the whole
+   * of the "no silent advancement" rule: processing does not stop when a write
+   * fails, but the surface says the durable half is degraded until it lands.
+   */
+  async function reportPollOutcome(surface, { expired = false } = {}) {
+    if (cursors.unsaved() > 0) {
+      state.errors += 1
+      await statusDocument?.recordFailure?.(surface, { errorClass: "cursor-persist" })
+      return
+    }
+    if (expired) {
+      // One shot: the retired position is gone, so it cannot be stale again.
+      state.errors += 1
+      await statusDocument?.recordFailure?.(surface, { errorClass: "cursor-expired" })
+      return
+    }
+    await statusDocument?.recordSuccess?.(surface)
+  }
+
   async function pollDiscord() {
     if (!discordEnabled) return
     if (now() < discordBackoffUntil) return
     const channel = String(normalized.discordChannelId)
-    const stored = cursors.cursorFor(DISCORD_PLATFORM, channel)
+    // Discord is exempt from resume expiry: its ids only grow, so an old `after=`
+    // value can never skip a newer message.
+    const resume = cursors.resumeCursorFor(DISCORD_PLATFORM, channel)
+    const stored = resume.cursor
     const query = stored ? `?after=${stored}&limit=10` : "?limit=10"
     let response
     try {
@@ -455,7 +511,12 @@ export function createOpenclawInbound({
       return
     }
     if (!Array.isArray(messages) || messages.length === 0) {
-      await statusDocument?.recordSuccess?.(OPENCLAW_DISCORD_STATUS_SURFACE)
+      // §U8: an empty window is a healthy poll, but "empty" and "durable" are two
+      // questions, and a cursor left unsaved by an earlier window is still unsaved.
+      // The retry belongs here too: without it a domain that heals while the channel
+      // is quiet would never get its queued write until the next message arrived.
+      await cursors.flush()
+      await reportPollOutcome(OPENCLAW_DISCORD_STATUS_SURFACE, { expired: resume.expired })
       return
     }
 
@@ -487,7 +548,7 @@ export function createOpenclawInbound({
     }
     cursors.setCursor(DISCORD_PLATFORM, channel, frontier)
     await cursors.flush()
-    await statusDocument?.recordSuccess?.(OPENCLAW_DISCORD_STATUS_SURFACE)
+    await reportPollOutcome(OPENCLAW_DISCORD_STATUS_SURFACE, { expired: resume.expired })
   }
 
   /**
@@ -526,6 +587,9 @@ export function createOpenclawInbound({
       if (!authorizedTelegramUserIds.includes(String(userId))) return { outcome: "advance" }
     }
     if (!message?.text) return { outcome: "advance" }
+    const text = prepareReplyText(message.text, "telegram")
+    // Same rule as the Discord port: nothing injectable is terminal, not a refusal.
+    if (text.length === 0) return { outcome: "advance" }
     // The correlation identity of a Telegram message is `(chat, message_id)`: the
     // platform sequences ids per chat, so `77` in another chat is another message.
     // `channel` is the chat this update was read from (already compared above), and
@@ -537,7 +601,7 @@ export function createOpenclawInbound({
       await statusDocument?.recordRateLimit?.(OPENCLAW_TELEGRAM_STATUS_SURFACE)
       return { outcome: "advance" }
     }
-    if (!(await deliver(message.text, "telegram", mapping.sessionID))) {
+    if (!(await deliver(text, mapping.sessionID))) {
       state.errors += 1
       await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "telegram" })
       return { outcome: "halt" }
@@ -551,7 +615,14 @@ export function createOpenclawInbound({
   async function pollTelegram() {
     if (!telegramEnabled) return
     const channel = String(normalized.telegramChatId)
-    const stored = cursors.cursorFor(TELEGRAM_PLATFORM, channel)
+    // §U8 recovery: a stored offset is a promise that the id space still honours it.
+    // Telegram rebuilds that space after a week of inactivity, and an offset above
+    // every new id filters the feed out for good, so a position that has not been
+    // written inside the window is retired and the poll re-reads from zero. The
+    // duplicate memory is what makes that safe: already-acked ids come back as
+    // `advance`, never as a second injection.
+    const resume = cursors.resumeCursorFor(TELEGRAM_PLATFORM, channel)
+    const stored = resume.cursor
     const offset = stored !== null ? stored + 1 : 0
     let response
     try {
@@ -602,7 +673,7 @@ export function createOpenclawInbound({
     }
     cursors.setCursor(TELEGRAM_PLATFORM, channel, frontier)
     await cursors.flush()
-    await statusDocument?.recordSuccess?.(OPENCLAW_TELEGRAM_STATUS_SURFACE)
+    await reportPollOutcome(OPENCLAW_TELEGRAM_STATUS_SURFACE, { expired: resume.expired })
   }
 
   async function loop() {
