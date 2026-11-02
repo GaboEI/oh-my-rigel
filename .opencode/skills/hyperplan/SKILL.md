@@ -1,6 +1,6 @@
 ---
 name: hyperplan
-description: "Adversarial multi-agent planning skill. Self-orchestrates 5 hostile category members (unspecified-low, unspecified-high, deep, ultrabrain, artistry) via team-mode for ruthless cross-critique debate, distills only the defensible insights, then MANDATORILY hands the distilled insight bundle to the `plan` agent for executable plan formalization. Use when planning needs maximum rigor and surfacing of weak assumptions, blind spots, and over-engineering. Triggers: 'hyperplan', 'hpp', '/hyperplan', 'adversarial plan', 'hostile planning', 'cross-critique plan', '하이퍼플랜', '적대적 계획', '교차 비평'."
+description: "Adversarial multi-agent planning skill. Self-orchestrates 5 hostile category members (unspecified-low, unspecified-high, deep-low, ultrabrain, artistry) via team-mode for ruthless cross-critique debate, distills only the defensible insights, then MANDATORILY hands the distilled insight bundle to the `plan` agent for executable plan formalization. Use when planning needs maximum rigor and surfacing of weak assumptions, blind spots, and over-engineering. Triggers: 'hyperplan', 'hpp', '/hyperplan', 'adversarial plan', 'hostile planning', 'cross-critique plan', '하이퍼플랜', '적대적 계획', '교차 비평'."
 ---
 
 # HYPERPLAN — Adversarial Multi-Agent Planning
@@ -24,9 +24,9 @@ Before starting, verify:
 
 ## THE 5 ADVERSARIAL MEMBERS — RnR & CHARACTERISTICS
 
-Each member is a `kind: "category"` team member. They route through `sisyphus-junior` with the category's model and prompt-append shaping their behavior. The `prompt` field below is the **system prompt** that establishes their adversarial identity.
+Each member is a category team member. They route through `sisyphus-junior` with the category's model and prompt-append shaping their behavior. The `prompt` field below is the **system prompt** that establishes their adversarial identity.
 
-Required categories are `unspecified-low`, `unspecified-high`, `ultrabrain`, and `artistry`. Include `deep` only when that category is enabled; if `deep` is disabled or unavailable, retry without only the researcher member and state the degraded roster.
+Required categories are `unspecified-low`, `unspecified-high`, `ultrabrain`, and `artistry`. Include `deep-low` only when that category is enabled; if `deep-low` is disabled or unavailable, retry without only the researcher member and state the degraded roster.
 
 ### CATEGORY CHARACTERISTICS REFERENCE
 
@@ -34,7 +34,7 @@ Required categories are `unspecified-low`, `unspecified-high`, `ultrabrain`, and
 |----------|-------|----------------|--------------------------------|
 | `unspecified-low` | gpt-5.6-luna xhigh | Mid-tier, simplicity-leaning, structure-demanding | Pragmatist Skeptic — model bias toward simplicity makes it the natural enemy of over-engineering |
 | `unspecified-high` | claude-opus-5-5 medium -> glm-5.3 max -> kimi-k3 max | High-effort, broad-impact, coordination-aware | Integration Tester — broad-scope thinking exposes cross-module fragility |
-| `deep` | gpt-5.6-sol medium | Autonomous, exploration-heavy, evidence-driven | Autonomous Researcher — natural exploration bias attacks unfounded claims |
+| `deep-low` | gpt-5.6-sol medium | Autonomous, exploration-heavy, evidence-driven | Autonomous Researcher — natural exploration bias attacks unfounded claims |
 | `ultrabrain` | gpt-5.6-sol xhigh | Hard-logic, simplicity-biased, strategic advisor | Architect Strategist — xhigh reasoning sees structural flaws others miss |
 | `artistry` | claude-fable-5 xhigh | Unconventional, pattern-breaking, lateral | Creative Challenger — pattern-breaking bias attacks orthodox thinking |
 
@@ -95,7 +95,7 @@ When you receive others' findings, default position: assume they missed somethin
 Output format: numbered findings/critiques, each ≤3 sentences. Cite specific edge cases and integration points. No prose.
 ```
 
-### MEMBER 3: `researcher` (category: `deep`)
+### MEMBER 3: `researcher` (category: `deep-low`)
 
 **Role**: The Autonomous Researcher.
 **Position**: Enemy of unfounded claims. Evidence demander.
@@ -200,31 +200,28 @@ You execute this in **7 phases**. End your turn at every phase boundary marked *
 
 ### Phase 1: Spawn the adversarial team
 
-Call `team_create` ONCE with this exact inline_spec shape (substitute the prompt strings with the full system prompts above):
+Call `team_create` ONCE with this exact V2 shape (substitute the prompt strings with the full system prompts above):
 
 ```typescript
 team_create({
-  inline_spec: {
-    name: "hyperplan",
-    description: "Adversarial planning team for cross-critique debate.",
-    members: [
-      { name: "skeptic",    kind: "category", category: "unspecified-low",  prompt: "<full Skeptic system prompt>" },
-      { name: "validator",  kind: "category", category: "unspecified-high", prompt: "<full Validator system prompt>" },
-      { name: "researcher", kind: "category", category: "deep",             prompt: "<full Researcher system prompt>" },
-      { name: "architect",  kind: "category", category: "ultrabrain",       prompt: "<full Architect system prompt>" },
-      { name: "creative",   kind: "category", category: "artistry",         prompt: "<full Creative system prompt>" }
-    ]
-  }
+  team_name: "hyperplan",
+  members: [
+    { name: "skeptic",    category: "unspecified-low",  prompt: "<full Skeptic system prompt>" },
+    { name: "validator",  category: "unspecified-high", prompt: "<full Validator system prompt>" },
+    { name: "researcher", category: "deep-low",         prompt: "<full Researcher system prompt>" },
+    { name: "architect",  category: "ultrabrain",       prompt: "<full Architect system prompt>" },
+    { name: "creative",   category: "artistry",         prompt: "<full Creative system prompt>" }
+  ]
 })
 ```
 
-Capture the returned `teamRunId`. You will use it for every subsequent call.
+Use `team_name: "hyperplan"` for every subsequent team call.
 
-If `team_create` errors because `deep` is disabled or unavailable, retry once without the `researcher` member. Do not drop `unspecified-low`, `unspecified-high`, `ultrabrain`, or `artistry`.
+If `team_create` errors because `deep-low` is disabled or unavailable, retry once without the `researcher` member. Do not drop `unspecified-low`, `unspecified-high`, `ultrabrain`, or `artistry`.
 
 ### Phase 2: Round 1 — Independent analysis
 
-Send the same prompt to all 5 members via 5 parallel `team_send_message` calls. Each member receives:
+Send the same prompt to all 5 members via 5 parallel `team_send_message` calls with `team_name: "hyperplan"`. Each member receives:
 
 ```
 <hyperplan-round-1-task>
@@ -269,7 +266,7 @@ When all 5 Round 1 replies have arrived, aggregate them into one bundle:
 === End ===
 ```
 
-Send this bundle to all 5 members via 5 parallel `team_send_message` calls. Each receives the SAME bundle, but the prompt is:
+Send this bundle to all 5 members via 5 parallel `team_send_message` calls with `team_name: "hyperplan"`. Each receives the SAME bundle, but the prompt is:
 
 ```
 <hyperplan-round-2-task>
@@ -289,6 +286,8 @@ Be HOSTILE. Be RELENTLESS. No collegial hedging. If a finding is weak, EVISCERAT
 When done, send your attacks back to "lead".
 </hyperplan-round-2-task>
 ```
+
+**D13 limitation:** after sending a Round 2 or Round 3 message, resume each idle recipient before waiting; `team_send_message` alone does not wake idle members.
 
 **[WAIT]** End your turn. Wait for all 5 cross-attacks to arrive.
 
@@ -375,15 +374,15 @@ You MUST dispatch the insight bundle to the `plan` agent. The Lead does NOT writ
 1. **Dispatch the handoff** as a foreground task (you wait for the plan):
 
 ```typescript
-task({
+rigel_task({
   subagent_type: "plan",
-  load_skills: [],
+  load_skills: ["ulw-plan"],
   run_in_background: false,
   description: "Formalize hyperplan-distilled insights into executable plan",
   prompt: `<hyperplan-handoff>
 The following insight bundle survived an adversarial 5-member cross-critique debate (skeptic/validator/researcher/architect/creative). Every claim here was either uncontested OR defended/refined under attack — conceded findings were already filtered out.
 
-Your task: produce an EXECUTABLE work plan from these insights. You do NOT need to re-explore the codebase or re-derive the constraints — they are already battle-tested. Your value is plan structure, sequencing, dependency analysis, parallelization opportunities, and explicit verification criteria per task.
+Your task: use `ulw-plan` to produce an EXECUTABLE work plan from these insights and save it as `.omo/plans/<slug>.md`. You do NOT need to re-explore the codebase or re-derive the constraints — they are already battle-tested. Your value is plan structure, sequencing, dependency analysis, parallelization opportunities, and explicit verification criteria per task. Return the saved artifact path with the plan.
 
 Hard rules for your plan:
 - Every Hard Constraint MUST be respected by the plan.
@@ -408,15 +407,15 @@ Hard rules for your plan:
 
 4. If the plan agent returns clarifying questions instead of a plan, forward them to the user without modification — the planner is allowed to interview before committing.
 
-DO NOT save the plan to disk unless the user asks. Hyperplan is a planning consultation, not a file-emitting workflow — the plan lives in your conversation output.
+The plan agent MUST save the executable plan under `.omo/plans/<slug>.md` so `/ulw-execute` can consume it. Hyperplan also presents the plan in the conversation output.
 
 ### Phase 7: Cleanup
 
 After the plan agent's output has been presented to the user:
 
-1. Call `team_shutdown_request` for each of the 5 members.
-2. The Lead can `team_approve_shutdown` for each member (Lead has approval authority).
-3. Once all 5 are shut down, call `team_delete({ teamRunId })` to clean up runtime state.
+1. Call `team_shutdown_request({ team_name: "hyperplan" })`.
+2. The Lead can call `team_approve_shutdown({ team_name: "hyperplan" })` (Lead has approval authority).
+3. Once all 5 are shut down, call `team_delete({ team_name: "hyperplan" })` to clean up runtime state.
 4. Confirm cleanup to the user with one line: "Hyperplan team disbanded."
 
 If any step fails, surface the error and suggest manual cleanup via `team_list` and `team_delete`.
@@ -434,7 +433,7 @@ If any step fails, surface the error and suggest manual cleanup via `team_list` 
 | **Pre-writing tasks before dispatching to plan agent** | **Anchors the plan agent to your draft and undermines its independent judgment. Dispatch raw insights, let the planner structure.** |
 | Forgetting to clean up the team | Leaks runtime state. Always Phase 7. |
 | Calling `delegate_task` instead of `team_send_message` | These are different systems. `team_*` only for inter-member traffic. |
-| Calling `team_send_message` to ship the bundle to the plan agent | Wrong channel. Plan agent is NOT a team member. Use `task(subagent_type="plan", ...)` for the handoff. |
+| Calling `team_send_message` to ship the bundle to the plan agent | Wrong channel. Plan agent is NOT a team member. Use `rigel_task(subagent_type="plan", ...)` for the handoff. |
 | Running this from a planner agent (prometheus) | Planners cannot orchestrate teams. Must run from sisyphus. |
 | Running this in a non-main session | Team-mode is main-session-only. |
 
@@ -442,7 +441,7 @@ If any step fails, surface the error and suggest manual cleanup via `team_list` 
 
 - Each `team_send_message` is **fire-and-forget** from your perspective. Members reply async.
 - After sending Round-N messages, **end your turn**. The system injects member replies on the next turn.
-- Use `team_status({ teamRunId })` if you need to see who has replied and who is still working.
+- Use `team_status({ team_name: "hyperplan" })` if you need to see who has replied and who is still working.
 - The members do not see each other's text responses directly — only what you forward via `team_send_message`. You are the information broker. The bundles you forward in Phases 3 and 4 are the entire context they have.
 - Keep bundles concise — ≤32KB per message. If aggregated findings exceed this, summarize before forwarding (preserve the spirit of each finding).
 - The skill explicitly forbids you from softening adversarial prompts. The hostility IS the mechanism.
