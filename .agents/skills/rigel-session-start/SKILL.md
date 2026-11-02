@@ -57,6 +57,27 @@ Treat `.omo/rules/protect-opencode-v1.md` as an absolute safety constraint:
 
 This skill provides no authorization to repair, restart, inspect through a mutating interface, or otherwise touch V1. A separate, explicit, task-specific instruction from Gabo is required for any V1 operation.
 
+## Authorization on kris: validate hard, leave nothing behind
+
+kris is a real test environment, not production and not a shared resource. Inside it you have
+standing authorization for the full operating loop, without asking per action: install, uninstall,
+reinstall, run real sessions with real agents, break things, fix them, restart the OpenCode service,
+and reboot the machine when it is saturated. Agent runs on kris have a small daily budget, which is
+ample for targeted validation; spend it on observables, not on blind endurance runs.
+
+The single condition on that authorization is that kris is not a landfill. It exists to be used and
+validated thoroughly, not to accumulate:
+
+- Keep ONE rollback snapshot per change. Do not stack dated copies of the same state.
+- Keep ONE evidence set per change, and keep it on the development host under `.omo/evidence/`. Do
+  not mirror it onto kris and do not duplicate it into a second directory.
+- Clean up what you created once the change is validated or abandoned: version directories from
+  failed installs, temporary checkouts, test sandboxes, orphaned worktrees, probe files, model or
+  package caches you triggered.
+- Deleting gigabytes a run produced is part of finishing the job, not optional housekeeping.
+
+A validation that leaves the environment heavier than it found it is an incomplete validation.
+
 ## Continue the task
 
 After loading the rules, continue the user's requested Oh My Rigel work without asking for ritual confirmation. State briefly that `rigel-session-start` was loaded and identify kris as the only live validation surface before the first runtime experiment. Do not ask Gabo to choose Docker, a laboratory, or another runner.
