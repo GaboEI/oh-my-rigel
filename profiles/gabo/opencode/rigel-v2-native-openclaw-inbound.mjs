@@ -31,6 +31,15 @@
  * line each, deduplicated by class); an individual rate-limit drop only moves the
  * aggregate `rateLimited` counter; an unauthorized author records nothing at all,
  * because §9.3 makes that silence deliberate.
+ *
+ * U6 (`§U6`) touches ONE decision here: where the authorized-author list comes
+ * from. An injected `discordAuthorization` from the new namespace's reply policy
+ * replaces the legacy list outright, and the poller runs only when that list
+ * actually authorizes someone. The gate itself (`enabled` needs a non-empty list)
+ * is unchanged on purpose: the legacy route keeps its silent disablement, and what
+ * the new route adds is that the composition REPORTS an empty authorization
+ * instead of leaving the poller silently off. The per-message filter still never
+ * records an unauthorized author.
  */
 import {
   DEFAULT_REPLY_POLL_INTERVAL_MS,
@@ -99,6 +108,12 @@ export function createInternalPromptGate({ session } = {}) {
  *   reporting is off. Named `statusDocument` because this module already exposes a
  *   `status()` accessor, and a hoisted function declaration would shadow the
  *   parameter inside every poll.
+ * @param {{ source: string, explicit: boolean, allowedAuthors: string[] }} [options.discordAuthorization]
+ *   the NEW namespace's authorization for the Discord inbound surface (`§U6`).
+ *   When provided it REPLACES `replyListener.authorizedDiscordUserIds`: a policy
+ *   that authorizes nobody leaves the list empty, so the poller stays down
+ *   (fail closed) and the composition reports why. When absent, the legacy list
+ *   governs and an empty list disables the poller exactly as before.
  */
 export function createOpenclawInbound({
   replyListener,
@@ -111,9 +126,24 @@ export function createOpenclawInbound({
   statusDocument,
   discordApiBase = process.env.RIGEL_OPENCLAW_DISCORD_API_BASE || DEFAULT_DISCORD_API_BASE,
   telegramApiBase = DEFAULT_TELEGRAM_API_BASE,
+  discordAuthorization,
 } = {}) {
   const normalized = normalizeReplyListenerConfig(replyListener) ?? {}
-  const authorizedUserIds = Array.isArray(normalized.authorizedDiscordUserIds) ? normalized.authorizedDiscordUserIds : []
+  // §U6: one authorization source, never a field-by-field merge. A declared
+  // `openclaw.replyPolicy` governs this identity (`Contrato_Transportes_OpenClaw.md`
+  // §5.2 rule 2); the legacy list is then not consulted at all.
+  const authorization = discordAuthorization && typeof discordAuthorization === "object"
+    ? {
+        source: typeof discordAuthorization.source === "string" ? discordAuthorization.source : "replyPolicy",
+        explicit: discordAuthorization.explicit === true,
+        allowedAuthors: Array.isArray(discordAuthorization.allowedAuthors)
+          ? discordAuthorization.allowedAuthors.filter((entry) => typeof entry === "string" && entry.length > 0)
+          : [],
+      }
+    : undefined
+  const authorizedUserIds = authorization
+    ? authorization.allowedAuthors
+    : Array.isArray(normalized.authorizedDiscordUserIds) ? normalized.authorizedDiscordUserIds : []
   const discordEnabled = Boolean(normalized.discordBotToken && normalized.discordChannelId && authorizedUserIds.length > 0)
   const telegramEnabled = Boolean(normalized.telegramBotToken && normalized.telegramChatId)
   const enabled = discordEnabled || telegramEnabled
@@ -428,6 +458,10 @@ export function createOpenclawInbound({
       ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
       discordLastMessageId: state.discordLastMessageId,
       telegramLastUpdateId: state.telegramLastUpdateId,
+      // §U6: reported only when the new namespace supplied the authorization, so a
+      // legacy configuration keeps the exact status shape the pinned tests assert.
+      // Booleans and the source name only: an author id is data, not observability.
+      ...(authorization ? { authorization: { source: authorization.source, explicit: authorization.explicit } } : {}),
     }
   }
 
