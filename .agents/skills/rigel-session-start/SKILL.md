@@ -68,9 +68,13 @@ ample for targeted validation; spend it on observables, not on blind endurance r
 The single condition on that authorization is that kris is not a landfill. It exists to be used and
 validated thoroughly, not to accumulate:
 
-- Keep ONE rollback snapshot per change. Do not stack dated copies of the same state.
-- Keep ONE evidence set per change, and keep it on the development host under `.omo/evidence/`. Do
-  not mirror it onto kris and do not duplicate it into a second directory.
+- A snapshot is a rollback point for the CURRENT operation, not a history. Taking a new one supersedes
+  the previous: delete the old one in the same breath. If you validate at 14:00 and then validate
+  something else at 15:00, the 14:00 snapshot is garbage - the 15:00 one is the only one that can
+  still restore you. A chain of dated copies is not extra safety, it is unexamined clutter.
+- Keep ONE evidence set per change you actually validated, and keep it on the development host under
+  `.omo/evidence/`. Evidence is a small text record, not a state archive: no tarballs of the whole
+  install, no mirrored copy on kris, no second directory.
 - Clean up what you created once the change is validated or abandoned: version directories from
   failed installs, temporary checkouts, test sandboxes, orphaned worktrees, probe files, model or
   package caches you triggered.
