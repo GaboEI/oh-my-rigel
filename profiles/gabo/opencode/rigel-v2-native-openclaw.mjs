@@ -49,12 +49,14 @@ import { createOpenclawRegistry } from "./rigel-v2-native-openclaw-registry.mjs"
 import { createOpenclawAgentRegistry, resolveOpenclawAgentNamespace } from "./rigel-v2-native-openclaw-agent-registry.mjs"
 import { createOpenclawAgentQueue } from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import { createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
+import { createOpenclawAgentTransport, describeOpenclawAgentPeerDiagnostic, resolveOpenclawAgentPeers } from "./rigel-v2-native-openclaw-agent-transport.mjs"
+import { createOpenclawAgentResponder } from "./rigel-v2-native-openclaw-agent-responder.mjs"
 import { describeOpenclawChannelDiagnostic, resolveOpenclawNotificationChannels } from "./rigel-v2-native-openclaw-notification.mjs"
 import { authorizeDiscordAuthors, authorizeTelegramAuthors, describeOpenclawReplyPolicyDiagnostic, resolveOpenclawReplyPolicy } from "./rigel-v2-native-openclaw-reply-policy.mjs"
 
 /**
  * Build the new namespace's core over the same storage domain the chat registry
- * uses. Three independent pieces, no network and no host API beyond storage:
+ * uses. Four independent pieces, no network and no host API beyond storage:
  *
  *   - `registry` is the agent key space (`rigel-v2/openclaw/agent/`), which is
  *     where the durable single-in-flight slot lives;
@@ -64,19 +66,37 @@ import { authorizeDiscordAuthors, authorizeTelegramAuthors, describeOpenclawRepl
  *     from. It is INJECTED, not built here: the composition owns one document, so
  *     the legacy surfaces (outbound, discord, telegram, injection, config,
  *     credentials) and the agent namespace report into the same storage key
- *     instead of overwriting each other.
+ *     instead of overwriting each other;
+ *   - `transport` + `responder` (U11) are the conversational path: the JSON-RPC
+ *     client that speaks `SendMessage`/`GetTask`, and the reconciliation half that
+ *     injects answers through the SAME internal-prompt gate the chat responder
+ *     uses. Both are inert until a peer is resolved, so a `channels` block with no
+ *     usable peer costs nothing.
  *
  * `hydrate()` reads the durable halves once at setup. It performs storage reads
  * only: zero network, which is the invariant the whole unit is measured against.
  */
-function createAgentCore({ context, namespace, now, log, status }) {
+function createAgentCore({ context, namespace, peers, now, log, status, fetchImpl, deliverAgentReply }) {
   const registry = createOpenclawAgentRegistry({ storage: context?.storage, now, log })
   const queue = createOpenclawAgentQueue({ registry, status, now, log })
+  const transport = createOpenclawAgentTransport({ peers, fetchImpl, log })
+  const responder = createOpenclawAgentResponder({
+    peers,
+    registry,
+    queue,
+    transport,
+    status,
+    deliverAgentReply,
+    now,
+    log,
+  })
   return {
     namespace,
     registry,
     queue,
     status,
+    transport,
+    responder,
     async hydrate() {
       await registry.hydrate()
       await status.hydrate()
@@ -88,9 +108,14 @@ function createAgentCore({ context, namespace, now, log, status }) {
         records: registry.size(),
         inflight: registry.inflightCount(),
         surfaces: status.snapshot().surfaces,
+        // The peers the transport can actually dial. The namespace's `peers` above
+        // is what the configuration declares; this list is what survived U11's
+        // validation, so the difference is visible instead of silent.
+        dialablePeers: transport.peerNames(),
       }
     },
     dispose() {
+      responder.dispose()
       queue.clearAll()
     },
   }
@@ -184,6 +209,17 @@ export function createNativeOpenclaw({
   // configuration that never mentions the new namespace keeps the legacy silence.
   const agentNamespace = resolveOpenclawAgentNamespace(config)
   const newNamespaceInPlay = agentNamespace.declared || replyPolicy.declared
+
+  // U11: the NEW namespace's A2A converser. Peer resolution happens ONCE here and
+  // performs no network at all: the agent card is discovered lazily, on the first
+  // send (§11.3). A peer with a broken secret reference, an invalid URL, an
+  // unknown key or a duplicate token is dropped and named, never ignored.
+  const agentPeers = enabled && agentNamespace.declared
+    ? resolveOpenclawAgentPeers(config?.channels?.a2a, { env })
+    : { declared: false, enabled: false, peers: [], diagnostics: [], disabled: [] }
+  for (const diagnostic of agentPeers.diagnostics) {
+    log(`[oh-my-rigel] Native V2 openclaw ${describeOpenclawAgentPeerDiagnostic(diagnostic)}`)
+  }
   const legacyAuthorizedAuthors = Array.isArray(normalized?.replyListener?.authorizedDiscordUserIds)
     ? normalized.replyListener.authorizedDiscordUserIds
     : []
@@ -283,10 +319,25 @@ export function createNativeOpenclaw({
       detail: diagnostic.path,
     })
   }
+  for (const diagnostic of agentPeers.diagnostics) {
+    setupFatals.push({
+      // A peer-level fault disables exactly that peer; a channel-level fault closes
+      // the whole A2A surface, so the document distinguishes the two.
+      surface: typeof diagnostic.peer === "string" ? `a2a.${diagnostic.peer}` : "a2a",
+      errorClass: diagnostic.reason,
+      detail: diagnostic.path,
+    })
+  }
 
   // The registry is the durable correlation store; `ctx.storage` is the V2
   // domain, and an absent one still works from the in-process index.
   const registry = createOpenclawRegistry({ storage: context?.storage, now, log })
+
+  // The inbound listener delivers ONLY through the internal prompt gate: the V2
+  // equivalent of V1's `tmux send-keys` injection, but a real queued session
+  // prompt the host has to accept. The agent responder reuses the SAME gate, so
+  // there is exactly one chokepoint an injected text can cross (§2).
+  const deliverInboundReply = createInternalPromptGate({ session: context?.session })
 
   // The new namespace gets its own core, and ONLY when it is declared AND the
   // global switch is on. The predicate reads the raw block: recognizing
@@ -296,7 +347,19 @@ export function createNativeOpenclaw({
   // below is constructed for it, and `openclaw.enabled` stays the single global
   // switch (Contrato_Transportes_OpenClaw.md §5.2 rule 4).
   const agentCore = enabled && agentNamespace.declared
-    ? createAgentCore({ context, namespace: agentNamespace, now, log, status: statusDocument })
+    ? createAgentCore({
+      context,
+      namespace: agentNamespace,
+      // Only the peers that survived validation: an empty list builds an inert
+      // core whose responder never starts, which is what a `channels` block
+      // without a usable peer must cost.
+      peers: agentPeers.peers,
+      now,
+      log,
+      status: statusDocument,
+      fetchImpl,
+      deliverAgentReply: deliverInboundReply,
+    })
     : null
 
   const outbound = createOpenclawOutbound({
@@ -313,10 +376,6 @@ export function createNativeOpenclaw({
     notificationChannels: notifications.channels,
   })
 
-  // The inbound listener delivers ONLY through the internal prompt gate: the V2
-  // equivalent of V1's `tmux send-keys` injection, but a real queued session
-  // prompt the host has to accept.
-  const deliverInboundReply = createInternalPromptGate({ session: context?.session })
   const inbound = createOpenclawInbound({
     replyListener: secrets.replyListener,
     registry,
@@ -381,6 +440,15 @@ export function createNativeOpenclaw({
       } catch (error) {
         log(`[oh-my-rigel] Native V2 openclaw agent core hydrate failed: ${error instanceof Error ? error.message : String(error)}`)
         await statusDocument.recordFailure("agent-core", { errorClass: "hydrate-failed" })
+      }
+      // Reconciliation starts only when a peer survived validation. It is a timer,
+      // not a request, so setup still performs zero network; and a core without a
+      // dialable peer never schedules anything.
+      if (agentPeers.peers.length > 0) {
+        const reconciling = agentCore.responder.start()
+        if (!reconciling.started) {
+          log(`[oh-my-rigel] Native V2 openclaw a2a reconciliation did not start: ${reconciling.reason}`)
+        }
       }
     }
     const started = await inbound.start()
