@@ -44,8 +44,12 @@ function isPlainObject(value) {
  *   model through the same JSON-only resolver the delegation path uses
  * @returns {{ tools: Record<string, object>, registry: object|undefined, unavailable: object[] }}
  */
-export function createNativeToolFamilies({ clients, location, manifest, context, pluginConfig, readTodos, serverApi, resolveLookAtModel }) {
-  const gates = readNativeGates(manifest)
+export function createNativeToolFamilies({ clients, location, manifest, context, pluginConfig, readTodos, serverApi, resolveLookAtModel, gates: gateRecord }) {
+  // `gates` is the runtime-resolved record from `resolveNativeGates` (its LIVE vs
+  // BAKED policy). Only a caller that supplies no record falls back to the raw
+  // manifest reader, so the family set can never disagree with the rest of the
+  // runtime about which gates are on.
+  const gates = isPlainObject(gateRecord) ? gateRecord : readNativeGates(manifest)
   const tools = {}
 
   // `serverApi` is consumed by the session family (its primary enumeration
