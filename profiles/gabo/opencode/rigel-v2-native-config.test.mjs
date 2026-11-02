@@ -224,33 +224,43 @@ describe("#given invalid values", () => {
   })
 })
 
-describe("#given recognized native team-mode fields without a runtime implementation", () => {
-  test("#when the view is resolved #then each discarded field is reported while only supported fields project", () => {
+describe("#given native team-mode fields", () => {
+  test("#when the view is resolved #then max_members is clamped into the native tool ceiling while remaining fields are reported", () => {
     // given
     const fixture = makeFixture()
     const unhonored = {
       max_parallel_members: 4,
-      max_members: 8,
       max_messages_per_run: 100000,
       max_wall_clock_minutes: 1440,
       max_member_turns: 5000,
-      base_dir: "/tmp/teams",
+      base_dir: "/home/teams",
       message_payload_max_bytes: 32768,
       recipient_unread_max_bytes: 262144,
       mailbox_poll_interval_ms: 3000,
     }
     fixture.writeUser(JSON.stringify({
       "[opencode]": {
-        team_mode: { enabled: true, tmux_visualization: false, ...unhonored },
+        team_mode: { enabled: true, tmux_visualization: false, max_members: 99, ...unhonored },
       },
     }))
     // when
     const view = fixture.resolve()
     // then
-    expect(view.team_mode).toEqual({ enabled: true, tmux_visualization: false })
+    expect(view.team_mode).toEqual({ enabled: true, tmux_visualization: false, max_members: 8 })
     for (const key of Object.keys(unhonored)) {
       expect(view.diagnostics.some((line) => line.includes(`team_mode.${key}`) && line.includes("not honored by native runtime"))).toBe(true)
     }
+  })
+
+  test("#given malformed max_members #when the view is resolved #then it is omitted so the native default ceiling applies", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(JSON.stringify({ "[opencode]": { team_mode: { enabled: true, max_members: "four" } } }))
+    // when
+    const view = fixture.resolve()
+    // then
+    expect(view.team_mode).toEqual({ enabled: true })
+    expect(view.diagnostics.some((line) => line.includes("team_mode.max_members") && line.includes("invalid value"))).toBe(true)
   })
 })
 

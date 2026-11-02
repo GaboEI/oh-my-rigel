@@ -239,6 +239,9 @@ try {
         // the monitor tools' permission check; the V2 setup context has no
         // `config`, so the manifest is the only honest source.
         monitor: pluginView.monitor,
+        // The validated team-mode block gives native team tools their baked
+        // per-team limits without adding a new tool-family gate.
+        teamMode: pluginView.team_mode,
       },
     },
     modes: { defaultUltrawork: selection?.nativeModes?.defaultUltrawork === true },

@@ -83,6 +83,32 @@ describe("native V2 team tools and per-member worktrees", () => {
     expect(team.members[0].worktreePath).toBeUndefined()
   })
 
+  test("#given a materialized max_members cap #when team_create receives more members than the cap #then its schema and executor reject the request before storage changes", async () => {
+    // given
+    const storage = memoryStorage()
+    const tools = createTeamTools({ storage, getSessionID: () => "lead-session", teamMode: { max_members: 2 } })
+    const input = {
+      team_name: "capped",
+      members: [{ name: "scout" }, { name: "builder" }, { name: "reviewer" }],
+    }
+    // when / then
+    expect(tools.team_create.input.properties.members.maxItems).toBe(2)
+    await expect(tools.team_create.execute(input)).rejects.toThrow("at most 2 members")
+    expect(await storage.get("rigel-v2/team/p-default/capped")).toBeUndefined()
+  })
+
+  test("#given a malformed materialized max_members value #when team_create receives eight members #then the established ceiling remains usable", async () => {
+    // given
+    const storage = memoryStorage()
+    const tools = createTeamTools({ storage, getSessionID: () => "lead-session", teamMode: { max_members: "four" } })
+    const members = Array.from({ length: 8 }, (_, index) => ({ name: `member-${index}` }))
+    // when
+    const team = await tools.team_create.execute({ team_name: "default-cap", members })
+    // then
+    expect(tools.team_create.input.properties.members.maxItems).toBe(8)
+    expect(team.members).toHaveLength(8)
+  })
+
   test("#given worktree provisioning fails #when team_create runs #then it rejects and persists no team record", async () => {
     // given
     const { runGit } = recordingRunner((args) => {

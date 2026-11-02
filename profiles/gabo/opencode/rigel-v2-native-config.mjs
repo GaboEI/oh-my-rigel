@@ -441,9 +441,9 @@ function validateExperimental(value, path, diagnostics) {
   return parsed
 }
 
+const TEAM_MODE_MAX_MEMBERS_CEILING = 8
 const KNOWN_UNHONORED = new Set([
   "max_parallel_members",
-  "max_members",
   "max_messages_per_run",
   "max_wall_clock_minutes",
   "max_member_turns",
@@ -470,6 +470,13 @@ function validateTeamMode(value, path, diagnostics) {
     warn(diagnostics, `config: ${path}: team_mode.tmux_visualization ignored (invalid value)`)
   } else if ("tmux_visualization" in value) {
     validated.tmux_visualization = value.tmux_visualization
+  }
+  if ("max_members" in value) {
+    if (typeof value.max_members !== "number" || !Number.isInteger(value.max_members) || value.max_members < 1) {
+      warn(diagnostics, `config: ${path}: team_mode.max_members ignored (invalid value)`)
+    } else {
+      validated.max_members = Math.min(value.max_members, TEAM_MODE_MAX_MEMBERS_CEILING)
+    }
   }
   for (const key of KNOWN_UNHONORED) {
     if (key in value) warn(diagnostics, `config: ${path}: team_mode.${key} ignored (not honored by native runtime)`)
@@ -1060,6 +1067,16 @@ export function readNativeDisabled(manifest) {
  */
 export function readNativeOpenclaw(manifest) {
   const value = manifest?.metadata?.global?.openclaw
+  return isPlainObject(value) ? value : undefined
+}
+
+/**
+ * Read the materialized `team_mode` profile block. The generator owns config
+ * parsing; callers still validate individual limits because manifests can be
+ * stale or manually corrupted.
+ */
+export function readNativeTeamMode(manifest) {
+  const value = manifest?.metadata?.global?.teamMode
   return isPlainObject(value) ? value : undefined
 }
 

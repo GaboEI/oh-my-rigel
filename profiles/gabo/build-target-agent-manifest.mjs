@@ -291,6 +291,7 @@ export async function buildTargetAgentManifest(options = {}) {
             disabled: { ...(pluginView.disabled ?? {}) },
             ...(pluginView.openclaw ? { openclaw: pluginView.openclaw } : {}),
             monitor: pluginView.monitor,
+            teamMode: pluginView.team_mode,
           },
         },
         modes: { defaultUltrawork: selection?.nativeModes?.defaultUltrawork === true },
