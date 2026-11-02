@@ -243,6 +243,18 @@ export function createOpenclawAgentQueue({
     peerWindows.clear()
   }
 
+  /**
+   * Whether the process still holds the payload of one task.
+   *
+   * A durable record with no local payload and no `remoteTaskId` is unrecoverable:
+   * the text is gone and there is no vendor id to ask about. The responder uses
+   * this to report such a record as `lost` exactly once instead of waiting for a
+   * send that can never happen.
+   */
+  function hasPayload(peer, contextId, taskId) {
+    return entriesFor(peer, contextId).some((entry) => entry.taskId === taskId)
+  }
+
   return {
     enqueue,
     claimNext,
@@ -250,6 +262,7 @@ export function createOpenclawAgentQueue({
     settle,
     release,
     markLost,
+    hasPayload,
     pendingFor: (peer, contextId) => entriesFor(peer, contextId).length,
     pendingTotal,
     clearAll,

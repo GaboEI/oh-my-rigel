@@ -105,6 +105,11 @@ export function isValidAgentMapping(value) {
   if (typeof value.inflight !== "boolean") return false
   if (!isNonEmptyString(value.createdAt)) return false
   if (value.lastCheckedAt !== undefined && !isNonEmptyString(value.lastCheckedAt)) return false
+  // The vendor ignores `message.taskId` and generates its own id when it answers,
+  // so the record keeps the id Rigel correlates by and stores the vendor's id as
+  // data. Without it `GetTask` cannot be called after a restart, and the task
+  // would be unobservable.
+  if (value.remoteTaskId !== undefined && !isNonEmptyString(value.remoteTaskId)) return false
   // A terminal task cannot still hold the conversation's single send slot.
   if (value.inflight && OPENCLAW_AGENT_TERMINAL_STATES.includes(value.state)) return false
   return true
@@ -218,6 +223,9 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
       attempts: Number.isInteger(seed.attempts) ? seed.attempts : 0,
       createdAt: seed.createdAt ?? new Date(now()).toISOString(),
       inflight: seed.inflight === true,
+      // Omitted rather than undefined so a chat-shaped equality assertion on a
+      // freshly registered record keeps its exact key set.
+      ...(isNonEmptyString(seed.remoteTaskId) ? { remoteTaskId: seed.remoteTaskId } : {}),
     }
     if (!isValidAgentMapping(record)) return false
     map.set(indexKey(record.peer, record.contextId, record.taskId), record)
@@ -240,13 +248,19 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
 
   /**
    * The task OpenClaw's `completeNext` would complete: the OLDEST pending task of
-   * the conversation. `null` while a send of that conversation is in flight,
-   * which is exactly what keeps two sends from overlapping.
+   * the conversation that has NOT been sent yet. `null` while a send of that
+   * conversation is in flight, which is exactly what keeps two sends from
+   * overlapping.
+   *
+   * A record that already carries `remoteTaskId` was accepted by the vendor and is
+   * waiting for `GetTask`, so it is not a send candidate: claiming it again would
+   * create the second task this whole key space exists to prevent.
    */
   function nextPendingFor(peer, contextId) {
     if (hasInflight(peer, contextId)) return null
     const pending = recordsFor(peer, contextId)
       .filter((record) => isFresh(record) && OPENCLAW_AGENT_PENDING_STATES.includes(record.state))
+      .filter((record) => record.remoteTaskId === undefined)
       .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
     return pending.length > 0 ? { ...pending[0] } : null
   }
@@ -282,6 +296,39 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     map.set(key, released)
     await persist(released)
     return { ...released }
+  }
+
+  /**
+   * Record the vendor's task id on a record that was written ahead.
+   *
+   * The vendor ignores `message.taskId` and generates its own id, so the id
+   * `GetTask` accepts is only known from the answer. Persisting it is what makes
+   * a task observable after a restart; a record that dies without it can never be
+   * reconciled, and `prune()`/`reconcile` report that as `lost`.
+   */
+  async function attachRemoteTask(peer, contextId, taskId, remoteTaskId) {
+    if (!isNonEmptyString(remoteTaskId)) return null
+    if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
+    const key = indexKey(peer, contextId, taskId)
+    const record = map.get(key)
+    if (!record) return null
+    const attached = { ...record, remoteTaskId, lastCheckedAt: new Date(now()).toISOString() }
+    map.set(key, attached)
+    await persist(attached)
+    return { ...attached }
+  }
+
+  /** Stamp a reconciliation check. The task state is untouched: only the clock moves. */
+  async function touch(peer, contextId, taskId) {
+    if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
+    const key = indexKey(peer, contextId, taskId)
+    const record = map.get(key)
+    if (!record) return null
+    if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) return null
+    const touched = { ...record, lastCheckedAt: new Date(now()).toISOString() }
+    map.set(key, touched)
+    await persist(touched)
+    return { ...touched }
   }
 
   /** Move a task to a terminal state and free the slot. */
@@ -370,6 +417,8 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     lookup,
     claim,
     release,
+    touch,
+    attachRemoteTask,
     settle,
     markLost,
     removeSession,
