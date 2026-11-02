@@ -11889,9 +11889,6 @@
                 "discordChannelId": {
                   "type": "string"
                 },
-                "discordMention": {
-                  "type": "string"
-                },
                 "authorizedDiscordUserIds": {
                   "default": [],
                   "type": "array",
@@ -30298,9 +30295,6 @@
                         "type": "string"
                       },
                       "discordChannelId": {
-                        "type": "string"
-                      },
-                      "discordMention": {
                         "type": "string"
                       },
                       "authorizedDiscordUserIds": {

@@ -27,7 +27,6 @@ export const OpenClawHookSchema = z.object({
 export const OpenClawReplyListenerConfigSchema = z.object({
   discordBotToken: z.string().optional(),
   discordChannelId: z.string().optional(),
-  discordMention: z.string().optional(), // For allowed_mentions
   authorizedDiscordUserIds: z.array(z.string()).default([]),
 
   telegramBotToken: z.string().optional(),

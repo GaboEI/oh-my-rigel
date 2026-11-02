@@ -16,7 +16,6 @@ export type OpenClawHook = {
 export type OpenClawReplyListenerConfig = {
   readonly discordBotToken?: string
   readonly discordChannelId?: string
-  readonly discordMention?: string
   readonly authorizedDiscordUserIds?: readonly string[]
   readonly telegramBotToken?: string
   readonly telegramChatId?: string
