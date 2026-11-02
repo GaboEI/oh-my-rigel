@@ -24,6 +24,13 @@
  *
  * Only Node built-ins and sibling native modules are imported so the flat
  * laboratory runtime (no `node_modules`) can load this module.
+ *
+ * U4 (`Unidades_Atomicas_OpenClaw.md` §U4) turns the counters into a report
+ * without turning the channel into spam: a poll failure, a malformed response
+ * and a refused injection are `degraded` transitions on the status document (one
+ * line each, deduplicated by class); an individual rate-limit drop only moves the
+ * aggregate `rateLimited` counter; an unauthorized author records nothing at all,
+ * because §9.3 makes that silence deliberate.
  */
 import {
   DEFAULT_REPLY_POLL_INTERVAL_MS,
@@ -37,6 +44,21 @@ const DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
 const REQUEST_TIMEOUT_MS = 10_000
 /** URL-encoded white heavy check mark, the V1 acknowledgement reaction. */
 const REPLY_ACK_REACTION = "%E2%9C%85"
+
+/** Status-document surfaces this module reports under (U4). */
+export const OPENCLAW_DISCORD_STATUS_SURFACE = "discord"
+export const OPENCLAW_TELEGRAM_STATUS_SURFACE = "telegram"
+export const OPENCLAW_INJECTION_STATUS_SURFACE = "injection"
+
+/**
+ * Reduce a poll failure to a stable CLASS, so the document dedups on
+ * `(surface, severity, errorClass)` instead of on a per-attempt message that
+ * would defeat the dedup and turn the channel into spam.
+ */
+export function openclawPollErrorClass(error) {
+  if (error instanceof Error && (error.name === "AbortError" || /aborted/i.test(error.message))) return "poll-timeout"
+  return "poll-error"
+}
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error)
@@ -73,6 +95,10 @@ export function createInternalPromptGate({ session } = {}) {
  * @param {(input: { sessionID: string, text: string }) => Promise<boolean>} [options.deliverInboundReply]
  * @param {typeof fetch} [options.fetchImpl]
  * @param {(ms: number) => Promise<void>} [options.sleep] test seam; defaults to a cancel-aware timer
+ * @param {object} [options.statusDocument] optional status document (U4); absent,
+ *   reporting is off. Named `statusDocument` because this module already exposes a
+ *   `status()` accessor, and a hoisted function declaration would shadow the
+ *   parameter inside every poll.
  */
 export function createOpenclawInbound({
   replyListener,
@@ -82,6 +108,7 @@ export function createOpenclawInbound({
   sleep,
   log = () => {},
   now = () => Date.now(),
+  statusDocument,
   discordApiBase = process.env.RIGEL_OPENCLAW_DISCORD_API_BASE || DEFAULT_DISCORD_API_BASE,
   telegramApiBase = DEFAULT_TELEGRAM_API_BASE,
 } = {}) {
@@ -230,6 +257,7 @@ export function createOpenclawInbound({
       state.errors += 1
       state.lastError = errorMessage(error)
       log(`Discord polling error: ${state.lastError}`)
+      await statusDocument?.recordFailure?.(OPENCLAW_DISCORD_STATUS_SURFACE, { errorClass: openclawPollErrorClass(error) })
       return
     }
 
@@ -245,6 +273,7 @@ export function createOpenclawInbound({
       state.errors += 1
       state.lastError = `Discord API error: HTTP ${response.status}`
       log(state.lastError)
+      await statusDocument?.recordFailure?.(OPENCLAW_DISCORD_STATUS_SURFACE, { errorClass: `http-${response.status}` })
       return
     }
 
@@ -252,9 +281,13 @@ export function createOpenclawInbound({
     try {
       messages = await response.json()
     } catch {
+      await statusDocument?.recordFailure?.(OPENCLAW_DISCORD_STATUS_SURFACE, { errorClass: "malformed-response" })
       return
     }
-    if (!Array.isArray(messages) || messages.length === 0) return
+    if (!Array.isArray(messages) || messages.length === 0) {
+      await statusDocument?.recordSuccess?.(OPENCLAW_DISCORD_STATUS_SURFACE)
+      return
+    }
 
     for (const message of [...messages].reverse()) {
       if (typeof message?.id === "string") {
@@ -263,12 +296,16 @@ export function createOpenclawInbound({
       }
       const replyToMessageId = message?.message_reference?.message_id
       if (!replyToMessageId) continue
+      // §9.3: an unauthorized author stays SILENT on purpose. Answering would be
+      // an oracle, so this filter records nothing: no line, no counter, no state.
       if (!authorizedUserIds.includes(message?.author?.id)) continue
       const mapping = registry?.lookup?.("discord-bot", replyToMessageId)
       if (!mapping) continue
       if (!rateLimiter.canProceed()) {
-        log(`WARN: Rate limit exceeded, dropping Discord message ${message.id}`)
+        // §9.3: an individual rate-limit drop is never reported. It only moves
+        // the aggregate counter, so the channel stays readable.
         state.errors += 1
+        await statusDocument?.recordRateLimit?.(OPENCLAW_DISCORD_STATUS_SURFACE)
         continue
       }
       if (await deliver(message.content, "discord", mapping.sessionID)) {
@@ -276,8 +313,10 @@ export function createOpenclawInbound({
         await acknowledgeDiscord(message.id)
       } else {
         state.errors += 1
+        await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "discord" })
       }
     }
+    await statusDocument?.recordSuccess?.(OPENCLAW_DISCORD_STATUS_SURFACE)
   }
 
   async function pollTelegram() {
@@ -293,6 +332,7 @@ export function createOpenclawInbound({
       state.errors += 1
       state.lastError = errorMessage(error)
       log(`Telegram polling error: ${state.lastError}`)
+      await statusDocument?.recordFailure?.(OPENCLAW_TELEGRAM_STATUS_SURFACE, { errorClass: openclawPollErrorClass(error) })
       return
     }
 
@@ -300,6 +340,7 @@ export function createOpenclawInbound({
       state.errors += 1
       state.lastError = `Telegram API error: HTTP ${response.status}`
       log(state.lastError)
+      await statusDocument?.recordFailure?.(OPENCLAW_TELEGRAM_STATUS_SURFACE, { errorClass: `http-${response.status}` })
       return
     }
 
@@ -307,6 +348,7 @@ export function createOpenclawInbound({
     try {
       body = await response.json()
     } catch {
+      await statusDocument?.recordFailure?.(OPENCLAW_TELEGRAM_STATUS_SURFACE, { errorClass: "malformed-response" })
       return
     }
     const updates = body && typeof body === "object" && Array.isArray(body.result) ? body.result : []
@@ -321,8 +363,8 @@ export function createOpenclawInbound({
       const mapping = registry?.lookup?.("telegram", String(replyToMessageId))
       if (!mapping) continue
       if (!rateLimiter.canProceed()) {
-        log(`WARN: Rate limit exceeded, dropping Telegram message ${message.message_id}`)
         state.errors += 1
+        await statusDocument?.recordRateLimit?.(OPENCLAW_TELEGRAM_STATUS_SURFACE)
         continue
       }
       if (await deliver(message.text, "telegram", mapping.sessionID)) {
@@ -330,8 +372,10 @@ export function createOpenclawInbound({
         await acknowledgeTelegram(message.message_id)
       } else {
         state.errors += 1
+        await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "telegram" })
       }
     }
+    await statusDocument?.recordSuccess?.(OPENCLAW_TELEGRAM_STATUS_SURFACE)
   }
 
   async function loop() {
