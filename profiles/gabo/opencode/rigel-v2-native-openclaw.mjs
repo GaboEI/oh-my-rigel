@@ -27,6 +27,11 @@
  *     nobody, and handed to the inbound listener as the ONLY source of
  *     authorized authors. A config that never declares it keeps the legacy
  *     silent disablement.
+ *   - the Telegram user filter (U7) reuses that same resolution. Telegram has no
+ *     legacy user list (defect 8: it filters by chat only), so while the new
+ *     namespace is in play its absence is a REPORTED configuration error with the
+ *     poller down, and the listener gets the list as its only filter. A legacy
+ *     config keeps the chat-only filter byte for byte.
  *
  * The single strict gate is the normalized config: `normalizeOpenclawConfig`
  * returns `null` unless `enabled === true`, so an absent or disabled block means
@@ -45,7 +50,7 @@ import { createOpenclawAgentRegistry, resolveOpenclawAgentNamespace } from "./ri
 import { createOpenclawAgentQueue } from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import { createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
 import { describeOpenclawChannelDiagnostic, resolveOpenclawNotificationChannels } from "./rigel-v2-native-openclaw-notification.mjs"
-import { authorizeDiscordAuthors, describeOpenclawReplyPolicyDiagnostic, resolveOpenclawReplyPolicy } from "./rigel-v2-native-openclaw-reply-policy.mjs"
+import { authorizeDiscordAuthors, authorizeTelegramAuthors, describeOpenclawReplyPolicyDiagnostic, resolveOpenclawReplyPolicy } from "./rigel-v2-native-openclaw-reply-policy.mjs"
 
 /**
  * Build the new namespace's core over the same storage domain the chat registry
@@ -174,23 +179,63 @@ export function createNativeOpenclaw({
   }
 
   // §5.2 rule 1: `channels` declared means the new namespace is in play, and its
-  // inbound half may not be silently off. A Discord reply port with credentials
-  // and no authorized author at all is a configuration error the operator has to
-  // see; a configuration that never mentions `channels` keeps the legacy silence
-  // (that is `unauthorizedInNewNamespace`, which is false without the namespace).
+  // inbound halves may not be silently off. A reply port with credentials and no
+  // authorized identity at all is a configuration error the operator has to see; a
+  // configuration that never mentions the new namespace keeps the legacy silence.
   const agentNamespace = resolveOpenclawAgentNamespace(config)
+  const newNamespaceInPlay = agentNamespace.declared || replyPolicy.declared
   const legacyAuthorizedAuthors = Array.isArray(normalized?.replyListener?.authorizedDiscordUserIds)
     ? normalized.replyListener.authorizedDiscordUserIds
     : []
   const hasDiscordInbound = Boolean(secrets.replyListener?.discordBotToken && secrets.replyListener?.discordChannelId)
-  const unauthorizedInNewNamespace = enabled
+  const hasTelegramInbound = Boolean(secrets.replyListener?.telegramBotToken && secrets.replyListener?.telegramChatId)
+  /** Identities the policy resolver already rejected: its line is their one line. */
+  const reportedIdentities = new Set(
+    replyPolicy.diagnostics.map((diagnostic) => diagnostic.identity).filter((identity) => typeof identity === "string"),
+  )
+
+  // §U6: a declared policy governs Discord; otherwise the legacy list does. Either
+  // source being empty inside the new namespace means no author is authorized.
+  const discordAuthorization = authorizeDiscordAuthors(replyPolicy)
+  const discordAuthorized = replyPolicy.declared ? discordAuthorization.explicit : legacyAuthorizedAuthors.length > 0
+  const unauthorizedDiscordInNewNamespace = enabled
     && hasDiscordInbound
-    && agentNamespace.declared
-    && !replyPolicy.declared
-    && legacyAuthorizedAuthors.length === 0
-  if (unauthorizedInNewNamespace) {
-    log("[oh-my-rigel] Native V2 openclaw Discord replies stay off: openclaw.channels is declared but openclaw.replyListener.authorizedDiscordUserIds is empty, so no author is authorized")
+    && newNamespaceInPlay
+    && !discordAuthorized
+    && !reportedIdentities.has("discord-bot")
+
+  // §U7: Telegram has no legacy user list to fall back to (defect 8), so while the
+  // new namespace is in play the policy is the only source and its absence closes
+  // the poller and is reported. `undefined` here is the legacy route, which keeps
+  // today's chat-only filter untouched.
+  const telegramAuthorization = enabled && newNamespaceInPlay ? authorizeTelegramAuthors(replyPolicy) : undefined
+  const unauthorizedTelegramInNewNamespace = telegramAuthorization !== undefined
+    && hasTelegramInbound
+    && !telegramAuthorization.explicit
+    && !reportedIdentities.has("telegram")
+
+  const authorizationReports = []
+  if (unauthorizedDiscordInNewNamespace) {
+    authorizationReports.push({
+      surface: "discord",
+      detail: replyPolicy.declared
+        ? "openclaw.replyPolicy.discord-bot.allowedAuthors"
+        : "openclaw.replyListener.authorizedDiscordUserIds",
+      line: replyPolicy.declared
+        ? "[oh-my-rigel] Native V2 openclaw Discord replies stay off: openclaw.replyPolicy.discord-bot.allowedAuthors is not declared, so no author is authorized"
+        : "[oh-my-rigel] Native V2 openclaw Discord replies stay off: openclaw.channels is declared but openclaw.replyListener.authorizedDiscordUserIds is empty, so no author is authorized",
+    })
   }
+  if (unauthorizedTelegramInNewNamespace) {
+    authorizationReports.push({
+      surface: "telegram",
+      detail: "openclaw.replyPolicy.telegram.allowedAuthors",
+      line: replyPolicy.declared
+        ? "[oh-my-rigel] Native V2 openclaw Telegram replies stay off: openclaw.replyPolicy.telegram.allowedAuthors is not declared, so no user is authorized"
+        : "[oh-my-rigel] Native V2 openclaw Telegram replies stay off: openclaw.channels is declared but openclaw.replyPolicy.telegram.allowedAuthors is not, so no user is authorized",
+    })
+  }
+  for (const report of authorizationReports) log(report.line)
 
   // Mirror the fatals setup just announced into the document, so `/openclaw-status`
   // can explain WHY a surface is down. `emitLine:false` is deliberate: the line
@@ -219,17 +264,21 @@ export function createNativeOpenclaw({
       detail: diagnostic.path,
     })
   }
-  if (unauthorizedInNewNamespace) {
-    setupFatals.push({ surface: "discord", errorClass: "missing-authorized-authors", detail: "openclaw.replyListener.authorizedDiscordUserIds" })
+  for (const report of authorizationReports) {
+    setupFatals.push({ surface: report.surface, errorClass: "missing-authorized-authors", detail: report.detail })
   }
   for (const diagnostic of replyPolicy.diagnostics) {
     setupFatals.push({
-      // A missing authorization disables the Discord reply surface, so the
-      // document says `discord`; a structural mistake about an identity this
-      // runtime does not serve is a configuration fault with no disabled
-      // surface, so it reports under `replyPolicy`. The exact path always
-      // travels as `detail`, never an author id.
-      surface: diagnostic.identity === "discord-bot" ? "discord" : "replyPolicy",
+      // A missing authorization disables that reply surface, so the document says
+      // `discord` or `telegram`; a structural mistake about an identity this
+      // runtime does not serve is a configuration fault with no disabled surface,
+      // so it reports under `replyPolicy`. The exact path always travels as
+      // `detail`, never an author id.
+      surface: diagnostic.identity === "discord-bot"
+        ? "discord"
+        : diagnostic.identity === "telegram"
+          ? "telegram"
+          : "replyPolicy",
       errorClass: diagnostic.reason,
       detail: diagnostic.path,
     })
@@ -280,6 +329,9 @@ export function createNativeOpenclaw({
     // when it is declared. Undefined here means "legacy governs", which is the
     // path every pinned listener test and every pre-U6 configuration takes.
     ...(replyPolicy.declared ? { discordAuthorization: authorizeDiscordAuthors(replyPolicy) } : {}),
+    // §U7: the Telegram user list. Undefined means "legacy governs" and the poller
+    // keeps its chat-only filter; an empty list keeps the poller down.
+    ...(telegramAuthorization === undefined ? {} : { telegramAuthorization }),
     ...(typeof env?.RIGEL_OPENCLAW_DISCORD_API_BASE === "string"
       ? { discordApiBase: env.RIGEL_OPENCLAW_DISCORD_API_BASE }
       : {}),
@@ -367,6 +419,14 @@ export function createNativeOpenclaw({
     if (replyPolicy.declared) {
       const authorization = authorizeDiscordAuthors(replyPolicy)
       value.authorization = { discord: { source: authorization.source, explicit: authorization.explicit } }
+      // U7: the Telegram decision is reported only when a Telegram inbound port
+      // exists, so a Discord-only policy keeps the exact U6 shape.
+      if (telegramAuthorization !== undefined && hasTelegramInbound) {
+        value.authorization.telegram = {
+          source: telegramAuthorization.source,
+          explicit: telegramAuthorization.explicit,
+        }
+      }
     }
     return value
   }

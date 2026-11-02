@@ -163,7 +163,9 @@ describe("openclaw reply policy: the new namespace's authorization is a named li
   })
 
   test("#given a policy naming no served identity #when resolved #then the missing Discord authorization is reported too", () => {
-    const policy = resolveOpenclawReplyPolicy({ telegram: { allowedAuthors: ["u1"] } })
+    // §U7 made `telegram` a served identity, so the unsupported case uses one this
+    // runtime really does not serve. The Discord fallback still fires.
+    const policy = resolveOpenclawReplyPolicy({ "slack-bot": { allowedAuthors: ["u1"] } })
 
     expect(policy.diagnostics.map((diagnostic) => diagnostic.reason)).toEqual([
       "unsupported-identity",
@@ -338,12 +340,12 @@ describe("openclaw composition: the new namespace reports an absent authorizatio
   test("#given a replyPolicy naming an identity this runtime does not serve #when composed #then it reports under replyPolicy without claiming Discord", async () => {
     const { native, lines, storage } = harmonyComposition({
       enabled: true,
-      replyPolicy: { telegram: { allowedAuthors: ["u1"] } },
+      replyPolicy: { "slack-bot": { allowedAuthors: ["u1"] } },
     })
 
     await native.ready
 
-    expect(lines.filter((line) => line.includes("openclaw.replyPolicy.telegram"))).toHaveLength(1)
+    expect(lines.filter((line) => line.includes("openclaw.replyPolicy.slack-bot"))).toHaveLength(1)
     expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces.replyPolicy).toMatchObject({
       state: "fatal",
       errorClass: "unsupported-identity",

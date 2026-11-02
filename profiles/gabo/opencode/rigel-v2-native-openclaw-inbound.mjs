@@ -40,6 +40,16 @@
  * the new route adds is that the composition REPORTS an empty authorization
  * instead of leaving the poller silently off. The per-message filter still never
  * records an unauthorized author.
+ *
+ * U7 (`§U7`) touches the SAME two decisions for Telegram, whose defect is one step
+ * wider: `telegramEnabled` used to be `token && chatId`, and the per-message filter
+ * compared only `message.chat.id`, so any user able to write in that conversation
+ * reached the session. An injected `telegramAuthorization` comes from the new
+ * namespace's `replyPolicy.telegram.allowedAuthors`, adds `message.from.id` to the
+ * ingress filter, and keeps the poller down when it authorizes nobody. The legacy
+ * route keeps its chat-only filter byte for byte — there is no legacy Telegram user
+ * list, and inventing one would give a legacy record semantics it never had
+ * (`Contrato_Transportes_OpenClaw.md` §5.2 rule 5).
  */
 import {
   DEFAULT_REPLY_POLL_INTERVAL_MS,
@@ -114,6 +124,12 @@ export function createInternalPromptGate({ session } = {}) {
  *   that authorizes nobody leaves the list empty, so the poller stays down
  *   (fail closed) and the composition reports why. When absent, the legacy list
  *   governs and an empty list disables the poller exactly as before.
+ * @param {{ source: string, explicit: boolean, allowedAuthors: string[] }} [options.telegramAuthorization]
+ *   the NEW namespace's authorization for the Telegram inbound surface (`§U7`).
+ *   When provided it is the ONLY user filter: the poller runs only when it
+ *   authorizes at least one user id, and every message whose `message.from.id` is
+ *   not on the list is dropped silently. When absent, the legacy route filters by
+ *   chat only, exactly like before this unit.
  */
 export function createOpenclawInbound({
   replyListener,
@@ -127,6 +143,7 @@ export function createOpenclawInbound({
   discordApiBase = process.env.RIGEL_OPENCLAW_DISCORD_API_BASE || DEFAULT_DISCORD_API_BASE,
   telegramApiBase = DEFAULT_TELEGRAM_API_BASE,
   discordAuthorization,
+  telegramAuthorization,
 } = {}) {
   const normalized = normalizeReplyListenerConfig(replyListener) ?? {}
   // §U6: one authorization source, never a field-by-field merge. A declared
@@ -141,11 +158,29 @@ export function createOpenclawInbound({
           : [],
       }
     : undefined
+  // §U7: same shape, one identity further. `undefined` is the legacy route, and it
+  // is the ONLY case that keeps the chat-only filter.
+  const telegramUserAuthorization = telegramAuthorization && typeof telegramAuthorization === "object"
+    ? {
+        source: typeof telegramAuthorization.source === "string" ? telegramAuthorization.source : "replyPolicy",
+        explicit: telegramAuthorization.explicit === true,
+        allowedAuthors: Array.isArray(telegramAuthorization.allowedAuthors)
+          ? telegramAuthorization.allowedAuthors.filter((entry) => typeof entry === "string" && entry.length > 0)
+          : [],
+      }
+    : undefined
   const authorizedUserIds = authorization
     ? authorization.allowedAuthors
     : Array.isArray(normalized.authorizedDiscordUserIds) ? normalized.authorizedDiscordUserIds : []
+  const authorizedTelegramUserIds = telegramUserAuthorization ? telegramUserAuthorization.allowedAuthors : null
   const discordEnabled = Boolean(normalized.discordBotToken && normalized.discordChannelId && authorizedUserIds.length > 0)
-  const telegramEnabled = Boolean(normalized.telegramBotToken && normalized.telegramChatId)
+  // §U7 fail closed: a new-namespace Telegram port with no authorized user keeps the
+  // poller down instead of reading every message in the chat.
+  const telegramEnabled = Boolean(
+    normalized.telegramBotToken
+    && normalized.telegramChatId
+    && (authorizedTelegramUserIds === null || authorizedTelegramUserIds.length > 0),
+  )
   const enabled = discordEnabled || telegramEnabled
   const pollIntervalMs = normalized.pollIntervalMs ?? DEFAULT_REPLY_POLL_INTERVAL_MS
   const maxMessageLength = normalized.maxMessageLength ?? 500
@@ -389,6 +424,17 @@ export function createOpenclawInbound({
       const replyToMessageId = message?.reply_to_message?.message_id
       if (replyToMessageId === undefined || replyToMessageId === null) continue
       if (String(message?.chat?.id) !== String(normalized.telegramChatId)) continue
+      // §U7: the chat filter says WHERE the message was written; this one says WHO
+      // wrote it. A user missing from the list (or a message with no `from` at all)
+      // is dropped SILENTLY on purpose (§9.3): answering an intruder would be an
+      // oracle, so nothing is reported — no line, no error counter, no ack and no
+      // status write. The poll offset above still advances: that is how Telegram
+      // considers an update consumed, and re-reading it forever would be its own bug.
+      if (authorizedTelegramUserIds !== null) {
+        const userId = message?.from?.id
+        if (userId === undefined || userId === null) continue
+        if (!authorizedTelegramUserIds.includes(String(userId))) continue
+      }
       if (!message?.text) continue
       const mapping = registry?.lookup?.("telegram", String(replyToMessageId))
       if (!mapping) continue
@@ -462,6 +508,9 @@ export function createOpenclawInbound({
       // legacy configuration keeps the exact status shape the pinned tests assert.
       // Booleans and the source name only: an author id is data, not observability.
       ...(authorization ? { authorization: { source: authorization.source, explicit: authorization.explicit } } : {}),
+      // §U7: same rule for the Telegram user filter, under its own key so the U6
+      // shape stays byte-identical for every Discord-only configuration.
+      ...(telegramUserAuthorization ? { telegramAuthorization: { source: telegramUserAuthorization.source, explicit: telegramUserAuthorization.explicit } } : {}),
     }
   }
 
