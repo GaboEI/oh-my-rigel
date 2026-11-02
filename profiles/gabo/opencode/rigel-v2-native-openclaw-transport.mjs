@@ -15,6 +15,11 @@ import {
   resolveCommandTimeoutMs,
   validateGatewayUrl,
 } from "./rigel-v2-native-openclaw-core.mjs"
+import {
+  deliverDiscordNotification,
+  deliverTelegramNotification,
+  notificationEnvelope,
+} from "./rigel-v2-native-openclaw-notification.mjs"
 
 /** Terminate a command transport process, preferring its process group on unix. */
 export function terminateCommandProcess(proc, signal = "SIGKILL", platform = process.platform) {
@@ -116,13 +121,40 @@ export async function wakeCommandGateway({
 }
 
 /**
- * Dispatch one resolved gateway. Chooses the command transport when
- * `gateway.type === "command"`, otherwise HTTP. A command transport receives the
- * interpolation variables; HTTP receives the payload.
+ * Which transport an endpoint selects.
+ *
+ * `http` is the default, exactly as `resolveGateway` has always coerced it, so
+ * an endpoint that names nothing new keeps the legacy HTTP behaviour. The two
+ * notification transports are only reachable from the new `channels.<name>`
+ * namespace: the legacy adapter never produces those types (§5.2 rule 5).
  */
-export function dispatchGateway({ gatewayName, gateway, payload, variables, fetchImpl, spawnImpl, env, platform, commandTimeoutEnv } = {}) {
-  if (gateway?.type === "command") {
+export function resolveGatewayTransport(gateway) {
+  if (gateway?.type === "command") return "command"
+  if (gateway?.type === "discord") return "discord"
+  if (gateway?.type === "telegram") return "telegram"
+  return "http"
+}
+
+/**
+ * Dispatch one resolved endpoint.
+ *
+ * A command transport receives the interpolation variables; HTTP receives the
+ * payload; a notification transport receives the message text and returns the
+ * §1 receipt, which is composed into the envelope this function has always
+ * returned so reporting and correlation keep their shape.
+ */
+export function dispatchGateway({ gatewayName, gateway, payload, variables, message, fetchImpl, spawnImpl, env, platform, commandTimeoutEnv, timeoutMs } = {}) {
+  const transport = resolveGatewayTransport(gateway)
+  if (transport === "command") {
     return wakeCommandGateway({ gatewayName, gateway, variables, spawnImpl, env, platform, commandTimeoutEnv })
+  }
+  if (transport === "discord") {
+    return deliverDiscordNotification({ gatewayName, gateway, message, fetchImpl, env, timeoutMs })
+      .then((receipt) => notificationEnvelope(gatewayName, receipt))
+  }
+  if (transport === "telegram") {
+    return deliverTelegramNotification({ gatewayName, gateway, message, fetchImpl, env, timeoutMs })
+      .then((receipt) => notificationEnvelope(gatewayName, receipt))
   }
   return wakeGateway({ gatewayName, gateway, payload, fetchImpl })
 }

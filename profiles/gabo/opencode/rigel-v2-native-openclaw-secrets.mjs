@@ -142,6 +142,9 @@ export function resolveOpenclawReplyListenerSecrets(replyListener, { env } = {})
  * runtime will fail closed. Values are never returned: the caller has no way to
  * print a secret by accident.
  *
+ * The new namespace's `channels.<name>.token` (U5) is audited alongside the
+ * reply listener because the manifest bakes that block verbatim.
+ *
  * @param {unknown} openclaw
  * @returns {{ references: string[], plaintext: string[], invalid: string[] }}
  */
@@ -150,14 +153,32 @@ export function auditOpenclawSecretRefs(openclaw) {
   const plaintext = []
   const invalid = []
   if (!isPlainObject(openclaw)) return { references, plaintext, invalid }
+  /** Classify one credential path into the matching bucket. */
+  function audit(path, value) {
+    const parsed = parseOpenclawSecretRef(value)
+    if (parsed.kind === "env") references.push(path)
+    else if (parsed.kind === "plaintext") plaintext.push(path)
+    else if (parsed.kind === "invalid") invalid.push(path)
+  }
   const replyListener = openclaw.replyListener
-  if (!isPlainObject(replyListener)) return { references, plaintext, invalid }
-  for (const field of SECRET_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(replyListener, field.key)) continue
-    const parsed = parseOpenclawSecretRef(replyListener[field.key])
-    if (parsed.kind === "env") references.push(field.path)
-    else if (parsed.kind === "plaintext") plaintext.push(field.path)
-    else if (parsed.kind === "invalid") invalid.push(field.path)
+  if (isPlainObject(replyListener)) {
+    for (const field of SECRET_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(replyListener, field.key)) continue
+      audit(field.path, replyListener[field.key])
+    }
+  }
+  // The new namespace's notification channels carry a token too, and the
+  // generator writes the whole block verbatim into the manifest. Auditing them
+  // here is what stops a plaintext channel token from reaching disk without the
+  // deprecation warning the reply listener gets. `a2a` is skipped: it is the
+  // converser's namespace and has no consumer yet.
+  const channels = openclaw.channels
+  if (isPlainObject(channels)) {
+    for (const [name, block] of Object.entries(channels)) {
+      if (name === "a2a" || !isPlainObject(block)) continue
+      if (!Object.prototype.hasOwnProperty.call(block, "token")) continue
+      audit(`openclaw.channels.${name}.token`, block.token)
+    }
   }
   return { references, plaintext, invalid }
 }
