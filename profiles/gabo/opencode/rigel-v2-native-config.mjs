@@ -218,6 +218,41 @@ function readJsonc(text) {
   return JSON.parse(removeTrailingCommas(stripComments(text)))
 }
 
+// Filesystem failures carry a libuv errno code, which names the class of the
+// failure without quoting the file. The list is closed on purpose: a code is
+// only echoed when it is one of these, so an arbitrary string can never reach a
+// diagnostic through the `code` field.
+const SAFE_READ_ERROR_CODES = new Set([
+  "EACCES", "EIO", "EISDIR", "ELOOP", "EMFILE", "ENFILE", "ENOENT", "ENOMEM", "ENOTDIR", "EPERM", "EROFS",
+])
+
+/**
+ * Reduce a read/parse failure to a VALUE-FREE reason.
+ *
+ * The diagnostic contract (`Contrato_Transportes_OpenClaw.md` S4.3) allows a
+ * state, a path, a key and a class: never a value, never a token, never a URL.
+ * `JSON.parse` violates that on its own, because its message quotes the source
+ * it choked on (V8 shows a window around the token, JSC names the identifier),
+ * and a malformed `omo.jsonc` line is very often a credential
+ * (`discordBotToken`, a gateway URL, an API key). The raw message therefore
+ * never leaves this function.
+ *
+ * A filesystem failure is a different case: its errno comes from libuv, not from
+ * the file content, so the code alone is both safe and the part an operator
+ * needs to tell a permission problem from a malformed file.
+ */
+function readFailureReason(error) {
+  if (error instanceof SyntaxError) return "invalid JSON"
+  const code = typeof error === "object" && error !== null ? error.code : undefined
+  if (typeof code === "string" && SAFE_READ_ERROR_CODES.has(code)) return code
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : ""
+  // A wrapped or stubbed file system may throw a message-only error
+  // (`new Error("EIO: cannot read")`), so the leading errno token is honoured
+  // too — but only when it is one of the known codes, never as free text.
+  const leading = /^([A-Z][A-Z0-9_]{1,31})(?::|$)/.exec(message)?.[1]
+  return leading !== undefined && SAFE_READ_ERROR_CODES.has(leading) ? leading : "read failed"
+}
+
 function resolveHomeDir(env) {
   const homeDir = env?.HOME ?? env?.USERPROFILE ?? process.cwd()
   return resolve(homeDir)
@@ -812,14 +847,21 @@ function collectLiveConfigLayers({ directory, env, fileSystem, manifest }) {
     try {
       layer = validateLayer(readJsonc(fileSystem.readFileSync(candidate.path, "utf-8")), candidate, diagnostics)
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
+      const reason = readFailureReason(error)
       warn(diagnostics, `config: ${candidate.path}: ${reason}`)
       sources.push({ path: candidate.path, scope: candidate.scope, loaded: false })
       loadFailures.push({ path: candidate.path, scope: candidate.scope, reason })
       continue
     }
     if (layer === undefined) {
+      // `validateLayer` rejects a root that parses but is not an object (`null`,
+      // `[]`, a scalar). The file exists, so this is a layer the chain could not
+      // read as an entry, NOT a layer that declared nothing: recording it as a
+      // load failure is what keeps the fail-closed reader from reporting
+      // `undeclared` and restoring the install-time block it may not confirm.
+      const reason = "layer root is not an object"
       sources.push({ path: candidate.path, scope: candidate.scope, loaded: false })
+      loadFailures.push({ path: candidate.path, scope: candidate.scope, reason })
       continue
     }
     layers.push({ config: layer, path: candidate.path, scope: candidate.scope })
@@ -837,24 +879,38 @@ function collectLiveConfigLayers({ directory, env, fileSystem, manifest }) {
   return { diagnostics, profileName, sources, layers, loadFailures, userMcpEnvAllowlist }
 }
 
+const PLUGIN_PLACEMENTS = Object.freeze([
+  { select: (layer) => baseLayerView(layer), prefix: () => "" },
+  { select: (layer) => blockView(layer), prefix: () => "[opencode]." },
+  {
+    select: (layer, profileName) => baseLayerView(profileRecord(layer, profileName)),
+    prefix: (profileName) => (profileName === undefined ? "" : `profiles.${profileName}.`),
+  },
+  {
+    select: (layer, profileName) => blockView(profileRecord(layer, profileName)),
+    prefix: (profileName) => (profileName === undefined ? "[opencode]." : `profiles.${profileName}.[opencode].`),
+  },
+])
+
 /**
  * Fold the collected layers into the plugin-facing view. Split out of
  * `resolveNativePluginConfig` so a second live-read authority can reuse the
  * exact same assembly instead of re-deriving it.
+ *
+ * The precedence is PLACEMENT-MAJOR and LAYER-INNER: every layer contributes the
+ * first placement, then every layer contributes the second, and so on, so a
+ * placement on a farther layer outranks a lower placement on a nearer one
+ * (`profiles.<P>.[opencode]` > `profiles.<P>` > `[opencode]` > root). Which
+ * placement wins is therefore a property of `PLUGIN_PLACEMENTS`, shared with the
+ * declaration finder below instead of restated in a second loop nesting.
  */
 function buildResolvedConfigView(collected, directory) {
   const { diagnostics, profileName, sources, layers, userMcpEnvAllowlist } = collected
 
   const views = []
-  const pushes = [
-    { select: (layer) => baseLayerView(layer), prefix: "" },
-    { select: (layer) => blockView(layer), prefix: "[opencode]." },
-    { select: (layer) => baseLayerView(profileRecord(layer, profileName)), prefix: profileName === undefined ? "" : `profiles.${profileName}.` },
-    { select: (layer) => blockView(profileRecord(layer, profileName)), prefix: profileName === undefined ? "[opencode]." : `profiles.${profileName}.[opencode].` },
-  ]
-  for (const push of pushes) {
+  for (const placement of PLUGIN_PLACEMENTS) {
     for (const layer of layers) {
-      const config = push.select(layer.config)
+      const config = placement.select(layer.config, profileName)
       if (Object.keys(config).length > 0) views.push({ config, path: layer.path })
     }
   }
@@ -1079,7 +1135,7 @@ export function readLiveAgentOverridesSource(options = {}) {
   try {
     readJsonc(fileSystem.readFileSync(userPath, "utf-8"))
   } catch (error) {
-    return { state: "error", path: userPath, reason: error instanceof Error ? error.message : String(error) }
+    return { state: "error", path: userPath, reason: readFailureReason(error) }
   }
   const view = resolveNativePluginConfig({ ...options, env: effectiveEnv, directory: home })
   // `categories` rides the same resolved view: category delegation reads the live
@@ -1156,7 +1212,7 @@ export function readLiveTmuxVisualizationSource(options = {}) {
     }
     return { state: "declared", value: teamMode.tmux_visualization === true }
   } catch (error) {
-    return { state: "error", reason: error instanceof Error ? error.message : String(error) }
+    return { state: "error", reason: readFailureReason(error) }
   }
 }
 
@@ -1199,7 +1255,8 @@ export function resolveNativeTmuxVisualization({ manifest, ...options } = {}) {
  *   manifest value. On an install that never declared the block both coincide
  *   by construction, which is why the current behavior is preserved.
  * - `error`: the chain could not be resolved, OR a layer that exists could not
- *   be read/parsed, OR the declared value is not an object. The caller must
+ *   be read/parsed, OR a layer whose root parses to something that is not an
+ *   object, OR the declaration that wins is not an object. The caller must
  *   fail CLOSED. `resolveNativeTmuxVisualization` argues the reason: falling
  *   back to the manifest would re-enable a NETWORK surface from a value the
  *   runtime could not confirm.
@@ -1208,7 +1265,15 @@ export function resolveNativeTmuxVisualization({ manifest, ...options } = {}) {
  * analogue, which pins the loader's absorption as `undeclared`. U2's acceptance
  * criterion requires exactly the opposite observable (an unreadable live file
  * leaves `openclaw` inert with the error reported), and that criterion exists
- * because this surface reaches the network.
+ * because this surface reaches the network. A rejected layer root counts as one
+ * of those failures: the file exists and parses, so classifying it as
+ * `undeclared` would hand back the install-time block.
+ *
+ * The declaration is chosen in the fold's own placement order (see
+ * `PLUGIN_PLACEMENTS`), so `at`/`path` name the placement the resolved view
+ * actually keeps, and a non-object at that placement is an error instead of a
+ * bypass. `reason` is value-free by construction (`readFailureReason`): it
+ * names a path and a class, never source text.
  */
 export function readLiveOpenclawSource(options = {}) {
   const { directory, env, fileSystem } = resolveLiveReadOptions(options)
@@ -1216,7 +1281,7 @@ export function readLiveOpenclawSource(options = {}) {
   try {
     collected = collectLiveConfigLayers({ directory, env, fileSystem, manifest: options.manifest })
   } catch (error) {
-    return { state: "error", reason: error instanceof Error ? error.message : String(error) }
+    return { state: "error", reason: readFailureReason(error) }
   }
 
   const failure = collected.loadFailures[0]
@@ -1247,7 +1312,8 @@ export function readLiveOpenclawSource(options = {}) {
  * surfaces/gateways/channels were added or removed. Never a value, never a
  * token, never a URL. At most ONE line is produced per resolution, so a state
  * change is reported once instead of spamming the log, and an agreeing chain
- * reports nothing.
+ * reports nothing. `live.reason` is already value-free when it arrives here
+ * (`readFailureReason`), so the interpolation below cannot leak source text.
  */
 export function resolveNativeOpenclaw({ manifest, ...options } = {}) {
   const live = readLiveOpenclawSource({ manifest, ...options })
@@ -1271,24 +1337,23 @@ export function resolveNativeOpenclaw({ manifest, ...options } = {}) {
 }
 
 /**
- * Locate the placement that declares `openclaw`, in the same resolution order
- * `buildResolvedConfigView` merges in: layer root, `[opencode]`, profile root,
- * profile `[opencode]`. The LAST declaration wins, so a project layer beats the
- * user layer and a profile block beats the layer root, exactly like the merge.
+ * Locate the placement that declares `openclaw`, in the SAME order
+ * `buildResolvedConfigView` folds: placement-major, layer-inner, so the LAST
+ * declaration is the one the resolved view keeps.
+ *
+ * Sharing `PLUGIN_PLACEMENTS` is what makes that claim structural instead of a
+ * comment. The finder used to walk layers first, which let a lower-precedence
+ * project placement masquerade as the declared one (an `openclaw: null` at
+ * `profiles.<P>.[opencode]` lost to the project root, and the enabled project
+ * block was dispatched from a chain the user had switched off).
  */
 function findOpenclawDeclaration(layers, profileName) {
   let found
-  for (const layer of layers) {
-    const profile = profileRecord(layer.config, profileName)
-    const placements = [
-      { source: layer.config, at: "openclaw" },
-      { source: blockView(layer.config), at: "[opencode].openclaw" },
-      { source: profile, at: profileName === undefined ? "openclaw" : `profiles.${profileName}.openclaw` },
-      { source: blockView(profile), at: profileName === undefined ? "[opencode].openclaw" : `profiles.${profileName}.[opencode].openclaw` },
-    ]
-    for (const placement of placements) {
-      if (!Object.prototype.hasOwnProperty.call(placement.source, "openclaw")) continue
-      found = { path: layer.path, at: placement.at, value: placement.source.openclaw }
+  for (const placement of PLUGIN_PLACEMENTS) {
+    for (const layer of layers) {
+      const source = placement.select(layer.config, profileName)
+      if (!Object.prototype.hasOwnProperty.call(source, "openclaw")) continue
+      found = { path: layer.path, at: `${placement.prefix(profileName)}openclaw`, value: source.openclaw }
     }
   }
   return found
@@ -1401,7 +1466,7 @@ export function readLiveGatesSource(options = {}) {
     }
     return { state: "resolved", gates }
   } catch (error) {
-    return { state: "error", reason: error instanceof Error ? error.message : String(error) }
+    return { state: "error", reason: readFailureReason(error) }
   }
 }
 

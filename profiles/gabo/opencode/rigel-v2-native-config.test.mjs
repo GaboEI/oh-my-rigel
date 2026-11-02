@@ -683,6 +683,21 @@ describe("#given the live on-disk OmO config", () => {
     expect(source.categories).toBeUndefined()
   })
 
+  test("#when the config is invalid JSON #then the reported reason names the class and never the source text", () => {
+    // given a malformed line whose value looks like a credential. The parser names the
+    // text it choked on, and this reason is printed by the runtime at startup, so any
+    // fragment of the value here would reach stderr (Contrato S4.3, identity only).
+    const fixture = makeFixture()
+    const marker = "syntheticfixturemarkernotasecret"
+    fixture.writeUser(`{ "agents": { "oracle": { "model": ${marker} } } }`)
+    // when
+    const source = liveRead(fixture)
+    // then
+    expect(source.state).toBe("error")
+    expect(source.reason).toBeString()
+    expect(source.reason).not.toContain(marker.slice(0, 10))
+  })
+
   // Ctrl+X M is a host-owned keybind (`model.list`) whose selection is
   // session-local: the host stores it per session and it must never be written
   // back. The plugin's share of that contract is to stay READ-ONLY over

@@ -291,3 +291,176 @@ describe("openclaw effects stay lazy at the first send", () => {
     await native.dispose()
   })
 })
+
+// --- Audit remediation (A1, A2, A3): the fail-closed edge of the same contract ---
+//
+// The three cases below are the defect classes the Codex review of PR #73 found in the
+// merged tree, not new behavior: a rejected layer that used to be silent, a declaration
+// finder that disagreed with the fold, and a parser message that carried source text.
+// Each one is a way to reach the NETWORK surface from a value the runtime could not
+// confirm, so each one must end in `error` with the surface inert.
+
+// A synthetic marker, not a credential: it stands in for whatever a malformed live line
+// carried. The parser quotes the text around the offending token (V8 a ~10 character
+// window, JSC the whole identifier), so the window is what a leak would expose first.
+const SYNTHETIC_MARKER = "syntheticfixturemarkernotasecret"
+const SYNTHETIC_MARKER_PREFIX = SYNTHETIC_MARKER.slice(0, 10)
+
+describe("a rejected live layer fails closed", () => {
+  test.each([
+    ["a null root", "null"],
+    ["an array root", "[]"],
+    ["a scalar root", "\"on\""],
+  ])("#given a live file whose root is %s #when read and resolved #then it is an error and the manifest block is never handed over", (_, rootText) => {
+    // given a layer that exists and parses, plus a manifest that bakes the block
+    const fileSystem = memoryFileSystem({ [USER_CONFIG]: rootText })
+    // when
+    const state = readSource(fileSystem)
+    const resolution = resolveOpenclaw(manifestWith(LEGACY_BLOCK), fileSystem)
+    // then the file could not be read as a layer, so the contract's `error` applies and
+    // the install-time block is refused (a non-object root used to be `undeclared`,
+    // which handed the manifest over and re-enabled the network surface)
+    expect(state.state).toBe("error")
+    expect(state.reason).toBeString()
+    expect(resolution.state).toBe("error")
+    expect(resolution.config).toBeUndefined()
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain(USER_CONFIG)
+    expect(resolution.diagnostics[0]).toContain("stays disabled")
+  })
+
+  test("#given a rejected layer beside a valid lower-precedence declaration #when resolved #then the rejection still wins", () => {
+    // given the user file cannot be read as a layer while the project declares an
+    // enabled block; a layer that could not be read means the chain is unconfirmed
+    const fileSystem = memoryFileSystem({
+      [USER_CONFIG]: "[]",
+      [PROJECT_CONFIG]: JSON.stringify({ openclaw: { enabled: true, gateways: { project: { url: "https://project.test" } } } }),
+    })
+    // when
+    const resolution = resolveOpenclaw(manifestWith(LEGACY_BLOCK), fileSystem)
+    // then nothing is enabled from a chain the runtime could not fully read
+    expect(resolution.state).toBe("error")
+    expect(resolution.config).toBeUndefined()
+  })
+})
+
+describe("declaration precedence matches the config fold", () => {
+  // Each row is a layer chain plus the placement the FOLD gives the key, so the finder
+  // cannot be right by accident. `buildResolvedConfigView` folds placement-major and
+  // layer-inner (root, [opencode], profile root, profile [opencode]; user then project
+  // inside each placement), and the last view wins. A placement on a farther layer
+  // therefore outranks a lower placement on a nearer one:
+  //   profiles.<P>.[opencode] > profiles.<P> > [opencode] > root
+  // A non-object declaration at that winning placement is `error`, never a silent
+  // fall-through to whatever the next view still carries.
+  const ROWS = [
+    {
+      name: "a higher-precedence null declaration beats a lower enabled object",
+      user: { profiles: { gabo: { "[opencode]": { openclaw: null } } } },
+      project: { openclaw: { enabled: true, gateways: { project: { url: "https://project.test" } } } },
+      expect: { state: "error", at: "profiles.gabo.[opencode].openclaw", scope: "user" },
+    },
+    {
+      name: "the user profile block outranks a project root block",
+      user: { profiles: { gabo: { "[opencode]": { openclaw: { enabled: true, gateways: { profile: { url: "https://profile.test" } } } } } } },
+      project: { openclaw: { enabled: true, gateways: { project: { url: "https://project.test" } } } },
+      expect: { state: "declared", at: "profiles.gabo.[opencode].openclaw", scope: "user" },
+    },
+    {
+      name: "a project root null declaration turns the surface off, not on",
+      user: { openclaw: { enabled: true, gateways: { user: { url: "https://user.test" } } } },
+      project: { openclaw: null },
+      expect: { state: "error", at: "openclaw", scope: "project" },
+    },
+    {
+      name: "an [opencode] block outranks the project root it sits beside",
+      user: { "[opencode]": { openclaw: { enabled: true, gateways: { harness: { url: "https://harness.test" } } } } },
+      project: { openclaw: { enabled: true, gateways: { project: { url: "https://project.test" } } } },
+      expect: { state: "declared", at: "[opencode].openclaw", scope: "user" },
+    },
+    {
+      name: "the user profile root outranks the project [opencode] block",
+      user: { profiles: { gabo: { openclaw: { enabled: true, gateways: { profile: { url: "https://profile.test" } } } } } },
+      project: { "[opencode]": { openclaw: { enabled: true, gateways: { project: { url: "https://project.test" } } } } },
+      expect: { state: "declared", at: "profiles.gabo.openclaw", scope: "user" },
+    },
+    {
+      name: "the profile block outranks the same layer's root",
+      user: { openclaw: { enabled: false, gateways: { root: { url: "https://root.test" } } }, profiles: { gabo: { "[opencode]": { openclaw: { enabled: true, gateways: { profile: { url: "https://profile.test" } } } } } } },
+      project: {},
+      expect: { state: "declared", at: "profiles.gabo.[opencode].openclaw", scope: "user" },
+    },
+    {
+      name: "a project profile [opencode] block is the last word",
+      user: { profiles: { gabo: { "[opencode]": { openclaw: { enabled: true, gateways: { user: { url: "https://user.test" } } } } } } },
+      project: { profiles: { gabo: { "[opencode]": { openclaw: { enabled: true, gateways: { project: { url: "https://project.test" } } } } } } },
+      expect: { state: "declared", at: "profiles.gabo.[opencode].openclaw", scope: "project" },
+    },
+    {
+      name: "a project profile root null does not outrank the user profile [opencode] object",
+      user: { profiles: { gabo: { "[opencode]": { openclaw: { enabled: true, gateways: { user: { url: "https://user.test" } } } } } } },
+      project: { profiles: { gabo: { openclaw: null } } },
+      expect: { state: "declared", at: "profiles.gabo.[opencode].openclaw", scope: "user" },
+    },
+  ]
+
+  test.each(ROWS)("#given $name #when read #then the reported placement and state are the fold's", (row) => {
+    // given the profile rows need the selected profile, exactly as a real install sets it
+    const env = { HOME, OMO_PROFILE: "gabo" }
+    const files = {}
+    if (Object.keys(row.user).length > 0) files[USER_CONFIG] = JSON.stringify(row.user)
+    if (Object.keys(row.project).length > 0) files[PROJECT_CONFIG] = JSON.stringify(row.project)
+    const fileSystem = memoryFileSystem(files)
+    // when
+    const state = readSource(fileSystem, env)
+    const folded = config.resolveNativePluginConfig({ directory: PROJECT, env, fileSystem }).openclaw
+    // then
+    expect(state.state).toBe(row.expect.state)
+    expect(state.at).toBe(row.expect.at)
+    expect(state.path).toBe(row.expect.scope === "user" ? USER_CONFIG : PROJECT_CONFIG)
+    if (row.expect.state === "declared") {
+      // The finder and the fold must agree about the VALUE too, or a caller could accept
+      // a declaration the resolved view never produced.
+      expect(state.value).toEqual(folded)
+    } else {
+      expect(state.value).toBeUndefined()
+    }
+  })
+})
+
+describe("a read failure is reported without the source text", () => {
+  const malformed = `{ "[opencode]": { "openclaw": { "enabled": true, "channels": { "discord": { "discordBotToken": ${SYNTHETIC_MARKER} } } } } }`
+
+  test("#given a malformed live file whose offending token is a credential #when resolved #then the diagnostic keeps the path and class but no fragment of the value", () => {
+    // given
+    const fileSystem = memoryFileSystem({ [USER_CONFIG]: malformed })
+    // when
+    const state = readSource(fileSystem)
+    const resolution = resolveOpenclaw(manifestWith(LEGACY_BLOCK), fileSystem)
+    // then the JSON parser names the text it choked on, and that text is a credential
+    expect(state.state).toBe("error")
+    expect(state.reason).not.toContain(SYNTHETIC_MARKER_PREFIX)
+    expect(resolution.state).toBe("error")
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain(USER_CONFIG)
+    expect(resolution.diagnostics[0]).not.toContain(SYNTHETIC_MARKER_PREFIX)
+  })
+
+  test("#given a read failure with a filesystem code #when read #then the code still identifies the failure", () => {
+    // given an unreadable file whose error carries an errno code (the non-secret case
+    // the sanitizer must not flatten into an opaque message)
+    const unreadable = {
+      existsSync: () => true,
+      lstatSync: () => ({ isSymbolicLink: () => false }),
+      readFileSync: () => {
+        throw Object.assign(new Error("EACCES: permission denied, open '/home/rigeltest/.omo/omo.jsonc'"), { code: "EACCES" })
+      },
+      realpathSync: (path) => path,
+    }
+    // when
+    const state = readSource(unreadable)
+    // then the operator keeps the class it needs and nothing from the file
+    expect(state.state).toBe("error")
+    expect(state.reason).toContain("EACCES")
+  })
+})
