@@ -9410,9 +9410,6 @@
             "discordChannelId": {
               "type": "string"
             },
-            "discordMention": {
-              "type": "string"
-            },
             "authorizedDiscordUserIds": {
               "default": [],
               "type": "array",

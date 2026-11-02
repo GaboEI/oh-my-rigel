@@ -101,8 +101,10 @@ export function normalizeReplyListenerConfig(raw) {
 const OPENCLAW_KEYS = new Set(["enabled", "gateways", "hooks", "replyListener", "channels", "replyPolicy"])
 const GATEWAY_KEYS = new Set(["type", "url", "method", "headers", "command", "timeout"])
 const HOOK_KEYS = new Set(["enabled", "gateway", "instruction"])
+// `discordMention` is deliberately absent: it was declared and never read, so
+// declaring it is a named error here instead of a silent no-op.
 const REPLY_LISTENER_KEYS = new Set([
-  "discordBotToken", "discordChannelId", "discordMention", "authorizedDiscordUserIds",
+  "discordBotToken", "discordChannelId", "authorizedDiscordUserIds",
   "telegramBotToken", "telegramChatId", "pollIntervalMs", "rateLimitPerMinute",
   "maxMessageLength", "includePrefix",
 ])
