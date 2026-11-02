@@ -18,6 +18,7 @@ export type { OmoHarnessId }
 export { OmoHarnessIdSchema }
 
 export const OmoOpenCodeHarnessConfigSchema = z.record(z.string(), z.unknown())
+export const OmoOpenclawConfigSchema = z.record(z.string(), z.unknown())
 
 /**
  * Canonical skill denylist. Names listed here are absent from the run on every harness that
@@ -56,6 +57,7 @@ export const OmoConfigProfileSchema = z.object({
   telemetry: OmoTelemetrySettingsLayerSchema.optional(),
   computer: OmoComputerSettingsLayerSchema.optional(),
   disabled_skills: OmoDisabledSkillsSchema.optional(),
+  openclaw: OmoOpenclawConfigSchema.optional(),
   "[opencode]": OmoOpenCodeHarnessConfigSchema.optional(),
   "[native]": OmoTypedHarnessConfigSchema.optional(),
   "[senpi]": OmoTypedHarnessConfigSchema.optional(),
@@ -78,6 +80,7 @@ export const OmoConfigSchema = z.object({
   telemetry: OmoTelemetrySettingsSchema.optional(),
   computer: OmoComputerSettingsSchema.optional(),
   disabled_skills: OmoDisabledSkillsSchema.optional(),
+  openclaw: OmoOpenclawConfigSchema.optional(),
   "[opencode]": OmoOpenCodeHarnessConfigSchema.optional(),
   "[native]": OmoTypedHarnessConfigSchema.optional(),
   "[senpi]": OmoTypedHarnessConfigSchema.optional(),
@@ -103,6 +106,7 @@ export const OmoConfigLayerSchema = z.object({
   telemetry: OmoTelemetrySettingsLayerSchema.optional(),
   computer: OmoComputerSettingsLayerSchema.optional(),
   disabled_skills: OmoDisabledSkillsSchema.optional(),
+  openclaw: OmoOpenclawConfigSchema.optional(),
   "[opencode]": OmoOpenCodeHarnessConfigSchema.optional(),
   "[native]": OmoTypedHarnessConfigSchema.optional(),
   "[senpi]": OmoTypedHarnessConfigSchema.optional(),

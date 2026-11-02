@@ -119,6 +119,20 @@ describe("omo config schema", () => {
     expect(result.success).toBe(false)
   })
 
+  test("#given OpenClaw records at root and profile scope #when parsed #then the schema retains both", () => {
+    const config = {
+      openclaw: { enabled: true, gateways: {}, hooks: {} },
+      profiles: { gabo: { openclaw: { enabled: false, gateways: {}, hooks: {} } } },
+    }
+
+    const result = OmoConfigSchema.safeParse(config)
+
+    expect(result.success).toBe(true)
+    if (!result.success) throw new Error(result.error.message)
+    expect(result.data.openclaw).toEqual(config.openclaw)
+    expect(result.data.profiles.gabo.openclaw).toEqual(config.profiles.gabo.openclaw)
+  })
+
   test("#given a wrong typed git_master setting #when parsed #then the issue path identifies the bad field", () => {
     // given
     const config = { git_master: { include_co_authored_by: "yes" } }

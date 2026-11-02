@@ -67,7 +67,7 @@ const HARNESS_BLOCK_KEYS = new Set(["[opencode]", "[native]", "[senpi]", "[codex
 // Keys omo-config-chain.ts deliberately drops from the plugin base view.
 const NON_PLUGIN_FIELDS = new Set(["legacy_migrations", "models", "task", "teams"])
 // Known keys of OmoConfigProfileSchema, reduced to the ones this resolver reads.
-const PROFILE_KEYS = new Set(["categories", "disabled_skills", "[opencode]", "[native]", "[senpi]", "[codex]"])
+const PROFILE_KEYS = new Set(["categories", "disabled_skills", "openclaw", "[opencode]", "[native]", "[senpi]", "[codex]"])
 
 const TARGET_KEYS = new Set([
   "monitor", "goal", "experimental", "team_mode", "skills", "disabled_tools", "disabled_agents", "disabled_mcps",

@@ -99,7 +99,9 @@ export function createNativeOpenclaw({
   now,
   isSubagentSession,
 } = {}) {
-  const normalized = normalizeOpenclawConfig(config)
+  const normalized = normalizeOpenclawConfig(config, {
+    onInvalid: (error) => log(`[oh-my-rigel] Native V2 ${error.name}: ${error.message}`),
+  })
   const enabled = normalized !== null
 
   // The registry is the durable correlation store; `ctx.storage` is the V2

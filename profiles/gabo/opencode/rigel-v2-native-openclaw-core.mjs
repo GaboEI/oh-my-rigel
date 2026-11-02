@@ -92,13 +92,61 @@ export function normalizeReplyListenerConfig(raw) {
   }
 }
 
+const OPENCLAW_KEYS = new Set(["enabled", "gateways", "hooks", "replyListener"])
+const GATEWAY_KEYS = new Set(["type", "url", "method", "headers", "command", "timeout"])
+const HOOK_KEYS = new Set(["enabled", "gateway", "instruction"])
+const REPLY_LISTENER_KEYS = new Set([
+  "discordBotToken", "discordChannelId", "discordMention", "authorizedDiscordUserIds",
+  "telegramBotToken", "telegramChatId", "pollIntervalMs", "rateLimitPerMinute",
+  "maxMessageLength", "includePrefix",
+])
+
+export class OpenclawConfigValidationError extends Error {
+  constructor(path) {
+    super(`unknown OpenClaw configuration key at ${path}`)
+    this.name = "OpenclawConfigValidationError"
+    this.path = path
+  }
+}
+
+function unknownKeyPath(record, allowed, path) {
+  if (!isPlainObject(record)) return undefined
+  for (const key of Object.keys(record)) {
+    if (!allowed.has(key)) return `${path}.${key}`
+  }
+  return undefined
+}
+
+function findUnknownOpenclawKey(raw) {
+  const root = unknownKeyPath(raw, OPENCLAW_KEYS, "openclaw")
+  if (root) return root
+  if (isPlainObject(raw.gateways)) {
+    for (const [name, gateway] of Object.entries(raw.gateways)) {
+      const path = unknownKeyPath(gateway, GATEWAY_KEYS, `openclaw.gateways.${name}`)
+      if (path) return path
+    }
+  }
+  if (isPlainObject(raw.hooks)) {
+    for (const [name, hook] of Object.entries(raw.hooks)) {
+      const path = unknownKeyPath(hook, HOOK_KEYS, `openclaw.hooks.${name}`)
+      if (path) return path
+    }
+  }
+  return unknownKeyPath(raw.replyListener, REPLY_LISTENER_KEYS, "openclaw.replyListener")
+}
+
 /**
  * Normalize a resolved `openclaw` config block. Returns `null` when the block is
  * absent or `enabled !== true`, which is the single strict no-op gate the whole
  * surface keys off (no dispatch, no listener, no network).
  */
-export function normalizeOpenclawConfig(raw) {
+export function normalizeOpenclawConfig(raw, { onInvalid } = {}) {
   if (!isPlainObject(raw) || raw.enabled !== true) return null
+  const unknownPath = findUnknownOpenclawKey(raw)
+  if (unknownPath) {
+    onInvalid?.(new OpenclawConfigValidationError(unknownPath))
+    return null
+  }
   return {
     enabled: true,
     gateways: isPlainObject(raw.gateways) ? { ...raw.gateways } : {},
