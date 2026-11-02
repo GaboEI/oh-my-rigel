@@ -228,6 +228,16 @@ describe("#given requested skills for a delegated child", () => {
   })
 })
 
+describe("#given the shared hyperplan skill artifacts", () => {
+  test("#when loaded from either project discovery location #then their bytes are identical", () => {
+    const repositoryRoot = path.resolve(import.meta.dir, "../../..")
+    const agentsSkill = fs.readFileSync(path.join(repositoryRoot, ".agents", "skills", "hyperplan", "SKILL.md"))
+    const opencodeSkill = fs.readFileSync(path.join(repositoryRoot, ".opencode", "skills", "hyperplan", "SKILL.md"))
+
+    expect(opencodeSkill).toEqual(agentsSkill)
+  })
+})
+
 describe("#given the V2 native skill surface", () => {
   test("#when a loaded skill names a stale harness call #then the registered runtime content gains the resolved contract while matching content stays unchanged", async () => {
     const root = makeRoot()
