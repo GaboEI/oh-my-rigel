@@ -9,7 +9,10 @@
  *
  *   - written only on a successful outbound wake that returned a `messageId` and
  *     a `platform` (never for `session.deleted`);
- *   - looked up by `(platform, replyToMessageId)`;
+ *   - looked up by `(platform, replyToMessageId)` when the platform's message id is
+ *     unique platform-wide, and by `(platform, chat, replyToMessageId)` when it is
+ *     only unique inside a chat (Telegram sequences `message_id` per chat, so `77`
+ *     exists in every chat);
  *   - removed for a deleted session;
  *   - pruned after 24 hours, like `MAX_AGE_MS`.
  *
@@ -33,10 +36,53 @@ function isValidMapping(value) {
     && typeof value.platform === "string" && value.platform.length > 0
     && typeof value.messageId === "string" && value.messageId.length > 0
     && typeof value.createdAt === "string" && value.createdAt.length > 0
+    // A chat component that is not a string could never equal the chat the poller
+    // reads, so the record would be stored unable to ever resolve. An absent or
+    // empty one is "no scope", not an error.
+    && (value.channelId === undefined || typeof value.channelId === "string")
 }
 
-function keyFor(platform, messageId) {
-  const hash = createHash("sha1").update(`${platform}\u0000${messageId}`).digest("hex")
+/**
+ * Platforms whose message id is unique only WITHIN a chat.
+ *
+ * Telegram documents `message_id` as a per-chat sequence, so `77` in two chats is
+ * two different messages. Keying only `(platform, messageId)` let the second
+ * delivery overwrite the first correlation and route a reply written in chat A
+ * into the session that published to chat B. Discord ids are snowflakes, unique
+ * across the platform, so its identity must stay `(platform, messageId)`.
+ */
+const CHAT_SCOPED_PLATFORMS = new Set(["telegram"])
+
+function isChatScopedPlatform(platform) {
+  return CHAT_SCOPED_PLATFORMS.has(platform)
+}
+
+/**
+ * The chat component of a mapping's identity, or `""` for "no scope".
+ *
+ * A record written before this fix, or by a legacy gateway that never reported a
+ * chat, has no scope and keeps the pre-fix key byte for byte, so records already
+ * on disk stay readable and such a gateway stays routable.
+ */
+function scopeOf(mapping) {
+  if (!isChatScopedPlatform(mapping.platform)) return ""
+  return typeof mapping.channelId === "string" ? mapping.channelId : ""
+}
+
+/**
+ * The in-memory identity. The unscoped form is the pre-fix key unchanged; the
+ * scoped form adds a marker segment, so the two key spaces can never collide even
+ * for a message id that carries a NUL.
+ */
+function indexKey(platform, messageId, scope = "") {
+  return scope.length === 0
+    ? `${platform}\u0000${messageId}`
+    : `${platform}\u0000\u0001${scope}\u0000${messageId}`
+}
+
+/** The durable identity: the hash of exactly the in-memory identity. */
+function keyFor(platform, messageId, scope = "") {
+  const hash = createHash("sha1").update(indexKey(platform, messageId, scope)).digest("hex")
   return `${OPENCLAW_REGISTRY_PREFIX}${hash}`
 }
 
@@ -51,17 +97,13 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
   const canScan = Boolean(storage && typeof storage.scan === "function")
   const canRemove = Boolean(storage && typeof storage.remove === "function")
 
-  function indexKey(platform, messageId) {
-    return `${platform}\u0000${messageId}`
-  }
-
   function isFresh(mapping) {
     const created = Date.parse(mapping.createdAt)
     return Number.isFinite(created) && now() - created <= maxAgeMs
   }
 
   function remember(mapping) {
-    map.set(indexKey(mapping.platform, mapping.messageId), mapping)
+    map.set(indexKey(mapping.platform, mapping.messageId, scopeOf(mapping)), mapping)
   }
 
   async function hydrate() {
@@ -80,12 +122,23 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
   }
 
   async function register(mapping) {
-    if (!isValidMapping(mapping)) return false
+    if (!isValidMapping(mapping)) {
+      // The repository's public contract is a boolean, so an invalid mapping is
+      // still refused silently; the one case worth a line is a chat component of
+      // the wrong type, because a caller that ships one would otherwise write a
+      // record that can never match the chat the poller reads. The class is named,
+      // the value never is.
+      if (isPlainObject(mapping) && mapping.channelId !== undefined && typeof mapping.channelId !== "string") {
+        log("[oh-my-rigel] Native V2 openclaw registry refused a mapping whose channelId is not a string")
+      }
+      return false
+    }
     const normalized = { ...mapping, platform: normalizePlatform(mapping.platform) }
+    const scope = scopeOf(normalized)
     remember(normalized)
     if (canPersist) {
       try {
-        await storage.set(keyFor(normalized.platform, normalized.messageId), normalized)
+        await storage.set(keyFor(normalized.platform, normalized.messageId, scope), normalized)
       } catch (error) {
         log(`[oh-my-rigel] Native V2 openclaw registry persist failed: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -93,17 +146,31 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
     return true
   }
 
-  function lookup(platform, messageId) {
-    if (typeof platform !== "string" || typeof messageId !== "string") return null
-    const key = indexKey(platform, messageId)
+  /**
+   * Resolve one correlation. `channel` is the chat the caller is reading, required
+   * for a chat-scoped platform; a scoped record for that exact chat wins, and the
+   * unscoped (pre-fix or legacy) record is the fallback, so a chat-less record is
+   * never silently lost.
+   */
+  function read(platform, messageId, scope) {
+    const key = indexKey(platform, messageId, scope)
     const mapping = map.get(key)
     if (!mapping) return null
     if (!isFresh(mapping)) {
       map.delete(key)
-      if (canRemove) void storage.remove(keyFor(mapping.platform, mapping.messageId)).catch(() => {})
+      if (canRemove) void storage.remove(keyFor(platform, messageId, scope)).catch(() => {})
       return null
     }
     return mapping
+  }
+
+  function lookup(platform, messageId, channel) {
+    if (typeof platform !== "string" || typeof messageId !== "string") return null
+    if (typeof channel === "string" && channel.length > 0 && isChatScopedPlatform(platform)) {
+      const scoped = read(platform, messageId, channel)
+      if (scoped !== null) return scoped
+    }
+    return read(platform, messageId, "")
   }
 
   async function prune() {
@@ -114,7 +181,7 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
       removed += 1
       if (canRemove) {
         try {
-          await storage.remove(keyFor(mapping.platform, mapping.messageId))
+          await storage.remove(keyFor(mapping.platform, mapping.messageId, scopeOf(mapping)))
         } catch {
           // best effort; the in-memory entry is already gone
         }
@@ -132,7 +199,7 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
       removed += 1
       if (canRemove) {
         try {
-          await storage.remove(keyFor(mapping.platform, mapping.messageId))
+          await storage.remove(keyFor(mapping.platform, mapping.messageId, scopeOf(mapping)))
         } catch {
           // best effort
         }

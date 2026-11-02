@@ -526,7 +526,11 @@ export function createOpenclawInbound({
       if (!authorizedTelegramUserIds.includes(String(userId))) return { outcome: "advance" }
     }
     if (!message?.text) return { outcome: "advance" }
-    const mapping = registry?.lookup?.("telegram", String(replyToMessageId))
+    // The correlation identity of a Telegram message is `(chat, message_id)`: the
+    // platform sequences ids per chat, so `77` in another chat is another message.
+    // `channel` is the chat this update was read from (already compared above), and
+    // passing it is what keeps two chats from stealing each other's reply.
+    const mapping = registry?.lookup?.("telegram", String(replyToMessageId), channel)
     if (!mapping) return { outcome: "advance" }
     if (!rateLimiter.canProceed()) {
       state.errors += 1
