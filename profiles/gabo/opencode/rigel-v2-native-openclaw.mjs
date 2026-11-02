@@ -325,6 +325,10 @@ export function createNativeOpenclaw({
     log,
     now,
     statusDocument,
+    // §U8: the cursor is the poller's mutable state, so the poller owns it, while
+    // the storage domain is the composition's to hand over. Absent, the cursor
+    // stays in the process, which is exactly the pre-U8 behaviour.
+    storage: context?.storage,
     // §U6: the new namespace's authorization REPLACES the legacy author list
     // when it is declared. Undefined here means "legacy governs", which is the
     // path every pinned listener test and every pre-U6 configuration takes.

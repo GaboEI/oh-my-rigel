@@ -11,9 +11,9 @@
  *     reply can reach a session without the host accepting it as a queued
  *     internal prompt.
  *   - V1 persisted its poll cursor (Discord last message id, Telegram last update
- *     id) to a state file so a daemon restart resumed correctly. Here the cursor
- *     lives in the process; the correlation that a reply is answered against is
- *     the durable half and lives in the native registry (`ctx.storage`).
+ *     id) to a state file so a daemon restart resumed correctly. The correlation a
+ *     reply is answered against lives in the native registry (`ctx.storage`), and
+ *     since U8 the poll cursor does too (`rigel-v2-native-openclaw-cursor.mjs`).
  *
  * Effects preserved verbatim from V1: the same Discord `?after=` poll and the
  * same `x-ratelimit-remaining` backoff, the same Telegram `getUpdates?offset=`
@@ -50,6 +50,14 @@
  * route keeps its chat-only filter byte for byte — there is no legacy Telegram user
  * list, and inventing one would give a legacy record semantics it never had
  * (`Contrato_Transportes_OpenClaw.md` §5.2 rule 5).
+ *
+ * U8 (`§U8`) moves ONE piece of mutable state from the process to storage: the
+ * poll cursor. It is versioned per platform AND per channel, it advances only
+ * after the acknowledgement of the message it would pass, and it carries the
+ * duplicate memory that keeps a re-read window from injecting the same reply
+ * twice. The ack payload, the ack order and the processing order are untouched:
+ * a failed ack holds the cursor instead of dropping the message, and a message
+ * that is already terminal never counts twice.
  */
 import {
   DEFAULT_REPLY_POLL_INTERVAL_MS,
@@ -57,6 +65,7 @@ import {
   normalizeReplyListenerConfig,
   sanitizeReplyInput,
 } from "./rigel-v2-native-openclaw-core.mjs"
+import { createOpenclawCursorStore } from "./rigel-v2-native-openclaw-cursor.mjs"
 
 const DEFAULT_DISCORD_API_BASE = "https://discord.com/api/v10"
 const DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
@@ -68,6 +77,10 @@ const REPLY_ACK_REACTION = "%E2%9C%85"
 export const OPENCLAW_DISCORD_STATUS_SURFACE = "discord"
 export const OPENCLAW_TELEGRAM_STATUS_SURFACE = "telegram"
 export const OPENCLAW_INJECTION_STATUS_SURFACE = "injection"
+
+/** Poll-loop platform identifiers. They are also the cursor key space (§U8). */
+const DISCORD_PLATFORM = "discord"
+const TELEGRAM_PLATFORM = "telegram"
 
 /**
  * Reduce a poll failure to a stable CLASS, so the document dedups on
@@ -130,6 +143,9 @@ export function createInternalPromptGate({ session } = {}) {
  *   authorizes at least one user id, and every message whose `message.from.id` is
  *   not on the list is dropped silently. When absent, the legacy route filters by
  *   chat only, exactly like before this unit.
+ * @param {object} [options.storage] the V2 plugin storage domain the poll cursor is
+ *   persisted under (§U8). Absent, the cursor lives in the process, which is the
+ *   pre-U8 behaviour and the whole independent rollback.
  */
 export function createOpenclawInbound({
   replyListener,
@@ -144,8 +160,13 @@ export function createOpenclawInbound({
   telegramApiBase = DEFAULT_TELEGRAM_API_BASE,
   discordAuthorization,
   telegramAuthorization,
+  storage,
 } = {}) {
   const normalized = normalizeReplyListenerConfig(replyListener) ?? {}
+  // §U8: the poll cursor and its duplicate memory. Built from the storage domain
+  // only: `hydrate()` runs at `start()` (storage reads, zero network) and every
+  // advance or dedup record is persisted before it is treated as done.
+  const cursors = createOpenclawCursorStore({ storage, now, log })
   // §U6: one authorization source, never a field-by-field merge. A declared
   // `openclaw.replyPolicy` governs this identity (`Contrato_Transportes_OpenClaw.md`
   // §5.2 rule 2); the legacy list is then not consulted at all.
@@ -189,8 +210,6 @@ export function createOpenclawInbound({
   const callFetch = typeof fetchImpl === "function" ? fetchImpl : globalThis.fetch
 
   const state = {
-    discordLastMessageId: null,
-    telegramLastUpdateId: null,
     messagesSeen: 0,
     messagesInjected: 0,
     errors: 0,
@@ -281,20 +300,42 @@ export function createOpenclawInbound({
     }
   }
 
-  async function acknowledgeDiscord(messageId) {
+  /**
+   * The Discord acknowledgement. Returns whether it LANDED: a non-2xx answer is a
+   * failed ack, not a success, because the cursor gate (§U8) may only advance on a
+   * real acknowledgement. The request itself (method, URL, headers) is the V1
+   * shape, unchanged.
+   *
+   * `report` is false on a RETRY. A held cursor re-asks for the same message every
+   * poll, and repeating one failure per interval is the flood §9.3 forbids: the
+   * first attempt already named the failure, and the held cursor is what says the
+   * acknowledgement is still owed.
+   */
+  async function acknowledgeDiscord(messageId, { report = true } = {}) {
     try {
-      await request(
+      const response = await request(
         `${discordApiBase}/channels/${normalized.discordChannelId}/messages/${messageId}/reactions/${REPLY_ACK_REACTION}/@me`,
         { method: "PUT", headers: { Authorization: `Bot ${normalized.discordBotToken}` } },
       )
+      if (response?.ok === false) {
+        if (report) log(`WARN: Failed to acknowledge Discord message ${messageId}: HTTP ${response.status}`)
+        return false
+      }
+      return true
     } catch (error) {
-      log(`WARN: Failed to acknowledge Discord message ${messageId}: ${errorMessage(error)}`)
+      if (report) log(`WARN: Failed to acknowledge Discord message ${messageId}: ${errorMessage(error)}`)
+      return false
     }
   }
 
-  async function acknowledgeTelegram(messageId) {
+  /**
+   * The Telegram acknowledgement. Same landing and `report` rules as Discord, and
+   * the payload `Contrato_Transportes_OpenClaw.md` §11.1 pins is byte-identical:
+   * one POST with `{ chat_id, text, reply_to_message_id }`.
+   */
+  async function acknowledgeTelegram(messageId, { report = true } = {}) {
     try {
-      await request(`${telegramApiBase}/bot${normalized.telegramBotToken}/sendMessage`, {
+      const response = await request(`${telegramApiBase}/bot${normalized.telegramBotToken}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -303,15 +344,77 @@ export function createOpenclawInbound({
           reply_to_message_id: messageId,
         }),
       })
+      if (response?.ok === false) {
+        if (report) log(`WARN: Failed to acknowledge Telegram message ${messageId}: HTTP ${response.status}`)
+        return false
+      }
+      return true
     } catch (error) {
-      log(`WARN: Failed to acknowledge Telegram message ${messageId}: ${errorMessage(error)}`)
+      if (report) log(`WARN: Failed to acknowledge Telegram message ${messageId}: ${errorMessage(error)}`)
+      return false
     }
+  }
+
+  /**
+   * Resolve one Discord message and report how the cursor must treat it.
+   *
+   *   "advance"      terminal: nothing is owed (no reply reference, an
+   *                  unauthorized author, an expired correlation, a rate-limit
+   *                  drop) or the acknowledgement already landed
+   *   "acknowledged" the reply is in the session AND its ack landed now
+   *   "hold"         the reply is in the session but the ack failed: the cursor
+   *                  must not move, yet later messages still run because they
+   *                  cannot be reordered behind one that already arrived
+   *   "halt"         the injection path refused this message, so it would refuse
+   *                  the rest of the window the same way
+   */
+  async function settleDiscordMessage({ message, messageId, replyToMessageId, channel }) {
+    if (messageId !== undefined) {
+      const known = cursors.stateOf(DISCORD_PLATFORM, channel, messageId)
+      // §U8 dedup: a message already injected is never injected again when a held
+      // cursor makes the poller re-read the window. An "acked" one is terminal:
+      // only its cursor write was lost, so it is skipped without a second ack.
+      if (known === "acked") return { outcome: "advance" }
+      if (known === "delivered") {
+        // A retry: the failure was named on the first attempt, so repeating it
+        // every poll would be the flood §9.3 forbids.
+        if (!(await acknowledgeDiscord(messageId, { report: false }))) return { outcome: "hold" }
+        return { outcome: "acknowledged" }
+      }
+    }
+    if (!replyToMessageId || messageId === undefined) return { outcome: "advance" }
+    // §9.3: an unauthorized author stays SILENT on purpose. Answering would be an
+    // oracle, so this filter records nothing: no line, no counter, no state.
+    if (!authorizedUserIds.includes(message?.author?.id)) return { outcome: "advance" }
+    const mapping = registry?.lookup?.("discord-bot", replyToMessageId)
+    if (!mapping) return { outcome: "advance" }
+    if (!rateLimiter.canProceed()) {
+      // §9.3: an individual rate-limit drop is never reported. It only moves the
+      // aggregate counter, so the channel stays readable.
+      state.errors += 1
+      await statusDocument?.recordRateLimit?.(OPENCLAW_DISCORD_STATUS_SURFACE)
+      return { outcome: "advance" }
+    }
+    if (!(await deliver(message.content, "discord", mapping.sessionID))) {
+      state.errors += 1
+      await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "discord" })
+      return { outcome: "halt" }
+    }
+    state.messagesInjected += 1
+    // Persisted BEFORE the ack, and it never moves the cursor: a crash between the
+    // injection and the ack must not inject the same reply twice, and because the
+    // cursor stays put the message stays retryable until its ack lands.
+    await cursors.markDelivered(DISCORD_PLATFORM, channel, messageId)
+    if (!(await acknowledgeDiscord(messageId))) return { outcome: "hold" }
+    return { outcome: "acknowledged" }
   }
 
   async function pollDiscord() {
     if (!discordEnabled) return
     if (now() < discordBackoffUntil) return
-    const query = state.discordLastMessageId ? `?after=${state.discordLastMessageId}&limit=10` : "?limit=10"
+    const channel = String(normalized.discordChannelId)
+    const stored = cursors.cursorFor(DISCORD_PLATFORM, channel)
+    const query = stored ? `?after=${stored}&limit=10` : "?limit=10"
     let response
     try {
       response = await request(`${discordApiBase}/channels/${normalized.discordChannelId}/messages${query}`, {
@@ -354,39 +457,96 @@ export function createOpenclawInbound({
       return
     }
 
+    // §U8: the cursor is a CONTIGUOUS frontier. It only moves past a message whose
+    // processing finished, so a held reply can never be skipped for good.
+    let frontier = stored
+    let contiguous = true
     for (const message of [...messages].reverse()) {
-      if (typeof message?.id === "string") {
-        state.discordLastMessageId = message.id
-        state.messagesSeen += 1
-      }
-      const replyToMessageId = message?.message_reference?.message_id
-      if (!replyToMessageId) continue
-      // §9.3: an unauthorized author stays SILENT on purpose. Answering would be
-      // an oracle, so this filter records nothing: no line, no counter, no state.
-      if (!authorizedUserIds.includes(message?.author?.id)) continue
-      const mapping = registry?.lookup?.("discord-bot", replyToMessageId)
-      if (!mapping) continue
-      if (!rateLimiter.canProceed()) {
-        // §9.3: an individual rate-limit drop is never reported. It only moves
-        // the aggregate counter, so the channel stays readable.
-        state.errors += 1
-        await statusDocument?.recordRateLimit?.(OPENCLAW_DISCORD_STATUS_SURFACE)
+      if (typeof message?.id === "string") state.messagesSeen += 1
+      const messageId = typeof message?.id === "string" ? message.id : undefined
+      const settled = await settleDiscordMessage({
+        message,
+        messageId,
+        replyToMessageId: message?.message_reference?.message_id,
+        channel,
+      })
+      if (settled.outcome === "hold" || settled.outcome === "halt") {
+        contiguous = false
+        if (settled.outcome === "halt") break
         continue
       }
-      if (await deliver(message.content, "discord", mapping.sessionID)) {
-        state.messagesInjected += 1
-        await acknowledgeDiscord(message.id)
-      } else {
-        state.errors += 1
-        await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "discord" })
+      const next = contiguous && messageId !== undefined ? messageId : frontier
+      if (settled.outcome === "acknowledged") {
+        // The frontier is what a held predecessor caps: a message acknowledged
+        // behind one cannot move the cursor past it.
+        await cursors.commitAck(DISCORD_PLATFORM, channel, { messageId, cursor: next })
+      }
+      frontier = next
+    }
+    cursors.setCursor(DISCORD_PLATFORM, channel, frontier)
+    await cursors.flush()
+    await statusDocument?.recordSuccess?.(OPENCLAW_DISCORD_STATUS_SURFACE)
+  }
+
+  /**
+   * Resolve one Telegram update with the same outcome vocabulary as Discord. The
+   * cursor is the update id (Telegram's own `offset` currency) while the duplicate
+   * key is the message id, the identifier `§U8` names.
+   */
+  async function settleTelegramUpdate({ update, message, channel }) {
+    const updateId = typeof update?.update_id === "number" ? update.update_id : undefined
+    const messageId = message?.message_id === undefined || message?.message_id === null
+      ? undefined
+      : String(message.message_id)
+    const trackId = messageId ?? (updateId === undefined ? undefined : `update.${updateId}`)
+
+    if (trackId !== undefined) {
+      const known = cursors.stateOf(TELEGRAM_PLATFORM, channel, trackId)
+      if (known === "acked") return { outcome: "advance" }
+      if (known === "delivered") {
+        if (!(await acknowledgeTelegram(message?.message_id, { report: false }))) return { outcome: "hold" }
+        return { outcome: "acknowledged", trackId }
       }
     }
-    await statusDocument?.recordSuccess?.(OPENCLAW_DISCORD_STATUS_SURFACE)
+
+    const replyToMessageId = message?.reply_to_message?.message_id
+    if (replyToMessageId === undefined || replyToMessageId === null) return { outcome: "advance" }
+    if (String(message?.chat?.id) !== channel) return { outcome: "advance" }
+    // §U7: the chat filter says WHERE the message was written; this one says WHO
+    // wrote it. A user missing from the list (or a message with no `from` at all)
+    // is dropped SILENTLY on purpose (§9.3): answering an intruder would be an
+    // oracle, so nothing is reported — no line, no error counter, no ack and no
+    // status write. The cursor still advances past it: leaving an unknown author
+    // at the head would re-read the same update forever.
+    if (authorizedTelegramUserIds !== null) {
+      const userId = message?.from?.id
+      if (userId === undefined || userId === null) return { outcome: "advance" }
+      if (!authorizedTelegramUserIds.includes(String(userId))) return { outcome: "advance" }
+    }
+    if (!message?.text) return { outcome: "advance" }
+    const mapping = registry?.lookup?.("telegram", String(replyToMessageId))
+    if (!mapping) return { outcome: "advance" }
+    if (!rateLimiter.canProceed()) {
+      state.errors += 1
+      await statusDocument?.recordRateLimit?.(OPENCLAW_TELEGRAM_STATUS_SURFACE)
+      return { outcome: "advance" }
+    }
+    if (!(await deliver(message.text, "telegram", mapping.sessionID))) {
+      state.errors += 1
+      await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "telegram" })
+      return { outcome: "halt" }
+    }
+    state.messagesInjected += 1
+    if (trackId !== undefined) await cursors.markDelivered(TELEGRAM_PLATFORM, channel, trackId)
+    if (!(await acknowledgeTelegram(message?.message_id))) return { outcome: "hold" }
+    return { outcome: "acknowledged", trackId }
   }
 
   async function pollTelegram() {
     if (!telegramEnabled) return
-    const offset = state.telegramLastUpdateId !== null ? state.telegramLastUpdateId + 1 : 0
+    const channel = String(normalized.telegramChatId)
+    const stored = cursors.cursorFor(TELEGRAM_PLATFORM, channel)
+    const offset = stored !== null ? stored + 1 : 0
     let response
     try {
       response = await request(
@@ -418,39 +578,24 @@ export function createOpenclawInbound({
     }
     const updates = body && typeof body === "object" && Array.isArray(body.result) ? body.result : []
 
+    let frontier = stored
+    let contiguous = true
     for (const update of updates) {
-      if (typeof update?.update_id === "number") state.telegramLastUpdateId = update.update_id
-      const message = update?.message
-      const replyToMessageId = message?.reply_to_message?.message_id
-      if (replyToMessageId === undefined || replyToMessageId === null) continue
-      if (String(message?.chat?.id) !== String(normalized.telegramChatId)) continue
-      // §U7: the chat filter says WHERE the message was written; this one says WHO
-      // wrote it. A user missing from the list (or a message with no `from` at all)
-      // is dropped SILENTLY on purpose (§9.3): answering an intruder would be an
-      // oracle, so nothing is reported — no line, no error counter, no ack and no
-      // status write. The poll offset above still advances: that is how Telegram
-      // considers an update consumed, and re-reading it forever would be its own bug.
-      if (authorizedTelegramUserIds !== null) {
-        const userId = message?.from?.id
-        if (userId === undefined || userId === null) continue
-        if (!authorizedTelegramUserIds.includes(String(userId))) continue
-      }
-      if (!message?.text) continue
-      const mapping = registry?.lookup?.("telegram", String(replyToMessageId))
-      if (!mapping) continue
-      if (!rateLimiter.canProceed()) {
-        state.errors += 1
-        await statusDocument?.recordRateLimit?.(OPENCLAW_TELEGRAM_STATUS_SURFACE)
+      const updateId = typeof update?.update_id === "number" ? update.update_id : undefined
+      const settled = await settleTelegramUpdate({ update, message: update?.message, channel })
+      if (settled.outcome === "hold" || settled.outcome === "halt") {
+        contiguous = false
+        if (settled.outcome === "halt") break
         continue
       }
-      if (await deliver(message.text, "telegram", mapping.sessionID)) {
-        state.messagesInjected += 1
-        await acknowledgeTelegram(message.message_id)
-      } else {
-        state.errors += 1
-        await statusDocument?.recordFailure?.(OPENCLAW_INJECTION_STATUS_SURFACE, { errorClass: "delivery-refused", detail: "telegram" })
+      const next = contiguous && updateId !== undefined ? updateId : frontier
+      if (settled.outcome === "acknowledged") {
+        await cursors.commitAck(TELEGRAM_PLATFORM, channel, { messageId: settled.trackId, cursor: next })
       }
+      frontier = next
     }
+    cursors.setCursor(TELEGRAM_PLATFORM, channel, frontier)
+    await cursors.flush()
     await statusDocument?.recordSuccess?.(OPENCLAW_TELEGRAM_STATUS_SURFACE)
   }
 
@@ -475,6 +620,10 @@ export function createOpenclawInbound({
   async function start() {
     if (!enabled) return { started: false, reason: "no-credentials" }
     if (started) return { started: true, reason: "already-started" }
+    // §U8: load what a previous process persisted BEFORE the first poll, so a
+    // restart resumes at the last acknowledged position instead of replaying the
+    // window. Storage reads only: setup still performs zero network calls (§11.3).
+    await cursors.hydrate()
     started = true
     loopPromise = loop()
     return { started: true }
@@ -489,6 +638,9 @@ export function createOpenclawInbound({
       // the loop isolates every poll error; a rejection here would be a bug in
       // this module, not a runtime condition, and must not hang dispose
     }
+    // A poll advanced in memory may still owe its write. Never relinquish the loop
+    // with an acknowledged position unrecorded.
+    await cursors.flush()
     started = false
     return { stopped: true }
   }
@@ -502,8 +654,8 @@ export function createOpenclawInbound({
       messagesInjected: state.messagesInjected,
       errors: state.errors,
       ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
-      discordLastMessageId: state.discordLastMessageId,
-      telegramLastUpdateId: state.telegramLastUpdateId,
+      discordLastMessageId: cursors.cursorFor(DISCORD_PLATFORM, normalized.discordChannelId),
+      telegramLastUpdateId: cursors.cursorFor(TELEGRAM_PLATFORM, normalized.telegramChatId),
       // §U6: reported only when the new namespace supplied the authorization, so a
       // legacy configuration keeps the exact status shape the pinned tests assert.
       // Booleans and the source name only: an author id is data, not observability.
