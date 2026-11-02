@@ -51,6 +51,7 @@ import {
 } from "./opencode/rigel-v2-native-config.mjs"
 import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
 import { rewriteLegacyDelegationToolExamples } from "./opencode/rigel-v2-native-prompt-tools.mjs"
+import { auditOpenclawSecretRefs } from "./opencode/rigel-v2-native-openclaw-secrets.mjs"
 import { buildIsolatedV2Env } from "./isolated-v2-env.mjs"
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
@@ -202,6 +203,18 @@ export async function buildTargetAgentManifest(options = {}) {
       // agent from the manifest instead of failing generation, matching the
       // target generator.
       const pluginView = resolveNativePluginConfig({ directory, env: isolatedEnv })
+      // Credential references are written to the manifest VERBATIM (the writer below
+      // copies the block, and nothing here resolves it), which is what keeps a
+      // secret out of the installed file. A plaintext token still works, but it is
+      // the deprecated form, so it is reported ONCE for the whole run: naming the
+      // key paths is enough, and the values are never read for the message.
+      const openclawSecrets = auditOpenclawSecretRefs(pluginView.openclaw)
+      if (openclawSecrets.plaintext.length > 0) {
+        console.error(`Rigel target agent manifest: plaintext OpenClaw credential at ${openclawSecrets.plaintext.join(", ")} is deprecated; use "env:VAR" or { "env": "VAR" } so the manifest carries the reference`)
+      }
+      if (openclawSecrets.invalid.length > 0) {
+        console.error(`Rigel target agent manifest: OpenClaw credential at ${openclawSecrets.invalid.join(", ")} is neither a plaintext token nor an "env:VAR" / { "env": "VAR" } reference; that surface stays disabled at runtime`)
+      }
       const disabledAgentKeys = new Set((pluginView.disabled?.agents ?? []).map((id) => canonicalAgentKey(id)))
       const selection = selectionPath ? JSON.parse(fs.readFileSync(selectionPath, "utf8")) : null
 

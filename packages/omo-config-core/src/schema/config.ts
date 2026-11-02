@@ -13,12 +13,12 @@ import { OmoTeamsConfigLayerSchema, OmoTeamsConfigSchema } from "./team"
 import { OmoTelemetrySettingsLayerSchema, OmoTelemetrySettingsSchema } from "./telemetry"
 import { OmoFormatOnMutationLayerSchema, OmoFormatOnMutationSchema } from "./format-on-mutation"
 import { OmoGatewaySectionSchema } from "./gateway"
+import { OmoOpenclawConfigSchema } from "./openclaw"
 
 export type { OmoHarnessId }
 export { OmoHarnessIdSchema }
 
 export const OmoOpenCodeHarnessConfigSchema = z.record(z.string(), z.unknown())
-export const OmoOpenclawConfigSchema = z.record(z.string(), z.unknown())
 
 /**
  * Canonical skill denylist. Names listed here are absent from the run on every harness that

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// omo-codex-install:6f827bd7e5836c55738e6ed93b8e86a97fc81f50b4e55fab28ff4e503ce93fa1:d527c79ed494672b8ee65514642f8913a93a77f4f19c8e01bbdc0e679dac8c24
+// omo-codex-install:f45a0e36a8368630b5cc606f97acfb705b0f9ff41ca58d09a90f7b5a10384d4f:f84fd500d34968760bec04030fe5fa3b12667b0d0b28444740fbb72fb0a3c2ff
 var __esm = (fn, res, err) => () => {
   if (fn)
     try {
@@ -19852,6 +19852,19 @@ var OmoFormatOnMutationSchema = OmoFormatOnMutationLayerSchema.extend({
 // packages/omo-config-core/src/schema/gateway.ts
 var OmoGatewaySectionSchema = record(string2(), unknown()).describe("Chat-surface gateway settings, owned and validated by a separately installed gateway package. omo accepts the key and never reads it.");
 
+// packages/omo-config-core/src/schema/openclaw.ts
+var OmoOpenclawSecretRefSchema = union([
+  string2(),
+  object({ env: string2().min(1) }).strict()
+]);
+var OmoOpenclawReplyListenerSchema = object({
+  discordBotToken: OmoOpenclawSecretRefSchema.optional(),
+  telegramBotToken: OmoOpenclawSecretRefSchema.optional()
+}).catchall(unknown());
+var OmoOpenclawConfigSchema = object({
+  replyListener: OmoOpenclawReplyListenerSchema.optional()
+}).catchall(unknown());
+
 // packages/omo-config-core/src/schema/config.ts
 var OmoOpenCodeHarnessConfigSchema = record(string2(), unknown());
 var OmoDisabledSkillsSchema = array(string2());
@@ -19885,6 +19898,7 @@ var OmoConfigProfileSchema = object({
   telemetry: OmoTelemetrySettingsLayerSchema.optional(),
   computer: OmoComputerSettingsLayerSchema.optional(),
   disabled_skills: OmoDisabledSkillsSchema.optional(),
+  openclaw: OmoOpenclawConfigSchema.optional(),
   "[opencode]": OmoOpenCodeHarnessConfigSchema.optional(),
   "[native]": OmoTypedHarnessConfigSchema.optional(),
   "[senpi]": OmoTypedHarnessConfigSchema.optional(),
@@ -19906,6 +19920,7 @@ var OmoConfigSchema = object({
   telemetry: OmoTelemetrySettingsSchema.optional(),
   computer: OmoComputerSettingsSchema.optional(),
   disabled_skills: OmoDisabledSkillsSchema.optional(),
+  openclaw: OmoOpenclawConfigSchema.optional(),
   "[opencode]": OmoOpenCodeHarnessConfigSchema.optional(),
   "[native]": OmoTypedHarnessConfigSchema.optional(),
   "[senpi]": OmoTypedHarnessConfigSchema.optional(),
@@ -19930,6 +19945,7 @@ var OmoConfigLayerSchema = object({
   telemetry: OmoTelemetrySettingsLayerSchema.optional(),
   computer: OmoComputerSettingsLayerSchema.optional(),
   disabled_skills: OmoDisabledSkillsSchema.optional(),
+  openclaw: OmoOpenclawConfigSchema.optional(),
   "[opencode]": OmoOpenCodeHarnessConfigSchema.optional(),
   "[native]": OmoTypedHarnessConfigSchema.optional(),
   "[senpi]": OmoTypedHarnessConfigSchema.optional(),
