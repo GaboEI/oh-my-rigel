@@ -770,30 +770,37 @@ function deepFreeze(value) {
 }
 
 /**
- * Resolve the plugin-facing OmO configuration view for the native V2 runtime.
- *
- * @param {{ directory?: string, env?: Record<string, string|undefined>, fileSystem?: object }} [options]
- * @returns {{
- *   monitor: Record<string, unknown>,
- *   goal: { enabled: boolean, auto_start: boolean, default_max_iterations: number },
- *   experimental: { task_system: boolean },
- *   disabled: { tools: string[], agents: string[], skills: string[] },
- *   disabled_mcps: string[],
- *   mcp_env_allowlist: string[],
- *   categories: Record<string, unknown>,
- *   diagnostics: string[],
- *   sources: { path: string, scope: string, loaded: boolean }[],
- * }}
+ * Resolve the three read options every live authority here shares, so the
+ * plugin view and the per-key readers can never disagree on which file chain
+ * they are reading.
  */
-export function resolveNativePluginConfig(options = {}) {
-  const directory = options.directory ?? process.cwd()
-  const env = options.env ?? process.env
-  const fileSystem = options.fileSystem ?? DEFAULT_READ_FILE_SYSTEM
+function resolveLiveReadOptions(options = {}) {
+  return {
+    directory: options.directory ?? process.cwd(),
+    env: options.env ?? process.env,
+    fileSystem: options.fileSystem ?? DEFAULT_READ_FILE_SYSTEM,
+  }
+}
+
+/**
+ * Load the live user+project layer chain ONCE.
+ *
+ * `resolveNativePluginConfig` absorbs a per-file read/parse failure into
+ * `diagnostics` and keeps going, so one broken project layer cannot take the
+ * whole runtime down. A LIVE reader can NOT treat that absorption as "the chain
+ * declared nothing": falling back to the install-time manifest there is the
+ * silent re-enable `resolveNativeTmuxVisualization` documents at length. The
+ * failures therefore ride along in `loadFailures`, so the only reader that must
+ * fail closed can tell "no layer declared the key" from "a layer could not be
+ * read", while every existing caller keeps the historical behavior.
+ */
+function collectLiveConfigLayers({ directory, env, fileSystem, manifest }) {
   const diagnostics = []
-  const profileName = resolveProfileName(env, options.manifest)
+  const profileName = resolveProfileName(env, manifest)
   const candidates = resolveLayerPaths({ cwd: directory, env, fileSystem })
   const sources = []
   const layers = []
+  const loadFailures = []
   let userMcpEnvAllowlist = []
 
   for (const candidate of candidates) {
@@ -805,8 +812,10 @@ export function resolveNativePluginConfig(options = {}) {
     try {
       layer = validateLayer(readJsonc(fileSystem.readFileSync(candidate.path, "utf-8")), candidate, diagnostics)
     } catch (error) {
-      warn(diagnostics, `config: ${candidate.path}: ${error instanceof Error ? error.message : String(error)}`)
+      const reason = error instanceof Error ? error.message : String(error)
+      warn(diagnostics, `config: ${candidate.path}: ${reason}`)
       sources.push({ path: candidate.path, scope: candidate.scope, loaded: false })
+      loadFailures.push({ path: candidate.path, scope: candidate.scope, reason })
       continue
     }
     if (layer === undefined) {
@@ -824,6 +833,17 @@ export function resolveNativePluginConfig(options = {}) {
     }
     sources.push({ path: candidate.path, scope: candidate.scope, loaded: true })
   }
+
+  return { diagnostics, profileName, sources, layers, loadFailures, userMcpEnvAllowlist }
+}
+
+/**
+ * Fold the collected layers into the plugin-facing view. Split out of
+ * `resolveNativePluginConfig` so a second live-read authority can reuse the
+ * exact same assembly instead of re-deriving it.
+ */
+function buildResolvedConfigView(collected, directory) {
+  const { diagnostics, profileName, sources, layers, userMcpEnvAllowlist } = collected
 
   const views = []
   const pushes = [
@@ -906,6 +926,28 @@ export function resolveNativePluginConfig(options = {}) {
     sources,
   }
   return deepFreeze(view)
+}
+
+/**
+ * Resolve the plugin-facing OmO configuration view for the native V2 runtime.
+ *
+ * @param {{ directory?: string, env?: Record<string, string|undefined>, fileSystem?: object, manifest?: object }} [options]
+ * @returns {{
+ *   monitor: Record<string, unknown>,
+ *   goal: { enabled: boolean, auto_start: boolean, default_max_iterations: number },
+ *   experimental: { task_system: boolean },
+ *   disabled: { tools: string[], agents: string[], skills: string[] },
+ *   disabled_mcps: string[],
+ *   mcp_env_allowlist: string[],
+ *   categories: Record<string, unknown>,
+ *   diagnostics: string[],
+ *   sources: { path: string, scope: string, loaded: boolean }[],
+ * }}
+ */
+export function resolveNativePluginConfig(options = {}) {
+  const { directory, env, fileSystem } = resolveLiveReadOptions(options)
+  const collected = collectLiveConfigLayers({ directory, env, fileSystem, manifest: options.manifest })
+  return buildResolvedConfigView(collected, directory)
 }
 
 // --- Native V2 gate reader (Task 15 aggregator contract) ---
@@ -1140,6 +1182,146 @@ export function resolveNativeTmuxVisualization({ manifest, ...options } = {}) {
   if (live.state === "declared") return live.value === true
   if (live.state === "error") return false
   return readNativeTmuxVisualization(manifest)
+}
+
+/**
+ * Read the live `[opencode].openclaw` block from the user+project chain.
+ *
+ * Third live-read authority, beside `readLiveAgentOverridesSource` and
+ * `readLiveTmuxVisualizationSource`. Same three states, same reason for them:
+ *
+ * - `declared`: a layer wrote the key, so the resolved live block is
+ *   authoritative WHOLESALE (Contrato_Transportes_OpenClaw.md S4.2). A
+ *   field-by-field merge is rejected on purpose: the absent field would be
+ *   refilled from the manifest, so "I deleted a gateway" could never be
+ *   expressed and the deletion would re-silence itself.
+ * - `undeclared`: no layer wrote it, so the caller keeps the install-time
+ *   manifest value. On an install that never declared the block both coincide
+ *   by construction, which is why the current behavior is preserved.
+ * - `error`: the chain could not be resolved, OR a layer that exists could not
+ *   be read/parsed, OR the declared value is not an object. The caller must
+ *   fail CLOSED. `resolveNativeTmuxVisualization` argues the reason: falling
+ *   back to the manifest would re-enable a NETWORK surface from a value the
+ *   runtime could not confirm.
+ *
+ * The per-file failure classification is a deliberate divergence from the tmux
+ * analogue, which pins the loader's absorption as `undeclared`. U2's acceptance
+ * criterion requires exactly the opposite observable (an unreadable live file
+ * leaves `openclaw` inert with the error reported), and that criterion exists
+ * because this surface reaches the network.
+ */
+export function readLiveOpenclawSource(options = {}) {
+  const { directory, env, fileSystem } = resolveLiveReadOptions(options)
+  let collected
+  try {
+    collected = collectLiveConfigLayers({ directory, env, fileSystem, manifest: options.manifest })
+  } catch (error) {
+    return { state: "error", reason: error instanceof Error ? error.message : String(error) }
+  }
+
+  const failure = collected.loadFailures[0]
+  if (failure !== undefined) {
+    return { state: "error", path: failure.path, scope: failure.scope, reason: failure.reason }
+  }
+
+  const declaration = findOpenclawDeclaration(collected.layers, collected.profileName)
+  if (declaration === undefined) return { state: "undeclared" }
+  if (!isPlainRecord(declaration.value)) {
+    return { state: "error", path: declaration.path, at: declaration.at, reason: `${declaration.at} is not an object` }
+  }
+
+  const view = buildResolvedConfigView(collected, directory)
+  return { state: "declared", path: declaration.path, at: declaration.at, value: view.openclaw }
+}
+
+/**
+ * Resolve the `openclaw` block the runtime must use, plus the transitions to
+ * report.
+ *
+ * The manifest is only consulted for a genuinely UNDECLARED key. A declared
+ * chain wins wholesale, and a chain in error yields NO config at all, which the
+ * composition turns into its documented inert no-op: no dispatch, no listener,
+ * no network.
+ *
+ * Diagnostics are identity-level only (S4.3): state, resolved path, and which
+ * surfaces/gateways/channels were added or removed. Never a value, never a
+ * token, never a URL. At most ONE line is produced per resolution, so a state
+ * change is reported once instead of spamming the log, and an agreeing chain
+ * reports nothing.
+ */
+export function resolveNativeOpenclaw({ manifest, ...options } = {}) {
+  const live = readLiveOpenclawSource({ manifest, ...options })
+  const diagnostics = []
+
+  if (live.state === "error") {
+    const where = typeof live.path === "string" ? `${live.path}: ` : ""
+    diagnostics.push(`Native V2 openclaw: ${where}live config could not be resolved (${live.reason}); openclaw stays disabled instead of using the installed manifest`)
+    return { state: live.state, config: undefined, diagnostics }
+  }
+
+  if (live.state === "declared") {
+    const diff = openclawIdentityDiff(openclawIdentities(readNativeOpenclaw(manifest)), openclawIdentities(live.value))
+    if (diff.length > 0) {
+      diagnostics.push(`Native V2 openclaw: live config declares ${live.at} in ${live.path} (${diff.join("; ")}); using the live block wholesale. Reinstall to resync the manifest`)
+    }
+    return { state: live.state, path: live.path, config: live.value, diagnostics }
+  }
+
+  return { state: live.state, config: readNativeOpenclaw(manifest), diagnostics }
+}
+
+/**
+ * Locate the placement that declares `openclaw`, in the same resolution order
+ * `buildResolvedConfigView` merges in: layer root, `[opencode]`, profile root,
+ * profile `[opencode]`. The LAST declaration wins, so a project layer beats the
+ * user layer and a profile block beats the layer root, exactly like the merge.
+ */
+function findOpenclawDeclaration(layers, profileName) {
+  let found
+  for (const layer of layers) {
+    const profile = profileRecord(layer.config, profileName)
+    const placements = [
+      { source: layer.config, at: "openclaw" },
+      { source: blockView(layer.config), at: "[opencode].openclaw" },
+      { source: profile, at: profileName === undefined ? "openclaw" : `profiles.${profileName}.openclaw` },
+      { source: blockView(profile), at: profileName === undefined ? "[opencode].openclaw" : `profiles.${profileName}.[opencode].openclaw` },
+    ]
+    for (const placement of placements) {
+      if (!Object.prototype.hasOwnProperty.call(placement.source, "openclaw")) continue
+      found = { path: layer.path, at: placement.at, value: placement.source.openclaw }
+    }
+  }
+  return found
+}
+
+/**
+ * The identity view of an `openclaw` block: which surfaces exist and which
+ * identities they name. Deliberately excludes every value, so a diff can be
+ * logged without exposing a token, a URL or an instruction.
+ */
+function openclawIdentities(config) {
+  const source = isPlainRecord(config) ? config : {}
+  const keys = (value) => (isPlainRecord(value) ? Object.keys(value).sort() : [])
+  return {
+    enabled: source.enabled === true,
+    gateways: keys(source.gateways),
+    hooks: keys(source.hooks),
+    channels: keys(source.channels),
+    replyListener: isPlainRecord(source.replyListener) ? "present" : "absent",
+  }
+}
+
+function openclawIdentityDiff(from, to) {
+  const parts = []
+  if (from.enabled !== to.enabled) parts.push(`enabled ${from.enabled} -> ${to.enabled}`)
+  for (const surface of ["gateways", "hooks", "channels"]) {
+    const added = to[surface].filter((identity) => !from[surface].includes(identity))
+    const removed = from[surface].filter((identity) => !to[surface].includes(identity))
+    if (added.length > 0) parts.push(`${surface} +[${added.join(",")}]`)
+    if (removed.length > 0) parts.push(`${surface} -[${removed.join(",")}]`)
+  }
+  if (from.replyListener !== to.replyListener) parts.push(`replyListener ${from.replyListener} -> ${to.replyListener}`)
+  return parts
 }
 
 // --- Native V2 gate policy (LIVE vs BAKED) ---

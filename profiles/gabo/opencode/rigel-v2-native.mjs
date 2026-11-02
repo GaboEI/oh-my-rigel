@@ -38,7 +38,7 @@ import { createNativeWebFetchRedirectGuard, updateNativeWebFetchDefinition } fro
 import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-validator.mjs"
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
-import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativeOpenclaw, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeGates } from "./rigel-v2-native-config.mjs"
+import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeGates, resolveNativeOpenclaw } from "./rigel-v2-native-config.mjs"
 import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
 import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
 import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
@@ -960,14 +960,26 @@ export default {
     const hashlineEditTool = hashlineEnabled ? createHashlineEditTool({ directory: location.directory }) : undefined
     // The bidirectional OpenClaw composition owns the outbound dispatch
     // (invoked from the shared event loop below, never a second subscription) and
-    // the inbound reply listener (started here, stopped on dispose). The config is
-    // the manifest-materialized `openclaw` block; absent or disabled means a
-    // strict no-op with no listener, no dispatch and no network. `ready` is
-    // awaited so a configured listener is running before the first event, and a
-    // start failure degrades to disabled instead of failing setup.
+    // the inbound reply listener (started here, stopped on dispose).
+    //
+    // Contrato_Transportes_OpenClaw.md S4.2: `openclaw` is a LIVE authority, so
+    // the block handed to the composition is resolved from the user+project
+    // chain, not read straight out of the install-time manifest. The manifest is
+    // consulted ONLY when no layer declares the key (an old install coincides by
+    // construction), and an unreadable chain FAILS CLOSED with the error
+    // reported: falling back there would re-enable a network surface from a
+    // value the runtime could not confirm. A declared block wins WHOLESALE, so
+    // deleting a gateway is expressible. Absent or disabled still means a strict
+    // no-op with no listener, no dispatch and no network: this resolution performs
+    // file reads only, and the first send, never setup, is the earliest point any
+    // request can leave the process. `ready` is awaited so a configured
+    // listener is running before the first event, and a start failure degrades to
+    // disabled instead of failing setup.
+    const openclawResolution = resolveNativeOpenclaw({ manifest, directory: location.directory, env: process.env })
+    for (const diagnostic of openclawResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
     const openclaw = createNativeOpenclaw({
       context,
-      config: readNativeOpenclaw(manifest),
+      config: openclawResolution.config,
       // V1 parity: a `session.created` for a delegated child is not a wake. The
       // runtime already tracks delegated children in `childSessionIDs`, the same
       // set the delegation roster uses as `isRootSession`.
