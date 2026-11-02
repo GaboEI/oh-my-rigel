@@ -103,6 +103,25 @@ describe("#given plugin keys inside the [opencode] block", () => {
   })
 })
 
+describe("#given OpenClaw configuration placements", () => {
+  test("#when root, profile, and [opencode] blocks are valid #then each resolves without diagnostics", () => {
+    const fixture = makeFixture()
+    fixture.writeUser(`{
+      "openclaw": { "enabled": true, "gateways": {}, "hooks": {} },
+      "profiles": { "gabo": { "openclaw": { "enabled": false, "gateways": {}, "hooks": {} } } },
+      "[opencode]": { "openclaw": { "enabled": true, "gateways": {}, "hooks": {} } }
+    }`)
+
+    const root = fixture.resolve()
+    const profile = fixture.resolve({ OMO_PROFILE: "gabo" })
+
+    expect(root.openclaw).toEqual({ enabled: true, gateways: {}, hooks: {} })
+    expect(profile.openclaw).toEqual({ enabled: false, gateways: {}, hooks: {} })
+    expect(root.diagnostics).toEqual([])
+    expect(profile.diagnostics).toEqual([])
+  })
+})
+
 describe("#given the same section in two layers", () => {
   test("#when the nearer project layer sets monitor #then the later view replaces the whole section", () => {
     // given
