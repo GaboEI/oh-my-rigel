@@ -430,7 +430,9 @@ export function createOpenclawInbound({
     }
 
     const remaining = response.headers?.get?.("x-ratelimit-remaining")
-    if (remaining !== null && remaining !== undefined && Number.parseInt(remaining, 10) < 2) {
+    // §U9: the contract threshold is EXHAUSTED budget, not "almost out". A budget of
+    // 1 still serves the next poll, so it must not stand the poller down; only 0 does.
+    if (remaining !== null && remaining !== undefined && Number.parseInt(remaining, 10) === 0) {
       const reset = response.headers?.get?.("x-ratelimit-reset")
       const parsedReset = reset ? Number.parseFloat(reset) : Number.NaN
       discordBackoffUntil = Number.isFinite(parsedReset) ? parsedReset * 1000 : now() + 10_000
