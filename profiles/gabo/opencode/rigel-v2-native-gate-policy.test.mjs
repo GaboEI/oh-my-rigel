@@ -36,8 +36,8 @@ const PROJECT_CONFIG = `${PROJECT}/.omo/omo.jsonc`
 const ENV = { HOME }
 const GATE_KEYS = ["monitor", "goal", "task_system", "team_mode", "interactive_bash", "hashline_edit", "preemptive_compaction"]
 
-function manifestWith(gates) {
-  return { metadata: { global: { gates } } }
+function manifestWith(gates, profile) {
+  return { metadata: { ...(profile === undefined ? {} : { profile }), global: { gates } } }
 }
 
 function resolve(manifest, fileSystem) {
@@ -95,6 +95,20 @@ describe("#given a LIVE gate declared by the live config chain", () => {
     expect(resolution.gates.team_mode).toBe(false)
     expect(resolution.diagnostics).toHaveLength(1)
     expect(resolution.diagnostics[0]).toContain("team_mode")
+  })
+
+  test("#when the profile environment is absent but the manifest records the profile #then the profile's live gate still wins", () => {
+    // given: a restart path lost OMO_PROFILE, while the installed manifest retains the selected profile.
+    const manifest = manifestWith({ team_mode: false }, "gabo")
+    const fileSystem = memoryFileSystem({
+      [USER_CONFIG]: JSON.stringify({
+        profiles: { gabo: { "[opencode]": { team_mode: { enabled: true } } } },
+      }),
+    })
+    // when
+    const resolution = resolve(manifest, fileSystem)
+    // then
+    expect(resolution.gates.team_mode).toBe(true)
   })
 
   test("#when the user layer declares the gate #then it is honored as well as the project layer", () => {

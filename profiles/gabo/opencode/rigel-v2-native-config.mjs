@@ -294,14 +294,20 @@ function resolveLayerPaths({ cwd, env, fileSystem }) {
   ]
 }
 
-function resolveProfileName(env) {
+function resolveManifestProfileName(manifest) {
+  const value = manifest?.metadata?.profile
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+function resolveProfileName(env, manifest) {
   const value = env?.OMO_PROFILE || env?.OCX_PROFILE
   if (typeof value === "string" && value.length > 0) return value
   const opencodeConfigDir = env?.OPENCODE_CONFIG_DIR
   const match = typeof opencodeConfigDir === "string"
     ? /(?:^|[\\/])profiles[\\/]([^\\/]+)[\\/]*$/.exec(opencodeConfigDir)
     : null
-  return match?.[1] && match[1].length > 0 ? match[1] : undefined
+  if (match?.[1] && match[1].length > 0) return match[1]
+  return resolveManifestProfileName(manifest)
 }
 
 function withoutControlKeys(config) {
@@ -784,7 +790,7 @@ export function resolveNativePluginConfig(options = {}) {
   const env = options.env ?? process.env
   const fileSystem = options.fileSystem ?? DEFAULT_READ_FILE_SYSTEM
   const diagnostics = []
-  const profileName = resolveProfileName(env)
+  const profileName = resolveProfileName(env, options.manifest)
   const candidates = resolveLayerPaths({ cwd: directory, env, fileSystem })
   const sources = []
   const layers = []
@@ -1130,7 +1136,7 @@ export function readLiveTmuxVisualizationSource(options = {}) {
  * feature back on. Only a truly UNDECLARED key may consult the manifest.
  */
 export function resolveNativeTmuxVisualization({ manifest, ...options } = {}) {
-  const live = readLiveTmuxVisualizationSource(options)
+  const live = readLiveTmuxVisualizationSource({ manifest, ...options })
   if (live.state === "declared") return live.value === true
   if (live.state === "error") return false
   return readNativeTmuxVisualization(manifest)
@@ -1236,7 +1242,7 @@ export function readLiveGatesSource(options = {}) {
  */
 export function resolveNativeGates({ manifest, ...options } = {}) {
   const baked = readNativeGates(manifest)
-  const live = readLiveGatesSource(options)
+  const live = readLiveGatesSource({ manifest, ...options })
   const gates = { ...baked }
   const diagnostics = []
   const liveGates = GATE_KEYS.filter((gate) => NATIVE_GATE_POLICY[gate] === "live")
