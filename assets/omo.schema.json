@@ -2427,8 +2427,53 @@
     },
     "openclaw": {
       "type": "object",
-      "propertyNames": {
-        "type": "string"
+      "properties": {
+        "replyListener": {
+          "type": "object",
+          "properties": {
+            "discordBotToken": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "env": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "env"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "telegramBotToken": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "env": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "env"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "additionalProperties": {}
+        }
       },
       "additionalProperties": {}
     },
@@ -20793,8 +20838,53 @@
           },
           "openclaw": {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
+            "properties": {
+              "replyListener": {
+                "type": "object",
+                "properties": {
+                  "discordBotToken": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "env": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "env"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "telegramBotToken": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "env": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "env"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": {}
+              }
             },
             "additionalProperties": {}
           },

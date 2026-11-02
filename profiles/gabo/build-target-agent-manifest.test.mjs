@@ -213,4 +213,46 @@ describe("build-target-agent-manifest", () => {
       })
     })
   })
+
+  describe("#given an OpenClaw credential written as a reference", () => {
+    describe("#when the manifest is generated", () => {
+      test.skipIf(!hasDist)("#then the manifest carries the reference verbatim and never a resolved value", async () => {
+        // given
+        const openclawSandbox = path.join(scratch, "openclaw-sandbox")
+        const openclawHome = path.join(openclawSandbox, "home")
+        const openclaw = {
+          enabled: true,
+          replyListener: {
+            discordBotToken: "env:DISCORD_BOT_TOKEN",
+            telegramBotToken: { env: "TELEGRAM_BOT_TOKEN" },
+          },
+        }
+        fs.mkdirSync(path.join(openclawHome, ".omo"), { recursive: true })
+        fs.writeFileSync(path.join(openclawHome, ".omo", "omo.jsonc"), JSON.stringify({ openclaw }))
+        const openclawInputPath = path.join(scratch, "openclaw-input.json")
+        fs.writeFileSync(openclawInputPath, JSON.stringify({}))
+        const openclawOutputPath = path.join(scratch, "target-agent-manifest-openclaw.mjs")
+        const { buildTargetAgentManifest } = await import("./build-target-agent-manifest.mjs")
+
+        // when
+        const built = await buildTargetAgentManifest({
+          inputPath: openclawInputPath,
+          outputPath: openclawOutputPath,
+          selectionPath,
+          judgePath,
+          sandbox: openclawSandbox,
+          keepSandbox: true,
+        })
+
+        // then
+        // The generator copies the block and never resolves it. Writing the
+        // reference is what keeps the secret off disk, so a resolved value in
+        // either place would be the defect this contract exists to catch.
+        expect(built.manifest.metadata.global.openclaw).toEqual(openclaw)
+        const emitted = fs.readFileSync(openclawOutputPath, "utf8")
+        const emittedManifest = JSON.parse(emitted.slice(emitted.indexOf("export default ") + "export default ".length))
+        expect(emittedManifest.metadata.global.openclaw).toEqual(openclaw)
+      })
+    })
+  })
 })

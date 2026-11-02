@@ -133,6 +133,44 @@ describe("omo config schema", () => {
     expect(result.data.profiles.gabo.openclaw).toEqual(config.profiles.gabo.openclaw)
   })
 
+  test("#given OpenClaw credentials in every accepted shape #when parsed #then plaintext and both reference forms validate and no token is required", () => {
+    // given
+    const legacy = { openclaw: { enabled: true, replyListener: { discordBotToken: "plain-token", telegramBotToken: "tg-token" } } }
+    const references = {
+      openclaw: {
+        enabled: true,
+        replyListener: { discordBotToken: "env:DISCORD_BOT_TOKEN", telegramBotToken: { env: "TELEGRAM_BOT_TOKEN" } },
+      },
+    }
+    const withoutCredentials = { openclaw: { enabled: true, replyListener: { discordChannelId: "c1", authorizedDiscordUserIds: ["u1"] } } }
+
+    // when
+    const parsed = [legacy, references, withoutCredentials].map((config) => OmoConfigSchema.safeParse(config))
+
+    // then
+    expect(parsed.map((result) => result.success)).toEqual([true, true, true])
+    const [legacyResult, referenceResult, bareResult] = parsed
+    if (!legacyResult.success || !referenceResult.success || !bareResult.success) throw new Error("expected all three to parse")
+    expect(legacyResult.data.openclaw).toEqual(legacy.openclaw)
+    expect(referenceResult.data.openclaw).toEqual(references.openclaw)
+    // No default is injected: an omitted credential stays omitted, which is what
+    // keeps an optional field from becoming `required` in the generated schema.
+    expect(bareResult.data.openclaw).toEqual(withoutCredentials.openclaw)
+  })
+
+  test("#given a malformed OpenClaw reference object #when parsed #then the issue path identifies the token", () => {
+    // given
+    const config = { openclaw: { enabled: true, replyListener: { discordBotToken: { env: "DISCORD_BOT_TOKEN", extra: true } } } }
+
+    // when
+    const result = OmoConfigSchema.safeParse(config)
+
+    // then
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error("Expected config parsing to fail")
+    expect(result.error.issues.map((issue) => issue.path.join("."))).toContain("openclaw.replyListener.discordBotToken")
+  })
+
   test("#given a wrong typed git_master setting #when parsed #then the issue path identifies the bad field", () => {
     // given
     const config = { git_master: { include_co_authored_by: "yes" } }

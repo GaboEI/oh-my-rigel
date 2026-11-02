@@ -25,6 +25,7 @@
  * load this module.
  */
 import { normalizeOpenclawConfig } from "./rigel-v2-native-openclaw-core.mjs"
+import { resolveOpenclawReplyListenerSecrets } from "./rigel-v2-native-openclaw-secrets.mjs"
 import { createOpenclawOutbound } from "./rigel-v2-native-openclaw-outbound.mjs"
 import { createOpenclawInbound, createInternalPromptGate } from "./rigel-v2-native-openclaw-inbound.mjs"
 import { createOpenclawRegistry } from "./rigel-v2-native-openclaw-registry.mjs"
@@ -104,6 +105,17 @@ export function createNativeOpenclaw({
   })
   const enabled = normalized !== null
 
+  // Credential references (`"env:VAR"` / `{ env: "VAR" }`) resolve ONCE, here at
+  // setup, never per send: a broken reference is one reported line instead of one
+  // per event. An unresolvable or malformed reference removes only that surface's
+  // token, so the listener's own presence rule keeps exactly that platform down
+  // while the others stay up (fail closed per surface, never per plugin). The
+  // diagnostic names the configuration key and the variable, never a value.
+  const secrets = enabled
+    ? resolveOpenclawReplyListenerSecrets(normalized.replyListener, { env })
+    : { replyListener: undefined, diagnostics: [], disabled: [] }
+  for (const diagnostic of secrets.diagnostics) log(`[oh-my-rigel] Native V2 openclaw ${diagnostic}`)
+
   // The registry is the durable correlation store; `ctx.storage` is the V2
   // domain, and an absent one still works from the in-process index.
   const registry = createOpenclawRegistry({ storage: context?.storage, now, log })
@@ -137,7 +149,7 @@ export function createNativeOpenclaw({
   // prompt the host has to accept.
   const deliverInboundReply = createInternalPromptGate({ session: context?.session })
   const inbound = createOpenclawInbound({
-    replyListener: normalized?.replyListener,
+    replyListener: secrets.replyListener,
     registry,
     deliverInboundReply,
     fetchImpl,
