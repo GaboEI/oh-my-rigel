@@ -92,7 +92,7 @@ export function normalizeReplyListenerConfig(raw) {
   }
 }
 
-const OPENCLAW_KEYS = new Set(["enabled", "gateways", "hooks", "replyListener"])
+const OPENCLAW_KEYS = new Set(["enabled", "gateways", "hooks", "replyListener", "channels"])
 const GATEWAY_KEYS = new Set(["type", "url", "method", "headers", "command", "timeout"])
 const HOOK_KEYS = new Set(["enabled", "gateway", "instruction"])
 const REPLY_LISTENER_KEYS = new Set([
