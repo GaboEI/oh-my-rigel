@@ -35,7 +35,7 @@ import {
   createV2GoalStore,
   GOAL_TOOL_NAMES,
 } from "./tools/goal.tools.mjs"
-import { readNativeGates } from "./rigel-v2-native-config.mjs"
+import { readNativeGates, readNativeTeamMode } from "./rigel-v2-native-config.mjs"
 import { normalizeToolDefinition } from "./rigel-v2-native-core.mjs"
 import { trimToolNamesToCap } from "./rigel-v2-native-tool-trimming.mjs"
 import { createTeamTools, TEAM_TOOL_NAMES } from "./tools/team.tools.mjs"
@@ -76,6 +76,7 @@ export function buildConditionalToolDefinitions({
   teamStartMemberSession,
   teamTerminateMemberSession,
   syncTodos,
+  teamMode,
   getSessionID,
   onUnavailable = () => {},
 } = {}) {
@@ -126,7 +127,7 @@ export function buildConditionalToolDefinitions({
 
   if (gates.team_mode === true) {
     if (teamStorage) {
-      const tools = createTeamTools({ storage: teamStorage, getSessionID, resolveScopeForSession: teamResolveScope, worktreeManager: teamWorktrees, worktreeReconciler: teamWorktreeReconciler, projectKey: teamProjectKey, startMemberSession: teamStartMemberSession, terminateMemberSession: teamTerminateMemberSession })
+      const tools = createTeamTools({ storage: teamStorage, getSessionID, resolveScopeForSession: teamResolveScope, worktreeManager: teamWorktrees, worktreeReconciler: teamWorktreeReconciler, projectKey: teamProjectKey, startMemberSession: teamStartMemberSession, terminateMemberSession: teamTerminateMemberSession, teamMode })
       for (const name of TEAM_TOOL_NAMES) {
         definitions[name] = tools[name]
         names.push(name)
@@ -172,12 +173,14 @@ export async function registerConditionalNativeTools({
   teamStartMemberSession,
   teamTerminateMemberSession,
   teamScopeRegistry,
+  teamMode,
   existingToolNames = [],
   onRegistered,
   log = console.error,
 } = {}) {
   const manifestGates = readNativeGates(manifest)
   const resolved = { ...manifestGates, ...(gates ?? {}) }
+  const resolvedTeamMode = teamMode ?? readNativeTeamMode(manifest)
   // interactive_bash availability comes from the host, not a config key. A
   // persistent-terminal factory is a complete backend on its own (no tmux
   // required); only when it is absent does PATH detection decide. The probe
@@ -274,6 +277,7 @@ export async function registerConditionalNativeTools({
     teamProjectKey,
     teamStartMemberSession,
     teamTerminateMemberSession,
+    teamMode: resolvedTeamMode,
     goalController,
     syncTodos,
     getSessionID,

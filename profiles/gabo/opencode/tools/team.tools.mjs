@@ -61,6 +61,12 @@ const UPSTREAM_ONLY_FIELDS = Object.freeze([
 const TEAM_CREATE_CALL = "team_create({ team_name, members: [{ name, agent | category, prompt, model? }], worktree? })"
 const TEAM_CREATE_MAX_MEMBERS = 8
 
+function resolveTeamCreateMaxMembers(teamMode) {
+  const configured = teamMode?.max_members
+  if (typeof configured !== "number" || !Number.isInteger(configured) || configured < 1) return TEAM_CREATE_MAX_MEMBERS
+  return Math.min(configured, TEAM_CREATE_MAX_MEMBERS)
+}
+
 const TEAM_NAME_PROPERTY = Object.freeze({ type: "string", minLength: 1, description: "Team name: the storage record key scoped to this project." })
 
 // DEPRECATED alias of TEAM_NAME_PROPERTY, kept because the pre-row-55 surface
@@ -84,20 +90,22 @@ const TEAM_CREATE_MEMBER_SCHEMA = Object.freeze({
   }),
 })
 
-const TEAM_CREATE_INPUT = Object.freeze({
-  type: "object",
-  additionalProperties: false,
-  // The team identifier is required, but it may arrive as the deprecated `name`
-  // alias, so presence is enforced in `teamName()` instead of a schema `required`
-  // entry: a tool-parameter root may not be an anyOf/oneOf union.
-  required: ["members"],
-  properties: Object.freeze({
-    team_name: TEAM_NAME_PROPERTY,
-    name: TEAM_NAME_ALIAS_PROPERTY,
-    members: Object.freeze({ type: "array", minItems: 1, maxItems: TEAM_CREATE_MAX_MEMBERS, items: TEAM_CREATE_MEMBER_SCHEMA }),
-    worktree: Object.freeze({ type: "boolean", description: "Per-member git worktree. OMIT to keep the legacy default (one worktree per member when the project has a worktree manager); false = one shared working tree (pane-visible); true = require per-member worktrees." }),
-  }),
-})
+function teamCreateInput(maxMembers) {
+  return Object.freeze({
+    type: "object",
+    additionalProperties: false,
+    // The team identifier is required, but it may arrive as the deprecated `name`
+    // alias, so presence is enforced in `teamName()` instead of a schema `required`
+    // entry: a tool-parameter root may not be an anyOf/oneOf union.
+    required: ["members"],
+    properties: Object.freeze({
+      team_name: TEAM_NAME_PROPERTY,
+      name: TEAM_NAME_ALIAS_PROPERTY,
+      members: Object.freeze({ type: "array", minItems: 1, maxItems: maxMembers, items: TEAM_CREATE_MEMBER_SCHEMA }),
+      worktree: Object.freeze({ type: "boolean", description: "Per-member git worktree. OMIT to keep the legacy default (one worktree per member when the project has a worktree manager); false = one shared working tree (pane-visible); true = require per-member worktrees." }),
+    }),
+  })
+}
 
 const TEAM_SEND_MESSAGE_INPUT = Object.freeze({
   type: "object",
@@ -185,10 +193,11 @@ function normalizeMember(member) {
   }
 }
 
-function normalizeMembers(input) {
+function normalizeMembers(input, maxMembers) {
   const raw = input?.members
   if (raw === undefined) return []
   if (!Array.isArray(raw)) throw new Error("members must be an array")
+  if (raw.length > maxMembers) throw new Error(`team_create permits at most ${maxMembers} members`)
   const seen = new Set()
   const members = []
   for (const entry of raw) {
@@ -250,7 +259,10 @@ export function createTeamTools({
   startMemberSession,
   terminateMemberSession,
   log = (line) => console.error(line),
+  teamMode,
 } = {}) {
+  const maxMembers = resolveTeamCreateMaxMembers(teamMode)
+  const teamCreateSchema = teamCreateInput(maxMembers)
   if (!storage || typeof storage.get !== "function" || typeof storage.set !== "function") throw new Error("V2 storage is required for team tools")
 
   // Production resolves the scope from the calling session's project directory;
@@ -716,7 +728,7 @@ export function createTeamTools({
       // the repo scope (and therefore cannot provision anything).
       assertTeamCreateInput(input)
       const name = teamName(input)
-      const declared = normalizeMembers(input)
+      const declared = normalizeMembers(input, maxMembers)
       if (typeof startMemberSession === "function") assertSpawnableMembers(declared)
       const scope = await scopeFor(toolContext)
       if (await storage.get(keyFor(scope, name))) throw new Error(`Team "${name}" already exists`)
@@ -726,7 +738,7 @@ export function createTeamTools({
       } finally {
         scope.worktreeReconciler?.endCreate(name)
       }
-    }, TEAM_CREATE_INPUT),
+    }, teamCreateSchema),
     team_delete: definition("team_delete", async (input, toolContext) => {
       const scope = await scopeFor(toolContext)
       const name = teamName(input)

@@ -84,6 +84,8 @@ describe("conditional tool definitions", () => {
     expect(bash.names).toEqual(["interactive_bash"])
     const team = buildConditionalToolDefinitions({ gates: { ...GATE_OFF, team_mode: true }, teamStorage: memoryStorage() })
     expect(team.names).toEqual(TEAM_TOOL_NAMES)
+    const cappedTeam = buildConditionalToolDefinitions({ gates: { ...GATE_OFF, team_mode: true }, teamStorage: memoryStorage(), teamMode: { max_members: 2 } })
+    expect(cappedTeam.definitions.team_create.input.properties.members.maxItems).toBe(2)
   })
 
   test("registers interactive_bash through a terminal factory with no tmux", () => {
