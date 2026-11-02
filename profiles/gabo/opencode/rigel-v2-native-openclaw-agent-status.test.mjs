@@ -132,3 +132,109 @@ describe("openclaw status document durability", () => {
     expect(document.snapshot().surfaces.a2a.state).toBe("degraded")
   })
 })
+
+// U4 additions. The document is now shared by the legacy surfaces (outbound,
+// discord, telegram, injection, config, credentials) and by the agent namespace,
+// so three properties became contract:
+//
+//   - a write hydrates first, once, or a fresh failure would erase the surfaces
+//     another owner had already written to the same key;
+//   - a success on an `up` surface records nothing, which is what keeps the
+//     healthy legacy call sequence at zero status writes;
+//   - a fatal whose owner already announced itself at setup is recorded WITHOUT a
+//     second line, because one transition must produce one line.
+
+function storageSpy() {
+  const map = new Map()
+  const ops = []
+  return {
+    map,
+    ops,
+    get: async (key) => { ops.push({ op: "get", key }); return map.get(key) },
+    set: async (key, value) => { ops.push({ op: "set", key }); map.set(key, value) },
+    remove: async (key) => { ops.push({ op: "remove", key }); map.delete(key) },
+  }
+}
+
+describe("openclaw status document sharing (U4)", () => {
+  test("#given another owner already persisted surfaces #when a failure is recorded without an explicit hydrate #then those surfaces survive", async () => {
+    // given
+    const storage = storageSpy()
+    const previous = createOpenclawStatusDocument({ storage, now: at("2026-01-01T00:00:00.000Z") })
+    await previous.recordFailure("telegram", { errorClass: "http-500" })
+
+    // when
+    const shared = createOpenclawStatusDocument({ storage, now: at("2026-01-01T00:00:05.000Z") })
+    await shared.recordFailure("outbound", { errorClass: "http-503" })
+
+    // then
+    const persisted = storage.map.get(OPENCLAW_STATUS_KEY)
+    expect(Object.keys(persisted.surfaces).sort()).toEqual(["outbound", "telegram"])
+    expect(persisted.surfaces.telegram).toMatchObject({ state: "degraded", errorClass: "http-500" })
+  })
+
+  test("#given an already up surface #when success is recorded #then neither a read nor a write happens", async () => {
+    // given
+    const storage = storageSpy()
+    const document = createOpenclawStatusDocument({ storage })
+    await document.recordFailure("outbound", { errorClass: "http-500" })
+    await document.recordSuccess("outbound")
+    storage.ops.length = 0
+
+    // when
+    const changed = await document.recordSuccess("outbound")
+
+    // then
+    expect(changed).toBe(false)
+    expect(storage.ops).toEqual([])
+  })
+
+  test("#given a surface this process never recorded #when success is recorded #then the document is not touched", async () => {
+    // given
+    const storage = storageSpy()
+    const document = createOpenclawStatusDocument({ storage })
+
+    // when
+    const changed = await document.recordSuccess("outbound")
+
+    // then
+    expect(changed).toBe(false)
+    expect(storage.ops).toEqual([])
+    expect(document.snapshot().surfaces).toEqual({})
+  })
+
+  test("#given a fatal its owner already announced #when recorded without a line #then the state is stored and no second line is written", async () => {
+    // given
+    const lines = []
+    const document = createOpenclawStatusDocument({ log: (line) => lines.push(line), now: at("2026-01-01T00:00:00.000Z") })
+
+    // when
+    await document.recordFailure("credentials.discord", {
+      errorClass: "missing-env-variable",
+      fatal: true,
+      emitLine: false,
+      detail: "openclaw.replyListener.discordBotToken",
+    })
+
+    // then
+    expect(lines).toEqual([])
+    expect(document.snapshot().surfaces["credentials.discord"]).toMatchObject({
+      state: "fatal",
+      errorClass: "missing-env-variable",
+      consecutiveFailures: 1,
+    })
+  })
+
+  test("#given a document #when hydrate runs twice #then the persisted read happens once", async () => {
+    // given
+    const storage = storageSpy()
+    const document = createOpenclawStatusDocument({ storage })
+
+    // when
+    await document.hydrate()
+    await document.hydrate()
+
+    // then
+    expect(storage.ops.filter((op) => op.op === "get")).toHaveLength(1)
+  })
+})

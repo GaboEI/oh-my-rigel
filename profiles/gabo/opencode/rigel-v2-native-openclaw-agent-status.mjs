@@ -25,6 +25,14 @@
  * aggregate counters and NEVER produce a line, while repeated identical failures
  * are deduplicated by `(surface, severity, errorClass)` so a broken endpoint
  * cannot flood the sink.
+ *
+ * Two properties make the document safe to share between the legacy surface and
+ * the new namespace (U4):
+ *
+ *   - a write HYDRATES first, once, so persisting a new failure cannot erase the
+ *     surfaces another process (or another owner in this one) had written;
+ *   - a success on an already-`up` surface changes nothing, so the healthy
+ *     legacy path keeps its measured zero-write call sequence.
  */
 
 /** Storage key of the document. */
@@ -76,6 +84,8 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
   const lastEmitted = new Map()
   const canPersist = Boolean(storage && typeof storage.set === "function")
   const canRead = Boolean(storage && typeof storage.get === "function")
+  /** Memoised first hydration: one read per document, never one per write. */
+  let hydration
 
   function timestamp() {
     return new Date(now()).toISOString()
@@ -104,9 +114,18 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
     }
   }
 
-  /** Load a document a previous process wrote. An unusable one is reported, never trusted. */
-  async function hydrate() {
-    if (!canRead) return
+  /**
+   * Load a document a previous process wrote. An unusable one is reported, never
+   * trusted. Memoised, so the explicit startup warm-up and the lazy read before
+   * the first write are the same single read.
+   */
+  function hydrate() {
+    if (!canRead) return Promise.resolve()
+    if (hydration === undefined) hydration = readPersisted()
+    return hydration
+  }
+
+  async function readPersisted() {
     try {
       const value = await storage.get(OPENCLAW_STATUS_KEY)
       if (value === undefined || value === null) return
@@ -145,28 +164,46 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
   /**
    * Record a failure. `fatal` disables the surface and belongs to the startup
    * banner channel; anything else is `degraded`, one line per transition.
+   *
+   * `emitLine: false` records the state WITHOUT a second line: it exists for a
+   * fatal whose owning resolver already announced itself at setup (a credential
+   * reference, a config validation error), where a second line would break the
+   * one-line-per-transition rule instead of honouring it. `detail` is appended to
+   * the emitted line only; it is never persisted, so the document keeps the
+   * contract shape of `Contrato_Transportes_OpenClaw.md` §9.2.
    */
-  async function recordFailure(id, { errorClass = null, fatal = false } = {}) {
+  async function recordFailure(id, { errorClass = null, fatal = false, emitLine = true, detail = null } = {}) {
     if (typeof id !== "string" || id.length === 0) return false
+    await hydrate()
     const surface = surfaceFor(id)
     surface.state = fatal ? "fatal" : "degraded"
     surface.errorClass = errorClass
     surface.consecutiveFailures += 1
     surface.lastErrorAt = timestamp()
     const severity = fatal ? "fatal" : "degraded"
-    const detail = errorClass ? ` (${errorClass})` : ""
+    const detailSuffix = typeof detail === "string" && detail.length > 0 ? `: ${detail}` : ""
+    const errorSuffix = errorClass ? ` (${errorClass})` : ""
     const message = fatal
-      ? `openclaw surface disabled: ${id}${detail}`
-      : `openclaw surface degraded: ${id}${detail} after ${surface.consecutiveFailures} consecutive failure(s)`
-    emit(id, severity, errorClass, message)
+      ? `openclaw surface disabled: ${id}${errorSuffix}${detailSuffix}`
+      : `openclaw surface degraded: ${id}${errorSuffix}${detailSuffix} after ${surface.consecutiveFailures} consecutive failure(s)`
+    if (emitLine) emit(id, severity, errorClass, message)
     await persist()
     return true
   }
 
-  /** Record a success. Emits one recovery line only when the surface was not `up`. */
+  /**
+   * Record a success. Only a surface this process already recorded can recover,
+   * and a surface that is already `up` has nothing to record, so this returns
+   * WITHOUT reading or writing: that is what keeps a healthy legacy dispatch
+   * byte-identical to the pre-U4 call sequence. Any surface that could be
+   * degraded here was written by `recordFailure`, which hydrated first, so the
+   * document is already complete when this persists the recovery.
+   */
   async function recordSuccess(id) {
     if (typeof id !== "string" || id.length === 0) return false
-    const surface = surfaceFor(id)
+    const surface = surfaces.get(id)
+    if (surface === undefined) return false
+    if (surface.state === "up" && surface.errorClass === null && surface.consecutiveFailures === 0) return false
     const previous = surface.state
     surface.state = "up"
     surface.errorClass = null
@@ -179,6 +216,7 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
   /** Aggregate only: §9.3 forbids a line per truncated event. */
   async function recordTruncation(id, count = 1) {
     if (typeof id !== "string" || id.length === 0) return false
+    await hydrate()
     const surface = surfaceFor(id)
     surface.truncations += Number.isInteger(count) && count > 0 ? count : 1
     await persist()
@@ -188,6 +226,7 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
   /** Aggregate only: §9.3 forbids reporting rate-limit jitter at all. */
   async function recordRateLimit(id, count = 1) {
     if (typeof id !== "string" || id.length === 0) return false
+    await hydrate()
     const surface = surfaceFor(id)
     surface.rateLimited += Number.isInteger(count) && count > 0 ? count : 1
     await persist()

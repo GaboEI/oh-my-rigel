@@ -83,6 +83,7 @@ import { createNativeClaudeCodeHooks } from "./rigel-v2-claude-code-hooks.mjs"
 import { createUlwExecuteCommand } from "./rigel-v2-ulw-execute.mjs"
 import { registerBuiltinCommands } from "./rigel-v2-native-builtin-commands.mjs"
 import { registerMcpOAuthCommand } from "./rigel-v2-native-mcp-oauth-command.mjs"
+import { registerOpenclawStatusCommand } from "./rigel-v2-native-openclaw-status-command.mjs"
 import { registerModelsCommand } from "./rigel-v2-native-models-command.mjs"
 import { createTeamModePromptHandler, registerTeamModeCommand, teamCreatePortFromTool, TEAM_MODE_COMMAND_NAME } from "./rigel-v2-native-team-mode-command.mjs"
 import { createNativeContextLimitRecovery, createNativeIdleContinuations, createNativeIdleGate } from "./rigel-v2-native-phase4-events.mjs"
@@ -980,6 +981,10 @@ export default {
     const openclaw = createNativeOpenclaw({
       context,
       config: openclawResolution.config,
+      // The resolution state is what makes the live-chain failure a FATAL the
+      // report can explain later: `error` means the runtime could not confirm the
+      // block, so the surface is inert and the document says why.
+      configState: openclawResolution.state,
       // V1 parity: a `session.created` for a delegated child is not a wake. The
       // runtime already tracks delegated children in `childSessionIDs`, the same
       // set the delegation roster uses as `isRootSession`.
@@ -2351,6 +2356,20 @@ export default {
         disabledCommands: readNativeDisabled(manifest).commands,
       })
     }
+    // U4: `/openclaw-status` is the on-demand report surface for the state
+    // document (Contrato_Transportes_OpenClaw.md §9.2). It is registered only when
+    // there is something to report (an active surface or a recorded fatal), so an
+    // inert install gains no command. It reads the document and delivers the
+    // rendering through the same command contract `/goal` uses: no session, model
+    // or storage change.
+    let openclawStatusCommandRegistration
+    if (typeof context?.command?.transform === "function" && openclaw.hasReport()) {
+      openclawStatusCommandRegistration = await registerOpenclawStatusCommand({
+        context,
+        getReport: () => openclaw.report(),
+        disabledCommands: readNativeDisabled(manifest).commands,
+      })
+    }
     // The `/rmo-models` guided command: inspect and change the per-agent model
     // configuration in `~/.omo/omo.jsonc`. Additive and non-destructive: it only
     // injects a guided turn and never restarts, stops, or kills the server or the
@@ -2438,6 +2457,7 @@ export default {
       await ulwExecuteCommandRegistration?.dispose?.()
       await builtinCommandsRegistration?.dispose?.()
       await mcpOAuthCommandRegistration?.dispose?.()
+      await openclawStatusCommandRegistration?.dispose?.()
       await modelsCommandRegistration?.dispose?.()
       await teamModeCommandRegistration?.dispose?.()
       autoSlashCommand.clear()

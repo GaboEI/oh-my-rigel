@@ -12,6 +12,9 @@
  *     no request is made.
  *   - `status()` is the observability surface (enabled, listener started,
  *     registry size) for live QA.
+ *   - `report()` is the DERIVED state report `/openclaw-status` renders: the
+ *     status document plus the two composition-level facts (enabled, started).
+ *     `hasReport()` decides whether that command is worth registering at all.
  *   - `agentCore` is the NEW namespace's correlation key space, bounded queue and
  *     status document. It is built only when `channels` names an identity, so a
  *     legacy config never constructs it and its call sequence cannot move.
@@ -42,13 +45,15 @@ import { createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-s
  *   - `queue` is the bounded structure the conversational path must cross, so a
  *     120 s send can never block the shared event iterable;
  *   - `status` is the `rigel-v2/openclaw/status` document the report is derived
- *     from.
+ *     from. It is INJECTED, not built here: the composition owns one document, so
+ *     the legacy surfaces (outbound, discord, telegram, injection, config,
+ *     credentials) and the agent namespace report into the same storage key
+ *     instead of overwriting each other.
  *
  * `hydrate()` reads the durable halves once at setup. It performs storage reads
  * only: zero network, which is the invariant the whole unit is measured against.
  */
-function createAgentCore({ context, namespace, now, log }) {
-  const status = createOpenclawStatusDocument({ storage: context?.storage, now, log })
+function createAgentCore({ context, namespace, now, log, status }) {
   const registry = createOpenclawAgentRegistry({ storage: context?.storage, now, log })
   const queue = createOpenclawAgentQueue({ registry, status, now, log })
   return {
@@ -88,6 +93,10 @@ function createAgentCore({ context, namespace, now, log }) {
  * @param {(line: string) => void} [options.log]
  * @param {() => number} [options.now]
  * @param {(sessionID: string) => boolean} [options.isSubagentSession]
+ * @param {"declared"|"undeclared"|"error"} [options.configState] the live-resolution
+ *   state the caller resolved the block from (`resolveNativeOpenclaw`). `error`
+ *   means the live chain could not be read, which is a FATAL for the surface and
+ *   is mirrored into the status document.
  */
 export function createNativeOpenclaw({
   context,
@@ -99,9 +108,20 @@ export function createNativeOpenclaw({
   log = () => {},
   now,
   isSubagentSession,
+  configState,
 } = {}) {
+  // U4: ONE status document for the whole surface, created before anything can
+  // fail so a setup fatal has somewhere to be recorded.
+  const statusDocument = createOpenclawStatusDocument({ storage: context?.storage, now, log })
+  /** Fatals setup already announced on its own line; recorded without a second. */
+  const setupFatals = []
+
+  let configError = null
   const normalized = normalizeOpenclawConfig(config, {
-    onInvalid: (error) => log(`[oh-my-rigel] Native V2 ${error.name}: ${error.message}`),
+    onInvalid: (error) => {
+      configError = error
+      log(`[oh-my-rigel] Native V2 ${error.name}: ${error.message}`)
+    },
   })
   const enabled = normalized !== null
 
@@ -116,6 +136,27 @@ export function createNativeOpenclaw({
     : { replyListener: undefined, diagnostics: [], disabled: [] }
   for (const diagnostic of secrets.diagnostics) log(`[oh-my-rigel] Native V2 openclaw ${diagnostic}`)
 
+  // Mirror the fatals setup just announced into the document, so `/openclaw-status`
+  // can explain WHY a surface is down. `emitLine:false` is deliberate: the line
+  // above is the banner, and a second line for one transition would break the
+  // one-line-per-transition rule the unit is measured by.
+  if (configError !== null) {
+    setupFatals.push({
+      surface: "config",
+      errorClass: configError.name,
+      detail: configError.message,
+    })
+  } else if (configState === "error") {
+    setupFatals.push({ surface: "config", errorClass: "live-config-error", detail: null })
+  }
+  for (const failure of secrets.disabled) {
+    setupFatals.push({
+      surface: `credentials.${failure.surface}`,
+      errorClass: failure.reason,
+      detail: failure.path,
+    })
+  }
+
   // The registry is the durable correlation store; `ctx.storage` is the V2
   // domain, and an absent one still works from the in-process index.
   const registry = createOpenclawRegistry({ storage: context?.storage, now, log })
@@ -129,7 +170,7 @@ export function createNativeOpenclaw({
   // switch (Contrato_Transportes_OpenClaw.md §5.2 rule 4).
   const agentNamespace = resolveOpenclawAgentNamespace(config)
   const agentCore = enabled && agentNamespace.declared
-    ? createAgentCore({ context, namespace: agentNamespace, now, log })
+    ? createAgentCore({ context, namespace: agentNamespace, now, log, status: statusDocument })
     : null
 
   const outbound = createOpenclawOutbound({
@@ -142,6 +183,7 @@ export function createNativeOpenclaw({
     log,
     now,
     isSubagentSession,
+    statusDocument,
   })
 
   // The inbound listener delivers ONLY through the internal prompt gate: the V2
@@ -155,17 +197,37 @@ export function createNativeOpenclaw({
     fetchImpl,
     log,
     now,
+    statusDocument,
     ...(typeof env?.RIGEL_OPENCLAW_DISCORD_API_BASE === "string"
       ? { discordApiBase: env.RIGEL_OPENCLAW_DISCORD_API_BASE }
       : {}),
   })
 
+  /**
+   * Record the setup fatals the validation/credential paths already announced,
+   * exactly once per surface, before anything starts. This runs on the startup
+   * path (`ready` is awaited by setup), which is what makes the record a startup
+   * banner rather than a line discovered later.
+   */
+  async function recordSetupFatals() {
+    for (const fatal of setupFatals) {
+      await statusDocument.recordFailure(fatal.surface, {
+        errorClass: fatal.errorClass,
+        fatal: true,
+        emitLine: false,
+        detail: fatal.detail,
+      })
+    }
+  }
+
   const ready = (async () => {
+    await recordSetupFatals()
     if (!enabled) return { started: false, reason: "disabled" }
     try {
       await registry.hydrate()
     } catch (error) {
       log(`[oh-my-rigel] Native V2 openclaw registry hydrate failed: ${error instanceof Error ? error.message : String(error)}`)
+      await statusDocument.recordFailure("registry", { errorClass: "hydrate-failed" })
     }
     if (agentCore) {
       try {
@@ -174,6 +236,7 @@ export function createNativeOpenclaw({
         await agentCore.hydrate()
       } catch (error) {
         log(`[oh-my-rigel] Native V2 openclaw agent core hydrate failed: ${error instanceof Error ? error.message : String(error)}`)
+        await statusDocument.recordFailure("agent-core", { errorClass: "hydrate-failed" })
       }
     }
     const started = await inbound.start()
@@ -208,5 +271,36 @@ export function createNativeOpenclaw({
     return value
   }
 
-  return { enabled, ready, handleEvent, dispose, status, registry, inbound, agentCore }
+  /**
+   * The DERIVED report `/openclaw-status` renders (`Contrato_Transportes_OpenClaw.md`
+   * §9.2): the state document plus the two facts the document cannot know because
+   * they are composition-level (is the surface on, did the listener start).
+   *
+   * It hydrates first, because the command is a user-initiated read and the point
+   * of a durable document is to survive a restart. Identity only: no token, no
+   * URL, no instruction ever enters this shape.
+   */
+  async function report() {
+    await statusDocument.hydrate()
+    const document = statusDocument.snapshot()
+    return {
+      enabled,
+      started: inbound.status().started,
+      configState: configState ?? null,
+      surfaces: document.surfaces,
+      updatedAt: document.updatedAt,
+    }
+  }
+
+  /**
+   * Whether there is anything worth reporting: an active surface or a recorded
+   * state. A surface that was never configured and never failed registers no
+   * command, so `/openclaw-status` does not appear on an inert install.
+   */
+  function hasReport() {
+    if (enabled) return true
+    return Object.keys(statusDocument.snapshot().surfaces).length > 0
+  }
+
+  return { enabled, ready, handleEvent, dispose, status, report, hasReport, registry, inbound, agentCore }
 }
