@@ -26,6 +26,52 @@ function memoryStorage() {
   }
 }
 
+function deferred() {
+  let resolve
+  const promise = new Promise((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
+async function waitForSignal(signal, description) {
+  let timeout
+  try {
+    await Promise.race([
+      signal,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`waited 5s for ${description}`)), 5_000)
+      }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function storageWithBlockedFirstWrite() {
+  const map = new Map()
+  const firstWrite = deferred()
+  const releaseFirstWrite = deferred()
+  let first = true
+  return {
+    map,
+    firstWrite,
+    releaseFirstWrite,
+    get: async (key) => map.get(key),
+    set: async (key, value) => {
+      map.set(key, value)
+      if (!first) return
+      first = false
+      firstWrite.resolve()
+      await releaseFirstWrite.promise
+    },
+    remove: async (key) => { map.delete(key) },
+    scan: async ({ prefix } = {}) => ({
+      entries: [...map.entries()]
+        .filter(([key]) => (prefix ? key.startsWith(prefix) : true))
+        .map(([key, value]) => ({ key, value })),
+    }),
+  }
+}
+
 function statusRecorder() {
   const failures = []
   const successes = []
@@ -116,6 +162,55 @@ describe("openclaw agent queue contracts", () => {
     expect(await queue.enqueue(message({ contextId: "rigel-other", taskId: "task-2" }))).toEqual({ accepted: false, reason: "queue-full" })
     expect(queue.pendingTotal()).toBe(1)
     expect(status.failures).toEqual([{ id: OPENCLAW_QUEUE_STATUS_SURFACE, errorClass: "queue-full" }])
+  })
+
+  test("#given concurrent registrations at both depth limits #when both reserve before persistence #then only one task is admitted", async () => {
+    const storage = storageWithBlockedFirstWrite()
+    const registry = createOpenclawAgentRegistry({ storage, now: () => Date.parse("2026-01-01T00:00:00.000Z") })
+    const queue = createOpenclawAgentQueue({ registry, maxPerConversation: 1, maxPending: 1, now: () => Date.parse("2026-01-01T00:00:00.000Z") })
+
+    const first = queue.enqueue(message({ taskId: "task-1" }))
+    const second = queue.enqueue(message({ taskId: "task-2" }))
+    await waitForSignal(storage.firstWrite.promise, "the first durable registration write")
+    storage.releaseFirstWrite.resolve()
+
+    await expect(first).resolves.toMatchObject({ accepted: true, taskId: "task-1" })
+    await expect(second).resolves.toEqual({ accepted: false, reason: "conversation-full" })
+    expect(queue.pendingTotal()).toBe(1)
+    expect(queue.pendingFor("peer-alpha", CONTEXT)).toBe(1)
+  })
+
+  test("#given a rejected durable registration #when its reservation rolls back #then the released capacity admits a later task", async () => {
+    let accepted = false
+    const registry = {
+      lookup: () => null,
+      register: async () => {
+        if (accepted) return true
+        accepted = true
+        return false
+      },
+    }
+    const queue = createOpenclawAgentQueue({ registry, maxPerConversation: 1, maxPending: 1 })
+
+    expect(await queue.enqueue(message({ taskId: "task-rejected" }))).toEqual({ accepted: false, reason: "invalid-record" })
+    expect(queue.pendingTotal()).toBe(0)
+    await expect(queue.enqueue(message({ taskId: "task-live" }))).resolves.toMatchObject({ accepted: true, taskId: "task-live" })
+    expect(queue.pendingTotal()).toBe(1)
+  })
+
+  test("#given a claim interleaved with its durable registration #when the payload is reserved #then the accepted task is neither lost nor claimed early", async () => {
+    const storage = storageWithBlockedFirstWrite()
+    const registry = createOpenclawAgentRegistry({ storage, now: () => Date.parse("2026-01-01T00:00:00.000Z") })
+    const queue = createOpenclawAgentQueue({ registry, now: () => Date.parse("2026-01-01T00:00:00.000Z") })
+
+    const enqueuing = queue.enqueue(message({ taskId: "task-1" }))
+    await waitForSignal(storage.firstWrite.promise, "the durable registration write")
+    expect(await queue.claimNext("peer-alpha", CONTEXT)).toBeNull()
+    storage.releaseFirstWrite.resolve()
+
+    await expect(enqueuing).resolves.toMatchObject({ accepted: true, taskId: "task-1" })
+    expect(registry.lookup("peer-alpha", CONTEXT, "task-1")).toMatchObject({ state: "submitted", inflight: false })
+    await expect(queue.claimNext("peer-alpha", CONTEXT)).resolves.toMatchObject({ taskId: "task-1", text: "hello peer" })
   })
 
   test("#given a payload over the byte cap #when enqueuing #then it is truncated at a code-point boundary and only counted", async () => {
