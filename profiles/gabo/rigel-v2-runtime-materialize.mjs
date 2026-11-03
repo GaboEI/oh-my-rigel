@@ -15,7 +15,7 @@ import { createRequire } from "node:module"
 import path from "node:path"
 
 import { discoverRuntimeModules } from "./native-runtime-modules.mjs"
-import { rewriteLegacyDelegationToolExamples } from "./opencode/rigel-v2-native-prompt-tools.mjs"
+import { rewriteLegacyDelegationToolExamples } from "./build/rigel-v2-native-prompt-tools.mjs"
 import { writeTextAtomic } from "./rigel-v2-lifecycle-transaction.mjs"
 import { goalVendorDigestKey, materializeGoalVendor } from "./rigel-v2-goal-vendor.mjs"
 import {
