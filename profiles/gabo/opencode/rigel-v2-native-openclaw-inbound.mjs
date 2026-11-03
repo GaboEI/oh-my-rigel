@@ -63,8 +63,10 @@
  * to be indistinguishable from a healthy poll:
  *   - A cursor whose write could not land is reported on the platform surface
  *     (`cursor-persist`) instead of a success, for as long as the in-memory value
- *     is ahead of storage. Processing continues on the in-memory frontier; what is
- *     degraded is durability, and the document says so.
+ *     of THAT position is ahead of storage. Processing continues on the in-memory
+ *     frontier; what is degraded is durability, and the document says so. The
+ *     report is per `(platform, channel)`: a rejected write for one position is
+ *     never evidence of degradation for another.
  *   - A Telegram offset that is no longer a valid resume point is retired and the
  *     poll restarts from the platform's own pending set, reported once as
  *     `cursor-expired`. The duplicate memory survives, so the re-read cannot inject
@@ -443,12 +445,20 @@ export function createOpenclawInbound({
 
   /**
    * Report what became of one poll, in one place, so `recordSuccess` cannot be
-   * reached while the in-memory cursor is still ahead of storage. That is the whole
-   * of the "no silent advancement" rule: processing does not stop when a write
-   * fails, but the surface says the durable half is degraded until it lands.
+   * reached while the in-memory cursor of the POLLED POSITION is still ahead of
+   * storage. That is the whole of the "no silent advancement" rule: processing does
+   * not stop when a write fails, but the surface says the durable half is degraded
+   * until it lands.
+   *
+   * The report is scoped to `(platform, channel)` on purpose. The store's pending
+   * set is shared by every port this listener polls, so asking it globally would
+   * let a rejected Discord write degrade a Telegram poll that owed nothing - and
+   * keep that surface degraded for as long as the other one stays dirty. The
+   * caller therefore passes the same pair it used for `resumeCursorFor` and
+   * `flush`; `surface` stays the observability id.
    */
-  async function reportPollOutcome(surface, { expired = false } = {}) {
-    if (cursors.unsaved() > 0) {
+  async function reportPollOutcome(surface, { expired = false, platform, channel } = {}) {
+    if (cursors.unsaved(platform, channel) > 0) {
       state.errors += 1
       await statusDocument?.recordFailure?.(surface, { errorClass: "cursor-persist" })
       return
@@ -516,7 +526,7 @@ export function createOpenclawInbound({
       // The retry belongs here too: without it a domain that heals while the channel
       // is quiet would never get its queued write until the next message arrived.
       await cursors.flush()
-      await reportPollOutcome(OPENCLAW_DISCORD_STATUS_SURFACE, { expired: resume.expired })
+      await reportPollOutcome(OPENCLAW_DISCORD_STATUS_SURFACE, { expired: resume.expired, platform: DISCORD_PLATFORM, channel })
       return
     }
 
@@ -548,7 +558,7 @@ export function createOpenclawInbound({
     }
     cursors.setCursor(DISCORD_PLATFORM, channel, frontier)
     await cursors.flush()
-    await reportPollOutcome(OPENCLAW_DISCORD_STATUS_SURFACE, { expired: resume.expired })
+    await reportPollOutcome(OPENCLAW_DISCORD_STATUS_SURFACE, { expired: resume.expired, platform: DISCORD_PLATFORM, channel })
   }
 
   /**
@@ -673,7 +683,7 @@ export function createOpenclawInbound({
     }
     cursors.setCursor(TELEGRAM_PLATFORM, channel, frontier)
     await cursors.flush()
-    await reportPollOutcome(OPENCLAW_TELEGRAM_STATUS_SURFACE, { expired: resume.expired })
+    await reportPollOutcome(OPENCLAW_TELEGRAM_STATUS_SURFACE, { expired: resume.expired, platform: TELEGRAM_PLATFORM, channel })
   }
 
   async function loop() {

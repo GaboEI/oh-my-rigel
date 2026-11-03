@@ -824,3 +824,151 @@ describe("openclaw inbound: a reply with nothing to inject is terminal, not a re
     expect(pollUrls.every((url) => url.endsWith("/messages?limit=10"))).toBe(true)
   })
 })
+
+describe("openclaw cursor: pending writes are scoped to the polled position", () => {
+  /**
+   * Storage whose writes can be rejected per key, so a failure belongs to ONE
+   * domain (a platform or a channel) instead of the whole store. This is the only
+   * way to drive the cross-platform report: the failure has to be the domain's.
+   */
+  function scopedStorage({ reject = () => false } = {}) {
+    const map = new Map()
+    const storage = {
+      map,
+      reject,
+      get: async (key) => map.get(key),
+      set: async (key, value) => {
+        if (storage.reject(key)) throw new Error("storage unavailable")
+        map.set(key, value)
+      },
+      remove: async (key) => { map.delete(key) },
+      scan: async ({ prefix } = {}) => ({
+        entries: [...map.entries()]
+          .filter(([key]) => (prefix ? key.startsWith(prefix) : true))
+          .map(([key, value]) => ({ key, value })),
+      }),
+    }
+    return storage
+  }
+
+  /** One listener with BOTH ports open: one window per loop, Discord first. */
+  function dualPlatformPort({ messages, discordPollLimit = 1 } = {}) {
+    const calls = []
+    let discordPolls = 0
+    const fetchImpl = async (url, init = {}) => {
+      calls.push({ url, init })
+      if (url.includes("/reactions/")) return response({}, 200)
+      if (url.includes("getUpdates")) return response({ ok: true, result: [] })
+      if (url.includes("sendMessage")) return response({ ok: true, result: { message_id: 900 } })
+      discordPolls += 1
+      return response(discordPolls > discordPollLimit ? [] : messages)
+    }
+    fetchImpl.calls = calls
+    return fetchImpl
+  }
+
+  function dualListener({ storage, fetchImpl, statusDocument }) {
+    const { inbound, delivered } = discordListener({
+      storage,
+      fetchImpl,
+      statusDocument,
+      replyListener: { telegramBotToken: "tg-token", telegramChatId: "chat" },
+    })
+    return { inbound, delivered }
+  }
+
+  test("#given a rejected Discord cursor write #when an empty Telegram poll ends #then only the Discord surface is degraded", async () => {
+    const storage = scopedStorage({ reject: (key) => key.startsWith(`${OPENCLAW_CURSOR_PREFIX}discord/`) })
+    const status = statusRecorder()
+    const fetchImpl = dualPlatformPort({ messages: [discordMessage()] })
+    const { inbound, delivered } = dualListener({ storage, fetchImpl, statusDocument: status })
+
+    await inbound.start()
+    await waitFor(() => status.events.filter((event) => event.surface === "telegram").length >= 2, "telegram reports")
+    await inbound.stop()
+
+    // The Discord reply reached the session and its cursor is not durable: that IS
+    // a degraded Discord, and the retry keeps it queued (U8 D1 unchanged).
+    expect(delivered).toHaveLength(1)
+    expect(storage.map.has(openclawCursorKey("discord", "chan"))).toBe(false)
+    expect(status.events.filter((event) => event.surface === "discord" && event.errorClass === "cursor-persist").length).toBeGreaterThanOrEqual(1)
+
+    // The Telegram window was empty and owed nothing, so it cannot inherit the
+    // other platform's failure: no failure of ANY class, and a real success.
+    expect(status.events.filter((event) => event.surface === "telegram" && event.kind === "failure")).toEqual([])
+    expect(status.events.filter((event) => event.surface === "telegram" && event.kind === "success").length).toBeGreaterThanOrEqual(1)
+    // ...and a healthy empty poll writes no cursor document of its own.
+    expect(storage.map.has(openclawCursorKey("telegram", "chat"))).toBe(false)
+  })
+
+  test("#given two channels of one platform #when only one cursor write is rejected #then only that channel is pending", async () => {
+    const brokenKey = openclawCursorKey("discord", "chan-a")
+    const storage = scopedStorage({ reject: (key) => key === brokenKey })
+    const store = createOpenclawCursorStore({ storage, now: () => 1_000_000 })
+    store.setCursor("discord", "chan-a", "m2")
+    store.setCursor("discord", "chan-b", "m3")
+
+    expect(await store.flush()).toEqual({ written: 1, failed: 1 })
+
+    // Same platform, same flush: the healthy channel is durable and owes nothing,
+    // and it must not be reported as pending because its neighbour failed.
+    expect(store.unsaved("discord", "chan-a")).toBe(1)
+    expect(store.unsaved("discord", "chan-b")).toBe(0)
+    expect(store.unsaved("discord")).toBe(1)
+    expect(store.unsaved("telegram", "chat")).toBe(0)
+    // With no arguments the signature still answers for the whole store (U8 D1).
+    expect(store.unsaved()).toBe(1)
+    expect(cursorDocument(storage, "discord", "chan-b")).toMatchObject({ v: OPENCLAW_CURSOR_VERSION, cursor: "m3" })
+    expect(cursorDocument(storage, "discord", "chan-a")).toBeUndefined()
+
+    // The retry clears exactly the record that landed; nothing else was queued.
+    storage.reject = () => false
+    expect(await store.flush()).toEqual({ written: 1, failed: 0 })
+    expect(store.unsaved("discord", "chan-a")).toBe(0)
+    expect(store.unsaved()).toBe(0)
+    expect(cursorDocument(storage, "discord", "chan-a")).toMatchObject({ cursor: "m2" })
+  })
+
+  test("#given both platforms ahead of storage #when one domain heals #then the retry clears only its own record", async () => {
+    const storage = scopedStorage({ reject: () => true })
+    const store = createOpenclawCursorStore({ storage, now: () => 1_000_000 })
+    store.setCursor("discord", "chan", "m2")
+    store.setCursor("telegram", "chat", 10)
+    expect(await store.flush()).toEqual({ written: 0, failed: 2 })
+    expect(store.unsaved()).toBe(2)
+
+    storage.reject = (key) => key.startsWith(`${OPENCLAW_CURSOR_PREFIX}telegram/`)
+    expect(await store.flush()).toEqual({ written: 1, failed: 1 })
+
+    expect(store.unsaved("discord", "chan")).toBe(0)
+    expect(store.unsaved("telegram", "chat")).toBe(1)
+    expect(cursorDocument(storage, "discord", "chan")).toMatchObject({ cursor: "m2" })
+    expect(cursorDocument(storage, "telegram", "chat")).toBeUndefined()
+  })
+
+  test("#given a Discord write that lands on a later window #when storage heals #then Discord recovers and Telegram never left its healthy state", async () => {
+    const storage = scopedStorage({ reject: (key) => key.startsWith(`${OPENCLAW_CURSOR_PREFIX}discord/`) })
+    const status = statusRecorder()
+    const fetchImpl = dualPlatformPort({ messages: [discordMessage()] })
+    const { inbound } = dualListener({ storage, fetchImpl, statusDocument: status })
+
+    await inbound.start()
+    await waitFor(() => status.events.filter((event) => event.surface === "telegram").length >= 2, "telegram healthy while Discord is dirty")
+    // The Telegram surface was never degraded while Discord was dirty: every
+    // report it made before the heal was a success.
+    const telegramBefore = status.events.filter((event) => event.surface === "telegram")
+
+    // The domain heals while the channel is quiet: the poller's own flush is what
+    // makes the queued record durable, and only that record.
+    storage.reject = () => false
+    await waitFor(() => status.events.some((event) => event.surface === "discord" && event.kind === "success"), "discord recovered")
+    await inbound.stop()
+
+    expect(status.events.filter((event) => event.surface === "telegram" && event.kind === "failure")).toEqual([])
+    expect(telegramBefore.length).toBeGreaterThanOrEqual(2)
+    expect(telegramBefore.every((event) => event.kind === "success")).toBe(true)
+    expect(cursorDocument(storage, "discord", "chan")).toMatchObject({ v: OPENCLAW_CURSOR_VERSION, platform: "discord", channel: "chan", cursor: "m2" })
+    // Telegram still owes nothing: the Discord retry did not create its document.
+    expect(storage.map.has(openclawCursorKey("telegram", "chat"))).toBe(false)
+  })
+})
