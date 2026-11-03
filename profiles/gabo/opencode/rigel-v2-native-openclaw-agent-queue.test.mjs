@@ -180,6 +180,24 @@ describe("openclaw agent queue contracts", () => {
     expect(queue.pendingFor("peer-alpha", CONTEXT)).toBe(1)
   })
 
+  test("#given concurrent registrations in separate conversations at the global depth #when the first write is blocked #then the second task is queue-full", async () => {
+    const storage = storageWithBlockedFirstWrite()
+    const registry = createOpenclawAgentRegistry({ storage, now: () => Date.parse("2026-01-01T00:00:00.000Z") })
+    const queue = createOpenclawAgentQueue({ registry, maxPerConversation: 1, maxPending: 1, now: () => Date.parse("2026-01-01T00:00:00.000Z") })
+
+    const first = queue.enqueue(message({ contextId: CONTEXT, taskId: "task-1" }))
+    const second = queue.enqueue(message({ contextId: "rigel-other", taskId: "task-2" }))
+    await waitForSignal(storage.firstWrite.promise, "the first durable registration write")
+    storage.releaseFirstWrite.resolve()
+
+    await expect(first).resolves.toMatchObject({ accepted: true, taskId: "task-1" })
+    await expect(second).resolves.toEqual({ accepted: false, reason: "queue-full" })
+    expect(queue.pendingTotal()).toBe(1)
+    expect(queue.pendingFor("peer-alpha", CONTEXT)).toBe(1)
+    expect(queue.pendingFor("peer-alpha", "rigel-other")).toBe(0)
+    expect(registry.lookup("peer-alpha", "rigel-other", "task-2")).toBeNull()
+  })
+
   test("#given a rejected durable registration #when its reservation rolls back #then the released capacity admits a later task", async () => {
     let accepted = false
     const registry = {
