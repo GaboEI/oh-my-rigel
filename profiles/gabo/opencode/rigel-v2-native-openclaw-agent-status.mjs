@@ -192,6 +192,16 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
   }
 
   /**
+   * Apply the `up` half of a transition. Shared by a recovery observed in traffic
+   * and by the setup reconciliation, so both write the identical surface shape.
+   */
+  function recoverSurface(surface) {
+    surface.state = "up"
+    surface.errorClass = null
+    surface.consecutiveFailures = 0
+  }
+
+  /**
    * Record a success. Only a surface this process already recorded can recover,
    * and a surface that is already `up` has nothing to record, so this returns
    * WITHOUT reading or writing: that is what keeps a healthy legacy dispatch
@@ -205,12 +215,38 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
     if (surface === undefined) return false
     if (surface.state === "up" && surface.errorClass === null && surface.consecutiveFailures === 0) return false
     const previous = surface.state
-    surface.state = "up"
-    surface.errorClass = null
-    surface.consecutiveFailures = 0
+    recoverSurface(surface)
     if (previous !== "up") emit(id, "info", null, `openclaw surface recovered: ${id}`)
     await persist()
     return true
+  }
+
+  /**
+   * Reconcile the durable `fatal` rows against the setup verdict of THIS process.
+   *
+   * A `fatal` is a setup verdict - `recordFailure(..., { fatal: true })` is only
+   * reached from the setup path - so the setup that just ran is the authority on
+   * whether it still holds. The document is durable, so without this a repaired
+   * configuration or credential reference leaves a surface disabled in the report
+   * for the life of the install. `kept` names the surfaces this process still
+   * considers fatal; every OTHER `fatal` row is cleared as a recovery.
+   *
+   * Nothing else is touched: a `degraded` row is a runtime observation from
+   * traffic, and only traffic may prove it healed. When no `fatal` row remains
+   * this performs one read and no write, so a healthy install stays quiet.
+   */
+  async function reconcileFatals(kept = []) {
+    const keep = new Set(Array.isArray(kept) ? kept.filter((id) => typeof id === "string") : [])
+    await hydrate()
+    const cleared = []
+    for (const [id, surface] of surfaces.entries()) {
+      if (surface.state !== "fatal" || keep.has(id)) continue
+      recoverSurface(surface)
+      emit(id, "info", null, `openclaw surface recovered: ${id}`)
+      cleared.push(id)
+    }
+    if (cleared.length > 0) await persist()
+    return cleared
   }
 
   /** Aggregate only: §9.3 forbids a line per truncated event. */
@@ -240,5 +276,5 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
     return document
   }
 
-  return { hydrate, recordFailure, recordSuccess, recordTruncation, recordRateLimit, snapshot }
+  return { hydrate, recordFailure, recordSuccess, recordTruncation, recordRateLimit, reconcileFatals, snapshot }
 }
