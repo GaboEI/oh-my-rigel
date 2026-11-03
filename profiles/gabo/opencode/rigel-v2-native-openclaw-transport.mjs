@@ -67,7 +67,15 @@ export async function wakeGateway({ gatewayName, gateway, payload, fetchImpl = g
     return { gateway: name, success: true, statusCode: response.status, ...metadata }
   } catch (error) {
     const aborted = error instanceof Error && (error.name === "AbortError" || controller.signal.aborted)
-    return { gateway: name, success: false, error: aborted ? "Request timed out" : error instanceof Error ? error.message : String(error) }
+    // The class travels WITH the failure. The message cannot carry it: `/timeout/i`
+    // does not match "Request timed out", so a bare message was classified
+    // `transport-error` and shared a dedup key with a real transport failure.
+    return {
+      gateway: name,
+      success: false,
+      error: aborted ? "Request timed out" : error instanceof Error ? error.message : String(error),
+      ...(aborted ? { errorClass: "timeout" } : {}),
+    }
   } finally {
     clearTimeout(timer)
   }
@@ -111,7 +119,7 @@ export async function wakeCommandGateway({
         }, timeout)
       }),
     ])
-    if (outcome.kind === "timeout") throw new Error("Command timed out")
+    if (outcome.kind === "timeout") return { gateway: name, success: false, error: "Command timed out", errorClass: "timeout" }
     if (outcome.exitCode !== 0) throw new Error(`Command exited with code ${outcome.exitCode}`)
     const stdout = await stdoutPromise
     return { gateway: name, success: true, ...parseWakeMetadata(stdout) }

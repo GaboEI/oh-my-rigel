@@ -513,7 +513,12 @@ export function createNativeOpenclaw({
    * URL, no instruction ever enters this shape.
    */
   async function report() {
-    await statusDocument.hydrate()
+    // A `fatal` row is this plugin's setup verdict, and the setup that just ran is
+    // the authority on whether it still holds. Reconciling on the read (rather than
+    // at startup) is what keeps a healthy install at zero status access - the read
+    // is one this command performs anyway - and it is what stops a repaired
+    // configuration or credential from staying `fatal` in the durable report.
+    await statusDocument.reconcileFatals(setupFatals.map((fatal) => fatal.surface))
     const document = statusDocument.snapshot()
     return {
       enabled,

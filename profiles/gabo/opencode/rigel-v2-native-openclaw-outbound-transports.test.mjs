@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
-import { createOpenclawOutbound } from "./rigel-v2-native-openclaw-outbound.mjs"
+import { createOpenclawOutbound, openclawDispatchErrorClass } from "./rigel-v2-native-openclaw-outbound.mjs"
 import { resolveOpenclawNotificationChannels } from "./rigel-v2-native-openclaw-notification.mjs"
+import { createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
 
 const DISCORD_BASE = "http://127.0.0.1:9/discord"
 const TELEGRAM_BASE = "http://127.0.0.1:9/telegram"
@@ -249,5 +250,74 @@ describe("openclaw outbound: a failed notification is reported, not swallowed", 
     expect(JSON.stringify(report)).not.toContain(secret)
     expect(report.surfaces["channels.alerts"]).toMatchObject({ state: "fatal", errorClass: "invalid-events" })
     await native.dispose()
+  })
+})
+
+// A timeout is a distinct shape, and the document dedups on `(surface, severity,
+// errorClass)`: while both timeout spellings collapsed into `transport-error` they
+// shared a dedup key with a real socket failure, so the timeout transition was never
+// its own line.
+describe("openclaw outbound: a transport timeout is its own class", () => {
+  function abortingFetch() {
+    return spyFetch(async () => {
+      const error = new Error("This operation was aborted")
+      error.name = "AbortError"
+      throw error
+    })
+  }
+
+  test("#given an http gateway whose request is aborted #when an event flows #then the failure and the recorded surface are both classed timeout", async () => {
+    // given
+    const native = createNativeOpenclaw({
+      context: { storage: memoryStorage(), session: { prompt: async () => ({}) } },
+      config: LEGACY_CONFIG,
+      fetchImpl: abortingFetch(),
+      log: () => {},
+    })
+    await native.ready
+
+    // when
+    const result = await native.handleEvent({ type: "session.idle", sessionID: "s1" })
+    const report = await native.report()
+
+    // then
+    expect(result).toMatchObject({ success: false, error: "Request timed out" })
+    expect(result.errorClass).toBe("timeout")
+    expect(report.surfaces.outbound).toMatchObject({ state: "degraded", errorClass: "timeout" })
+    await native.dispose()
+  })
+
+  test("#given a command gateway that times out #when it is dispatched #then the class is timeout, not transport-error", async () => {
+    // given
+    const document = createOpenclawStatusDocument({ log: () => {} })
+    const outbound = createOpenclawOutbound({
+      config: {
+        enabled: true,
+        gateways: { cmd: { type: "command", command: "notify {{sessionId}}", timeout: 100 } },
+        hooks: { "session.idle": { gateway: "cmd", instruction: "go" } },
+      },
+      registry: stubRegistry(),
+      // A process that never exits: the transport's own timeout kills it.
+      spawnImpl: () => ({ stdout: new ReadableStream(), exited: new Promise(() => {}), kill: () => {} }),
+      log: () => {},
+      statusDocument: document,
+    })
+
+    // when
+    const result = await outbound.handleEvent({ type: "session.idle", sessionID: "s1" })
+
+    // then
+    expect(result).toMatchObject({ success: false, error: "Command timed out" })
+    expect(result.errorClass).toBe("timeout")
+    expect(document.snapshot().surfaces.outbound).toMatchObject({ state: "degraded", errorClass: "timeout" })
+  })
+
+  test("#given the two transport timeout messages #when they are classed #then both are timeout and a real transport failure keeps its own class", () => {
+    // The classifier is the public contract every transport result crosses; the
+    // explicit class shortcut must not be the only way a timeout can be named.
+    expect(openclawDispatchErrorClass({ error: "Request timed out" })).toBe("timeout")
+    expect(openclawDispatchErrorClass({ error: "Command timed out" })).toBe("timeout")
+    expect(openclawDispatchErrorClass({ error: "socket hang up" })).toBe("transport-error")
+    expect(openclawDispatchErrorClass({ errorClass: "platform-rejected" })).toBe("platform-rejected")
   })
 })
