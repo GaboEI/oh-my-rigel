@@ -12,6 +12,7 @@ import {
   createOpenclawAgentResponder,
 } from "./rigel-v2-native-openclaw-agent-responder.mjs"
 import {
+  OPENCLAW_A2A_REQUESTS_PER_MINUTE,
   OPENCLAW_AGENT_STATUS_SURFACE,
   createOpenclawAgentTransport,
   resolveOpenclawAgentPeers,
@@ -504,5 +505,180 @@ describe("openclaw A2A composition", () => {
     expect(native.status()).toEqual({ enabled: true, registry: 0, started: false })
     await native.ready
     await native.dispose()
+  })
+})
+
+describe("openclaw A2A reconciliation hardening", () => {
+  test("#given two reconciliation passes started together #when both reach the same pending task #then the peer is asked once and the answer is injected once", async () => {
+    const deliver = injectionRecorder()
+    let release
+    const gate = new Promise((resolve) => { release = resolve })
+    const completed = {
+      result: { id: "task-working", status: { state: "COMPLETED" }, artifacts: [{ parts: [{ text: "the answer" }] }] },
+    }
+    const { responder, time, fetchImpl } = harness({
+      send: [taskAnswer("WORKING")],
+      // Both passes must be able to reach the peer, or the assertion would be
+      // about the double's script instead of about the overlap.
+      getTask: [() => gate, () => gate],
+      deliver,
+    })
+    await responder.send({ sessionID: SESSION_A, peer: "alpha", text: "hello" })
+    time.advance(60_000)
+
+    const getTaskCalls = () => fetchImpl.posts().filter((call) => JSON.parse(call.init.body).method === "GetTask")
+    const passes = [responder.reconcileOnce(), responder.reconcileOnce()]
+    await waitFor(() => getTaskCalls().length >= 1, "the first GetTask")
+    release({ ok: true, status: 200, text: async () => JSON.stringify(completed) })
+    await Promise.all(passes)
+
+    expect(getTaskCalls()).toHaveLength(1)
+    expect(deliver.calls).toEqual([{ sessionID: SESSION_A, text: `${agentReplyPrefix("alpha")}the answer` }])
+  })
+
+  test("#given a pending set larger than the peer's minute budget #when the next window opens #then the records the first window could not reach are polled", async () => {
+    const total = 40
+    const { responder, registry, time, fetchImpl } = harness({
+      getTask: Array.from({ length: total * 2 }, () => ({ result: { id: "task-bulk", status: { state: "WORKING" } } })),
+    })
+    for (let index = 0; index < total; index += 1) {
+      await registry.register({
+        peer: "alpha",
+        contextId: `rigel-bulk-${index}`,
+        taskId: `task-bulk-${index}`,
+        sessionID: `${SESSION_A}_${index}`,
+        agentId: "rigel",
+        remoteTaskId: `remote-bulk-${index}`,
+        createdAt: new Date(START - 600_000).toISOString(),
+      })
+    }
+    const polled = () => fetchImpl.posts()
+      .filter((call) => JSON.parse(call.init.body).method === "GetTask")
+      .map((call) => JSON.parse(call.init.body).params.id)
+
+    await responder.reconcileOnce()
+    const firstWindow = new Set(polled())
+    expect(firstWindow.size).toBe(OPENCLAW_A2A_REQUESTS_PER_MINUTE)
+
+    // The window rolls over; the pass that starts now must reach the tail rather
+    // than spending the whole budget on the same heads again.
+    time.advance(61_000)
+    await responder.reconcileOnce()
+    const secondWindow = new Set(polled().slice(firstWindow.size))
+
+    expect(new Set([...firstWindow, ...secondWindow]).size).toBe(total)
+  })
+
+  test("#given a send the peer accepted #when the request returns #then the a2a surface records recovery", async () => {
+    const { responder, status } = harness({ send: [taskAnswer("WORKING")] })
+    await responder.send({ sessionID: SESSION_A, peer: "alpha", text: "hello" })
+    expect(status.successes.filter((id) => id === OPENCLAW_AGENT_STATUS_SURFACE)).toHaveLength(1)
+  })
+
+  test("#given a task still working #when reconciliation reads it #then the healthy check also records recovery", async () => {
+    const { responder, time, status } = harness({
+      send: [taskAnswer("WORKING")],
+      getTask: [{ result: { id: "task-working", status: { state: "WORKING" } } }],
+    })
+    await responder.send({ sessionID: SESSION_A, peer: "alpha", text: "hello" })
+    time.advance(60_000)
+    await responder.reconcileOnce()
+    // One recovery for the accepted send, one for the healthy check.
+    expect(status.successes.filter((id) => id === OPENCLAW_AGENT_STATUS_SURFACE)).toHaveLength(2)
+  })
+})
+
+describe("openclaw A2A conversation ownership", () => {
+  test("#given a session that derived its conversation #when another session names that context #then it is refused and only the owner holds a record", async () => {
+    const { responder, registry } = harness({ send: [taskAnswer("WORKING"), taskAnswer("WORKING"), taskAnswer("WORKING")] })
+    const derived = deriveOpenclawContextId(SESSION_A)
+
+    const owned = await responder.send({ sessionID: SESSION_A, peer: "alpha", text: "mine" })
+    const stolen = await responder.send({ sessionID: SESSION_B, peer: "alpha", text: "not mine", contextId: derived })
+
+    expect(owned.kind).toBe("task")
+    expect(stolen).toEqual({ kind: "failed", errorClass: "invalid-context" })
+    expect(registry.list()).toHaveLength(1)
+    expect(registry.list()[0]).toMatchObject({ sessionID: SESSION_A, contextId: derived })
+
+    // The refused claim must not poison the owner's binding: the owner continues
+    // its own conversation.
+    expect(await responder.send({ sessionID: SESSION_A, peer: "alpha", text: "one more" })).toMatchObject({ kind: "task" })
+  })
+
+  test("#given a conversation hydrated from a previous process #when another session names it #then it is refused before any turn runs here", async () => {
+    const order = []
+    const storage = spyStorage(order)
+    const time = clock()
+    const contextId = deriveOpenclawContextId(SESSION_A)
+    const writer = createOpenclawAgentRegistry({ storage, now: time.now })
+    await writer.register({ peer: "alpha", contextId, taskId: "task-earlier", sessionID: SESSION_A, agentId: "rigel" })
+
+    // A new process: the in-memory binding map is empty, the durable record is not.
+    const registry = createOpenclawAgentRegistry({ storage, now: time.now })
+    await registry.hydrate()
+    const queue = createOpenclawAgentQueue({ registry, now: time.now })
+    const resolved = resolveOpenclawAgentPeers(
+      { enabled: true, peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } } },
+      { env: { ALPHA_TOKEN: "alpha-secret" } },
+    )
+    const fetchImpl = a2aFetch(order, { send: [taskAnswer("WORKING")] })
+    const transport = createOpenclawAgentTransport({ peers: resolved.peers, fetchImpl })
+    const responder = createOpenclawAgentResponder({
+      peers: resolved.peers,
+      registry,
+      queue,
+      transport,
+      deliverAgentReply: injectionRecorder(),
+      now: time.now,
+    })
+
+    const stolen = await responder.send({ sessionID: SESSION_B, peer: "alpha", text: "not mine", contextId })
+    expect(stolen).toEqual({ kind: "failed", errorClass: "invalid-context" })
+    expect(fetchImpl.posts()).toHaveLength(0)
+  })
+
+  test("#given a turn admitted while the last send of a drain is in flight #when the drain ends #then that turn is still sent", async () => {
+    // The queue admits at most eight pending entries per conversation, so the turn
+    // that lands while the last send is on the wire is the one an iteration cap
+    // would strand: its payload survives, reconciliation skips it, and no other
+    // path reopens the conversation.
+    const gates = []
+    const working = { ok: true, status: 200, text: async () => JSON.stringify(taskAnswer("WORKING")) }
+    const rejected = { ok: true, status: 200, text: async () => JSON.stringify(taskAnswer("REJECTED")) }
+    const answers = [
+      ...Array.from({ length: 8 }, () => () => new Promise((resolve) => { gates.push(resolve) })),
+      () => working,
+    ]
+    const { responder, queue, registry, fetchImpl } = harness({ send: answers })
+
+    const first = responder.send({ sessionID: SESSION_A, peer: "alpha", text: "t1" })
+    await waitFor(() => gates.length === 1, "the first SendMessage")
+    for (let turn = 2; turn <= 8; turn += 1) {
+      expect(await responder.send({ sessionID: SESSION_A, peer: "alpha", text: `t${turn}` })).toMatchObject({ kind: "task", queued: true })
+    }
+    gates[0](working)
+    // A rejected send is the one way to free a queue entry while the drain runs.
+    await waitFor(() => gates.length === 2, "the second SendMessage")
+    gates[1](rejected)
+    for (let index = 2; index <= 6; index += 1) {
+      await waitFor(() => gates.length === index + 1, `SendMessage #${index + 1}`)
+      gates[index](working)
+    }
+    await waitFor(() => gates.length === 8, "the eighth SendMessage")
+
+    const ninth = await responder.send({ sessionID: SESSION_A, peer: "alpha", text: "t9" })
+    expect(ninth).toMatchObject({ kind: "task", queued: true })
+    gates[7](working)
+    await first
+
+    expect(fetchImpl.posts().filter((call) => JSON.parse(call.init.body).method === "SendMessage")).toHaveLength(9)
+    expect(registry.list().filter((record) => typeof record.remoteTaskId === "string")).toHaveLength(9)
+    // No record is left written-ahead with a payload and no vendor id: that is the
+    // stranded turn the capped pass produced, which nothing else could ever send.
+    const stranded = registry.list().filter(
+      (record) => record.remoteTaskId === undefined && queue.hasPayload(record.peer, record.contextId, record.taskId),
+    )
+    expect(stranded).toHaveLength(0)
   })
 })

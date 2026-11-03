@@ -345,3 +345,66 @@ describe("openclaw A2A GetTask", () => {
     expect(outcome).toEqual({ kind: "failed", errorClass: "rpc--32001", rpcCode: -32001 })
   })
 })
+
+describe("openclaw A2A endpoint policy", () => {
+  test("#given a card that advertises a plaintext non-loopback endpoint #when sending #then the bearer never reaches it and the validated base is used", async () => {
+    const unsafe = "http://peer.example.com/a2a/v1"
+    const logs = []
+    const fetchImpl = spyFetch(async (_url, init) => {
+      if (init.method === "GET") return jsonResponse({ supportedInterfaces: [{ url: unsafe }] })
+      return jsonResponse({ result: { task: { id: "task-1", status: { state: "WORKING" } } } })
+    })
+    const transport = createOpenclawAgentTransport({ peers: [peerOf()], fetchImpl, log: (line) => logs.push(line) })
+    const outcome = await transport.send({ peer: "alpha", text: "one", contextId: "rigel-ctx", messageId: "m1" })
+
+    expect(outcome.kind).toBe("task")
+    // The card is decorative; the endpoint it names is not trusted beyond the policy.
+    expect(fetchImpl.calls.map((call) => call.url)).toEqual([
+      `${PEER_URL}/.well-known/agent-card.json`,
+      `${PEER_URL}/a2a/v1`,
+    ])
+    expect(fetchImpl.calls.filter((call) => call.init.method === "POST")[0].init.headers.Authorization).toBe(`Bearer ${ENV.ALPHA_TOKEN}`)
+    // Identity only: the refusal names the peer, never the url and never the token.
+    expect(logs.filter((line) => line.includes("peer.example.com") || line.includes(ENV.ALPHA_TOKEN))).toEqual([])
+  })
+
+  test("#given a card that advertises a url carrying a credential #when sending #then that url is refused and never logged", async () => {
+    const unsafe = "https://peer:card-secret@peer.example.com/a2a/v1"
+    const logs = []
+    const fetchImpl = spyFetch(async (_url, init) => {
+      if (init.method === "GET") return jsonResponse({ supportedInterfaces: [{ url: unsafe }] })
+      return jsonResponse({ result: { task: { id: "task-1", status: { state: "WORKING" } } } })
+    })
+    const transport = createOpenclawAgentTransport({ peers: [peerOf()], fetchImpl, log: (line) => logs.push(line) })
+    await transport.send({ peer: "alpha", text: "one", contextId: "rigel-ctx", messageId: "m1" })
+
+    expect(fetchImpl.calls.some((call) => call.url.includes("@peer.example.com"))).toBe(false)
+    const posts = fetchImpl.calls.filter((call) => call.init.method === "POST")
+    expect(posts).toHaveLength(1)
+    expect(posts[0].url).toBe(`${PEER_URL}/a2a/v1`)
+    expect(logs.join("\n")).not.toContain("card-secret")
+  })
+
+  test("#given a card that advertises a malformed endpoint #when sending #then the documented endpoint is used", async () => {
+    const fetchImpl = spyFetch(async (_url, init) => {
+      if (init.method === "GET") return jsonResponse({ supportedInterfaces: [{ url: "not a url" }] })
+      return jsonResponse({ result: { task: { id: "task-1", status: { state: "WORKING" } } } })
+    })
+    const transport = createOpenclawAgentTransport({ peers: [peerOf()], fetchImpl })
+    const outcome = await transport.send({ peer: "alpha", text: "one", contextId: "rigel-ctx", messageId: "m1" })
+    expect(outcome.kind).toBe("task")
+    expect(fetchImpl.calls.filter((call) => call.init.method === "POST")[0].url).toBe(`${PEER_URL}/a2a/v1`)
+  })
+
+  test("#given a peer url outside the policy #when sending #then the request is refused as invalid-url and nothing is dialled", async () => {
+    const fetchImpl = spyFetch(async () => jsonResponse({ result: { task: { id: "task-1", status: { state: "WORKING" } } } }))
+    const peer = { ...peerOf(), url: "http://peer.example.com" }
+    const transport = createOpenclawAgentTransport({ peers: [peer], fetchImpl })
+    const outcome = await transport.send({ peer: "alpha", text: "one", contextId: "rigel-ctx", messageId: "m1" })
+
+    expect(outcome).toEqual({ kind: "failed", errorClass: "invalid-url" })
+    expect(fetchImpl.calls).toHaveLength(0)
+    // A refused URL provably created no task, so the record can be settled instead of lost.
+    expect(transport.isDefinitiveSendFailure("invalid-url")).toBe(true)
+  })
+})

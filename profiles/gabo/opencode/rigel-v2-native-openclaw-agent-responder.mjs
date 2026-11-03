@@ -28,9 +28,16 @@
  *   - **Injection uses `record.sessionID`, only.** Nothing derived from a
  *     response payload can move an answer into another session, and `contextId` is
  *     a pure function of `sessionID`, so a task cannot resolve to a second session.
+ *     Ownership is bound twice: the derived id is registered the moment it is
+ *     used, and the durable record answers the same question after a restart.
+ *   - **One answer, one injection.** A reconciliation pass is serialized against
+ *     itself, a record already claiming the answer is skipped while another path
+ *     applies it, and a terminal record can never be applied again: the settlement
+ *     is durable, so a second pass over the same answer cannot reach the session.
  *   - **Never a silent drop.** A record the runtime cannot observe is reported as
  *     `lost`; a refusal is reported as a refusal; a bound that rejects is a
- *     `degraded` transition.
+ *     `degraded` transition; a turn admitted while a drain is running is drained
+ *     by that same run instead of being left with an unsent payload.
  *
  * Nothing here is awaited by the composition's event path: the shared
  * `ctx.event.subscribe` iterable must never wait on a `SendMessage` that may take
@@ -42,14 +49,12 @@
 import { randomUUID } from "node:crypto"
 import {
   OPENCLAW_AGENT_PENDING_STATES,
+  OPENCLAW_AGENT_TERMINAL_STATES,
   OPENCLAW_CONTEXT_ID_PATTERN,
   deriveOpenclawContextId,
   openclawConversationKey,
 } from "./rigel-v2-native-openclaw-agent-registry.mjs"
-import {
-  OPENCLAW_QUEUE_MAX_PER_CONVERSATION,
-  truncateToBytes,
-} from "./rigel-v2-native-openclaw-agent-queue.mjs"
+import { truncateToBytes } from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import {
   OPENCLAW_AGENT_STATUS_SURFACE,
   OPENCLAW_A2A_REQUESTS_PER_MINUTE,
@@ -117,6 +122,10 @@ export function createOpenclawAgentResponder({
   const contextBindings = new Map()
   /** Conversations whose drain loop is running, so a re-entrant send cannot overlap. */
   const draining = new Set()
+  /** `(peer, contextId, taskId)` currently applying a terminal answer, so two paths cannot inject it twice. */
+  const applying = new Set()
+  /** The pass in flight, so overlapping ticks serialize instead of polling the same task. */
+  let inFlightPass = null
   const lifecycle = new AbortController()
   /** peer name -> request timestamps inside the sliding window. */
   const peerWindows = new Map()
@@ -147,24 +156,42 @@ export function createOpenclawAgentResponder({
   }
 
   /**
+   * Bind one conversation id to one session, once.
+   *
+   * Returns false when another session already holds it: a second binding is a
+   * configuration error, not a shared resource.
+   */
+  function bindContext(contextId, sessionID) {
+    const bound = contextBindings.get(contextId)
+    if (bound !== undefined && bound !== sessionID) return false
+    contextBindings.set(contextId, sessionID)
+    return true
+  }
+
+  /**
    * Resolve the conversation id for one turn.
    *
    * Derived by default, so two sessions can never share a conversation and a
    * restart with the same `sessionID` continues it. An explicit override is
    * allowed (a deliberately long-lived conversation) but must bind to exactly one
-   * session: a second binding is a configuration error, not a shared resource.
+   * session, and the DERIVED id is bound too: an override that merely names
+   * another session's derived conversation is exactly the claim this refuses.
+   *
+   * The binding map is process-local, so the durable record answers the same
+   * question after a restart: a hydrated conversation keeps its owning session.
    */
-  function resolveContext({ sessionID, contextId }) {
+  function resolveContext(peerName, { sessionID, contextId }) {
     if (contextId === undefined || contextId === null) {
       const derived = deriveOpenclawContextId(sessionID)
-      return derived !== null && OPENCLAW_CONTEXT_ID_PATTERN.test(derived) ? derived : null
+      if (derived === null || !OPENCLAW_CONTEXT_ID_PATTERN.test(derived)) return null
+      return bindContext(derived, sessionID) ? derived : null
     }
     if (typeof contextId !== "string" || !OPENCLAW_CONTEXT_ID_PATTERN.test(contextId)) return null
-    if (contextId === deriveOpenclawContextId(sessionID)) return contextId
-    const bound = contextBindings.get(contextId)
-    if (bound !== undefined && bound !== sessionID) return null
-    contextBindings.set(contextId, sessionID)
-    return contextId
+    // The durable record is what makes the ownership survive a restart, so the
+    // check runs BEFORE the binding: a refused claim must not poison the map.
+    const owners = registry.sessionOwners?.(peerName, contextId) ?? []
+    if (owners.length > 0 && !owners.includes(sessionID)) return null
+    return bindContext(contextId, sessionID) ? contextId : null
   }
 
   /**
@@ -191,42 +218,57 @@ export function createOpenclawAgentResponder({
 
   /**
    * Apply one terminal task state. Shared by the send path and the reconciliation
-   * path so both report a rejection identically.
+   * path so both report a rejection identically, and idempotent per answer: the
+   * caller that is already applying this record owns it, and a record that is
+   * already terminal is never applied again. Without that, a second hold on the
+   * same `GetTask` answer injects the same prompt twice.
    */
   async function applyTerminal(peerName, contextId, taskId, outcome) {
     const record = registry.lookup(peerName, contextId, taskId)
     if (record === null) return { settled: false, injected: false, state: outcome.state }
-    if (outcome.state === "rejected") {
-      await queue.settle({ peer: peerName, contextId, taskId, state: "rejected" })
-      await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-rejected" })
-      log(`[oh-my-rigel] openclaw a2a task rejected: peer=${peerName} task=${taskId}`)
-      return { settled: true, injected: false, state: "rejected" }
+    // The settlement is durable, so a terminal record is proof the answer was
+    // already reported; re-applying it could only duplicate the injection.
+    if (OPENCLAW_AGENT_TERMINAL_STATES.includes(record.state)) {
+      return { settled: false, injected: false, state: outcome.state }
     }
-    if (outcome.state === "failed") {
-      await queue.settle({ peer: peerName, contextId, taskId, state: "failed" })
-      await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-failed" })
-      log(`[oh-my-rigel] openclaw a2a task failed: peer=${peerName} task=${taskId}`)
-      return { settled: true, injected: false, state: "failed" }
-    }
-    const text = typeof outcome.replyText === "string" ? outcome.replyText : ""
-    if (text.length === 0) {
-      // The vendor completes a task with empty artifacts when the agent answered
-      // nothing. That is a legitimate terminal state with nothing to inject.
+    const key = `${openclawConversationKey(peerName, contextId)}\u0000${taskId}`
+    if (applying.has(key)) return { settled: false, injected: false, state: outcome.state }
+    applying.add(key)
+    try {
+      if (outcome.state === "rejected") {
+        await queue.settle({ peer: peerName, contextId, taskId, state: "rejected" })
+        await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-rejected" })
+        log(`[oh-my-rigel] openclaw a2a task rejected: peer=${peerName} task=${taskId}`)
+        return { settled: true, injected: false, state: "rejected" }
+      }
+      if (outcome.state === "failed") {
+        await queue.settle({ peer: peerName, contextId, taskId, state: "failed" })
+        await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-failed" })
+        log(`[oh-my-rigel] openclaw a2a task failed: peer=${peerName} task=${taskId}`)
+        return { settled: true, injected: false, state: "failed" }
+      }
+      const text = typeof outcome.replyText === "string" ? outcome.replyText : ""
+      if (text.length === 0) {
+        // The vendor completes a task with empty artifacts when the agent answered
+        // nothing. That is a legitimate terminal state with nothing to inject.
+        await queue.settle({ peer: peerName, contextId, taskId, state: "completed" })
+        return { settled: true, injected: false, state: "completed" }
+      }
+      const delivery = await deliverToSession(record, text)
+      if (delivery.kind === "transient") {
+        await status?.recordFailure(OPENCLAW_AGENT_REPLY_SURFACE, { errorClass: "injection-failed" })
+        return { settled: false, injected: false, state: "working" }
+      }
+      if (delivery.kind === "refused") {
+        await status?.recordFailure(OPENCLAW_AGENT_REPLY_SURFACE, { errorClass: "injection-refused" })
+      } else {
+        await status?.recordSuccess(OPENCLAW_AGENT_REPLY_SURFACE)
+      }
       await queue.settle({ peer: peerName, contextId, taskId, state: "completed" })
-      return { settled: true, injected: false, state: "completed" }
+      return { settled: true, injected: delivery.kind === "delivered", state: "completed" }
+    } finally {
+      applying.delete(key)
     }
-    const delivery = await deliverToSession(record, text)
-    if (delivery.kind === "transient") {
-      await status?.recordFailure(OPENCLAW_AGENT_REPLY_SURFACE, { errorClass: "injection-failed" })
-      return { settled: false, injected: false, state: "working" }
-    }
-    if (delivery.kind === "refused") {
-      await status?.recordFailure(OPENCLAW_AGENT_REPLY_SURFACE, { errorClass: "injection-refused" })
-    } else {
-      await status?.recordSuccess(OPENCLAW_AGENT_REPLY_SURFACE)
-    }
-    await queue.settle({ peer: peerName, contextId, taskId, state: "completed" })
-    return { settled: true, injected: delivery.kind === "delivered", state: "completed" }
   }
 
   /**
@@ -265,6 +307,10 @@ export function createOpenclawAgentResponder({
       return { kind: "failed", errorClass: outcome.errorClass, taskId: claim.taskId, lost: true }
     }
     await registry.attachRemoteTask(peerName, contextId, claim.taskId, outcome.remoteTaskId)
+    // The peer accepted the request, so the transport surface is healthy again: a
+    // degraded `a2a` recovers on the first success instead of staying degraded for
+    // the life of the process.
+    await status?.recordSuccess(OPENCLAW_AGENT_STATUS_SURFACE)
     await queue.release({ peer: peerName, contextId, taskId: claim.taskId })
     const receipt = {
       kind: "task",
@@ -282,15 +328,22 @@ export function createOpenclawAgentResponder({
   }
 
   /**
-   * Drain one conversation in order. Bounded by the queue's per-conversation depth,
-   * so a peer that never answers cannot keep this loop running. The caller owns the
-   * conversation lock.
+   * Drain one conversation in order, until nothing is claimable.
+   *
+   * There is deliberately NO iteration cap. The queue's per-conversation depth
+   * bounds admissions, and every iteration consumes exactly one claimable record
+   * (settled, marked lost, or carrying a `remoteTaskId`), so the loop is monotone
+   * and terminates. A cap used to end the pass with a payload still queued — the
+   * turn admitted while the last send was on the wire — and reconciliation skips a
+   * record that still holds its payload, so nothing would ever send it again.
+   *
+   * The caller owns the conversation lock.
    */
   async function runDrain(peerName, contextId) {
     const target = peerIndex.get(peerName)
     if (target === undefined) return new Map()
     const receipts = new Map()
-    for (let step = 0; step < OPENCLAW_QUEUE_MAX_PER_CONVERSATION; step += 1) {
+    for (;;) {
       const claim = await queue.claimNext(peerName, contextId)
       if (claim === null) break
       receipts.set(claim.taskId, await performSend(target, contextId, claim))
@@ -330,7 +383,7 @@ export function createOpenclawAgentResponder({
       await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "slash-command" })
       return { kind: "rejected", errorClass: "slash-command" }
     }
-    const resolvedContext = resolveContext({ sessionID, contextId })
+    const resolvedContext = resolveContext(target.name, { sessionID, contextId })
     if (resolvedContext === null) return failure("invalid-context")
     if (!consumeRequest(target.name)) {
       // §9.3: a rate limit is jitter, never a state change; only the counter moves.
@@ -373,13 +426,43 @@ export function createOpenclawAgentResponder({
   }
 
   /**
-   * One reconciliation pass.
+   * When a record was last polled, in milliseconds. The reconciliation order and
+   * the per-record throttle read the same clock, so a record cannot be "old enough
+   * to check" and "too new to sort first" at the same time.
+   */
+  function lastPolledAt(record) {
+    const parsed = Date.parse(record.lastCheckedAt ?? record.createdAt)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+
+  /**
+   * One reconciliation pass, serialized.
+   *
+   * The cadence (5 s) is far shorter than a `GetTask` can take (the client budget
+   * is `replyTimeoutMs` + 30 s), so two ticks would otherwise both see a record
+   * whose `lastCheckedAt` has not been stamped yet, poll the same task twice, and
+   * inject the same answer twice through the shared prompt gate. A caller that
+   * arrives while a pass is running joins it instead of starting a second one.
+   */
+  async function reconcileOnce() {
+    if (inFlightPass !== null) return inFlightPass
+    const pass = runReconcilePass()
+    inFlightPass = pass
+    try {
+      return await pass
+    } finally {
+      if (inFlightPass === pass) inFlightPass = null
+    }
+  }
+
+  /**
+   * The body of one reconciliation pass.
    *
    * Two phases, both bounded: first report records that were written ahead and can
    * never be sent (the process died between the write and the request), then ask
    * `GetTask` about every known task whose throttle window elapsed.
    */
-  async function reconcileOnce() {
+  async function runReconcilePass() {
     const result = { checked: 0, settled: 0, injected: 0, lost: 0, rejected: 0 }
     // Hard prune horizon (§6.4): a record past seven days never gets an answer, so
     // it is reported as lost here instead of lingering forever.
@@ -406,12 +489,18 @@ export function createOpenclawAgentResponder({
       log(`[oh-my-rigel] openclaw a2a task lost before send: peer=${record.peer} task=${record.taskId}`)
     }
 
-    for (const record of registry.list()) {
+    // Oldest-checked first. The peer budget is thirty requests a minute, so a
+    // fixed order would spend every window on the same head of the list and let the
+    // tail reach the seven-day prune horizon without ever being polled. Sorting by
+    // the same clock the throttle reads makes the next pass start where the last
+    // one stopped, and a record that is skipped can only get older.
+    const pollable = [...registry.list()].sort((left, right) => lastPolledAt(left) - lastPolledAt(right))
+    for (const record of pollable) {
       if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) continue
       if (typeof record.remoteTaskId !== "string") continue
       if (!peerIndex.has(record.peer)) continue
-      const lastChecked = Date.parse(record.lastCheckedAt ?? record.createdAt)
-      if (Number.isFinite(lastChecked) && now() - lastChecked < pollIntervalMs) continue
+      const lastChecked = lastPolledAt(record)
+      if (lastChecked > 0 && now() - lastChecked < pollIntervalMs) continue
       if (!consumeRequest(record.peer)) {
         await status?.recordRateLimit(OPENCLAW_AGENT_STATUS_SURFACE)
         continue
@@ -432,6 +521,9 @@ export function createOpenclawAgentResponder({
         await registry.touch(record.peer, record.contextId, record.taskId)
         continue
       }
+      // A healthy answer proves the transport surface works, so a degraded `a2a`
+      // recovers here instead of staying degraded for the life of the process.
+      await status?.recordSuccess(OPENCLAW_AGENT_STATUS_SURFACE)
       if (outcome.state === "submitted" || outcome.state === "working") {
         await registry.touch(record.peer, record.contextId, record.taskId)
         continue
