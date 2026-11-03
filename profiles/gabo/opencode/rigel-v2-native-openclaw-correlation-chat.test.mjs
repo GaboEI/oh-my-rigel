@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { createOpenclawOutbound } from "./rigel-v2-native-openclaw-outbound.mjs"
 import { createOpenclawInbound } from "./rigel-v2-native-openclaw-inbound.mjs"
-import { createOpenclawRegistry, OPENCLAW_REGISTRY_PREFIX } from "./rigel-v2-native-openclaw-registry.mjs"
+import { createOpenclawRegistry, OPENCLAW_REGISTRY_MAX_AGE_MS, OPENCLAW_REGISTRY_PREFIX } from "./rigel-v2-native-openclaw-registry.mjs"
 
 /**
  * C1: the reply-correlation identity of a chat-scoped platform.
@@ -306,5 +306,151 @@ describe("openclaw telegram correlation identity", () => {
     expect(chatB[0].sessionID).toBe(SESSION_B)
     expect(chatA[0].text).toBe("[reply:telegram] reply from chat-a")
     expect(chatB[0].text).toBe("[reply:telegram] reply from chat-b")
+  })
+})
+
+/**
+ * The upgrade path of the same registry.
+ *
+ * C1 changed the identity of a chat-scoped record from `(platform, messageId)` to
+ * `(platform, chat, messageId)`. Every record written before that change still
+ * carries the old storage key (`sha1(platform\0 messageId)`) while its VALUE
+ * already names the chat, so hydration has to keep the key it scanned: a removal
+ * that re-derives the key from the value deletes a key that never existed, the
+ * durable record survives, and the next process re-indexes it.
+ *
+ * These cases pin the upgrade contract, not the identity contract the block above
+ * pins: a deleted session must not come back after a restart, a stale pre-C1
+ * record must be prunable, and removing one session must not silence another one
+ * whose record happens to share an identity.
+ */
+function seed(storage, key, overrides = {}) {
+  storage.map.set(key, mapping(overrides))
+}
+
+describe("openclaw registry upgrade from the pre-fix key", () => {
+  test("#given a record the pre-fix writer persisted #when a new process hydrates and the session is deleted #then the correlation does not revive", async () => {
+    const storage = memoryStorage()
+    seed(storage, LEGACY_TELEGRAM_KEY, { sessionID: "ses_deleted" })
+
+    const first = createOpenclawRegistry({ storage })
+    await first.hydrate()
+    expect(first.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe("ses_deleted")
+
+    expect(await first.removeSession("ses_deleted")).toBe(1)
+    expect(storedKeys(storage)).toEqual([])
+
+    const restarted = createOpenclawRegistry({ storage })
+    await restarted.hydrate()
+    expect(restarted.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)).toBeNull()
+    expect(restarted.size()).toBe(0)
+  })
+
+  test("#given a pre-fix record already past the TTL #when a new process hydrates and prunes #then the pre-fix key is deleted", async () => {
+    const clock = Date.parse("2026-02-02T00:00:00.000Z")
+    const storage = memoryStorage()
+    seed(storage, LEGACY_TELEGRAM_KEY, { sessionID: "ses_stale", createdAt: new Date(clock - OPENCLAW_REGISTRY_MAX_AGE_MS - 1000).toISOString() })
+
+    const registry = createOpenclawRegistry({ storage, now: () => clock })
+    await registry.hydrate()
+    expect(await registry.prune()).toBe(1)
+
+    expect(storedKeys(storage)).toEqual([])
+  })
+
+  test("#given a hydrated pre-fix record that expires while the process runs #when prune runs #then the pre-fix key is deleted", async () => {
+    let clock = Date.parse("2026-03-02T00:00:00.000Z")
+    const storage = memoryStorage()
+    seed(storage, LEGACY_TELEGRAM_KEY, { sessionID: "ses_old", createdAt: new Date(clock).toISOString() })
+
+    const registry = createOpenclawRegistry({ storage, now: () => clock })
+    await registry.hydrate()
+    clock += OPENCLAW_REGISTRY_MAX_AGE_MS + 1000
+    expect(await registry.prune()).toBe(1)
+
+    expect(storedKeys(storage)).toEqual([])
+  })
+
+  test("#given a hydrated scoped record #when its session is deleted #then the scoped key is deleted and a restart does not resolve it", async () => {
+    const storage = memoryStorage()
+    seed(storage, SCOPED_KEY_CHAT_A, { sessionID: SESSION_A })
+
+    const first = createOpenclawRegistry({ storage })
+    await first.hydrate()
+    expect(first.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe(SESSION_A)
+
+    expect(await first.removeSession(SESSION_A)).toBe(1)
+    expect(storedKeys(storage)).toEqual([])
+
+    const restarted = createOpenclawRegistry({ storage })
+    await restarted.hydrate()
+    expect(restarted.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)).toBeNull()
+  })
+
+  test("#given a hydrated discord record #when its session is deleted #then the platform-wide key is deleted and a restart does not resolve it", async () => {
+    const storage = memoryStorage()
+    const discordKey = `${PREFIX}d57083662eb3363971f51c0b0b285259736f4d6b`
+    seed(storage, discordKey, { platform: "discord-bot", messageId: "m1", channelId: "chan-1", sessionID: "ses_d" })
+
+    const first = createOpenclawRegistry({ storage })
+    await first.hydrate()
+    expect(first.lookup("discord-bot", "m1")?.sessionID).toBe("ses_d")
+
+    expect(await first.removeSession("ses_d")).toBe(1)
+    expect(storedKeys(storage)).toEqual([])
+
+    const restarted = createOpenclawRegistry({ storage })
+    await restarted.hydrate()
+    expect(restarted.lookup("discord-bot", "m1")).toBeNull()
+  })
+
+  test("#given a chat-less legacy record #when its session is deleted #then the pre-fix key is deleted and a restart does not resolve it", async () => {
+    const storage = memoryStorage()
+    seed(storage, LEGACY_TELEGRAM_KEY, { channelId: undefined, sessionID: "ses_legacy" })
+
+    const first = createOpenclawRegistry({ storage })
+    await first.hydrate()
+    expect(first.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe("ses_legacy")
+
+    expect(await first.removeSession("ses_legacy")).toBe(1)
+    expect(storedKeys(storage)).toEqual([])
+  })
+
+  test("#given a pre-fix record and a newer scoped record for one identity #when the legacy session is deleted #then only the legacy key is deleted and the newer correlation survives the restart", async () => {
+    const clock = Date.parse("2026-04-01T00:10:00.000Z")
+    const storage = memoryStorage()
+    // The order a real upgrade produces: the C1 record is the newest half, the
+    // pre-fix record is the older one that was never cleaned up. Two durable
+    // records, one identity.
+    seed(storage, SCOPED_KEY_CHAT_A, { sessionID: "ses_new", createdAt: "2026-03-31T23:50:00.000Z" })
+    seed(storage, LEGACY_TELEGRAM_KEY, { sessionID: "ses_legacy", createdAt: "2026-03-31T23:00:00.000Z" })
+
+    const first = createOpenclawRegistry({ storage, now: () => clock })
+    await first.hydrate()
+    // The newest answer wins, so the pre-fix half can never shadow the live one.
+    expect(first.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe("ses_new")
+
+    expect(await first.removeSession("ses_legacy")).toBe(1)
+    expect(storedKeys(storage)).toEqual([SCOPED_KEY_CHAT_A])
+
+    const restarted = createOpenclawRegistry({ storage, now: () => clock })
+    await restarted.hydrate()
+    expect(restarted.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe("ses_new")
+  })
+
+  test("#given a record this build cannot read #when the registry hydrates and prunes #then it is neither indexed nor deleted", async () => {
+    const storage = memoryStorage()
+    const foreignKey = `${PREFIX}foreign`
+    seed(storage, foreignKey, { channelId: { id: CHAT_A } })
+
+    const registry = createOpenclawRegistry({ storage })
+    await registry.hydrate()
+    expect(registry.size()).toBe(0)
+    expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)).toBeNull()
+    expect(await registry.prune()).toBe(0)
+
+    // A shape this build does not understand may belong to a future build;
+    // deleting it would be destructive. Ignoring it is the fail-closed answer.
+    expect(storedKeys(storage)).toEqual([foreignKey])
   })
 })
