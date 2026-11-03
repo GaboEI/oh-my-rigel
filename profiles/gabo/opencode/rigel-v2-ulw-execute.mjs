@@ -3,6 +3,7 @@ import { basename, join } from "node:path"
 import { reconcileStaleWorks } from "./rigel-v2-ulw-execute-boulder.mjs"
 import { discoverPlans, findRecentSessionPlanPath, getPlanName, selectPlanByName } from "./rigel-v2-ulw-execute-plan.mjs"
 import { createPrDeliveryBlock, detectWorktree } from "./rigel-v2-ulw-execute-worktree.mjs"
+import { canonicalAgentKey } from "./rigel-v2-native-agent-order.mjs"
 
 export const ULW_EXECUTE_MARKER = "<!-- omo-ulw-execute-context -->"
 const TEMPLATE_MARKER = "You are starting an Atlas work session."
@@ -10,6 +11,11 @@ const NOTE_FILES = ["learnings.md", "decisions.md", "issues.md", "problems.md"]
 
 function normalizedSessionID(sessionID) {
   return sessionID.startsWith("opencode:") ? sessionID : `opencode:${sessionID}`
+}
+
+function resolveRegisteredAgent(registeredAgents) {
+  const find = (key) => registeredAgents.find((item) => canonicalAgentKey(item) === key) ?? null
+  return find("atlas") ?? find("sisyphus")
 }
 
 function boulderPath(directory) {
@@ -93,7 +99,10 @@ export function createUlwExecuteCommand({ context, directory, registeredAgents =
         if (JSON.stringify(existing).includes(ULW_EXECUTE_MARKER)) return
       }
       const input = parseUlwExecuteRequest(text)
-      const agent = registeredAgents.some((item) => String(item).toLowerCase() === "atlas") ? "atlas" : "sisyphus"
+      const agent = resolveRegisteredAgent(registeredAgents)
+      if (!agent) {
+        return context.session.prompt({ sessionID, text: `${TEMPLATE_MARKER}\n${ULW_EXECUTE_MARKER}\nNo registered Atlas or Sisyphus agent was found.` })
+      }
       await context.session.switchAgent?.({ sessionID, agent })
       const worktree = detectWorktree(directory, input.worktree)
       let state = readState(directory)

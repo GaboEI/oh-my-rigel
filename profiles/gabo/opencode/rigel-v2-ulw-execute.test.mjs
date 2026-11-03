@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createUlwExecuteCommand, substituteSessionContextPlaceholders } from "./rigel-v2-ulw-execute.mjs"
 
-function fixture() {
+function fixture(registeredAgents = ["Sisyphus - ultraworker", "Atlas - Plan Executor"]) {
   const directory = mkdtempSync(join(tmpdir(), "rigel-ulw-execute-"))
   mkdirSync(join(directory, ".omo", "plans"), { recursive: true })
   writeFileSync(join(directory, ".omo", "plans", "wave.md"), "# Wave\n\n- [ ] Implement\n")
@@ -16,7 +16,7 @@ function fixture() {
       context: async () => [],
     },
   }
-  const command = createUlwExecuteCommand({ context, directory, registeredAgents: ["atlas"], stopContinuationState: { clear: (id) => calls.clear.push(id) }, now: () => new Date("2026-10-05T12:00:00.000Z") })
+  const command = createUlwExecuteCommand({ context, directory, registeredAgents, stopContinuationState: { clear: (id) => calls.clear.push(id) }, now: () => new Date("2026-10-05T12:00:00.000Z") })
   return { directory, calls, command }
 }
 
@@ -28,9 +28,29 @@ test("#given one plan #when ulw-execute starts #then it creates boulder state, n
     expect(state.active_plan).toBe(join(directory, ".omo", "plans", "wave.md"))
     expect(state.session_ids).toEqual(["opencode:ses_1"])
     expect(readFileSync(join(directory, ".omo", "notepads", "wave", "learnings.md"), "utf8")).toContain("learnings")
-    expect(calls.switch).toEqual([{ sessionID: "ses_1", agent: "atlas" }])
+    expect(state.agent).toBe("Atlas - Plan Executor")
+    expect(calls.switch).toEqual([{ sessionID: "ses_1", agent: "Atlas - Plan Executor" }])
     expect(calls.clear).toEqual(["ses_1"])
     expect(calls.prompt).toHaveLength(1)
+    expect(calls.prompt[0].text).toContain("Agent: Atlas - Plan Executor")
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("#given Atlas is absent #when ulw-execute starts #then it switches to the registered Sisyphus display name", async () => {
+  const { directory, calls, command } = fixture(["Sisyphus - ultraworker"])
+  try {
+    await command.execute({ sessionID: "ses_fallback", prompt: { text: "" } })
+    expect(calls.switch).toEqual([{ sessionID: "ses_fallback", agent: "Sisyphus - ultraworker" }])
+    expect(calls.prompt[0].text).toContain("Agent: Sisyphus - ultraworker")
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("#given neither work agent is registered #when ulw-execute starts #then it reports the missing roster without switching", async () => {
+  const { directory, calls, command } = fixture([])
+  try {
+    await command.execute({ sessionID: "ses_missing_agents", prompt: { text: "" } })
+    expect(calls.switch).toHaveLength(0)
+    expect(calls.prompt[0].text).toContain("No registered Atlas or Sisyphus agent was found.")
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
