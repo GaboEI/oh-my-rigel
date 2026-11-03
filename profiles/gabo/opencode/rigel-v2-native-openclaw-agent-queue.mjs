@@ -92,9 +92,15 @@ export function createOpenclawAgentQueue({
   const pending = new Map()
   /** peer -> send timestamps inside the sliding window. */
   const peerWindows = new Map()
+  /** Full agent identity currently awaiting durable registration. */
+  const registering = new Set()
 
   function conversationKey(peer, contextId) {
     return `${peer}\u0000${contextId}`
+  }
+
+  function taskKey(peer, contextId, taskId) {
+    return `${peer}\u0000${contextId}\u0000${taskId}`
   }
 
   function entriesFor(peer, contextId) {
@@ -118,10 +124,11 @@ export function createOpenclawAgentQueue({
   }
 
   /**
-   * Enqueue one conversational send. The durable record is written first
-   * (write-ahead), then the in-memory entry that carries the payload, so a crash
-   * between the two leaves a record `prune()`/`claimNext()` reports as `lost`
-   * instead of a task nobody can find.
+   * Enqueue one conversational send. Reserve the payload synchronously before
+   * registering its durable write-ahead record, so capacity and the payload stay
+   * visible through every await. A task stays unclaimable while registration is
+   * in progress; after the record is durable it can be claimed, and a crash after
+   * that point is the genuinely ambiguous write-ahead loss the registry reports.
    *
    * Every rejection is named. A bound never drops a message in silence.
    */
@@ -154,16 +161,30 @@ export function createOpenclawAgentQueue({
     }
 
     const { text: bounded, truncated } = truncateToBytes(text, maxPayloadBytes)
+    const key = conversationKey(peer, contextId)
+    const entries = pending.get(key) ?? []
+    const entry = { taskId, text: bounded, bytes: Buffer.byteLength(bounded, "utf8"), enqueuedAt: now() }
+    entries.push(entry)
+    pending.set(key, entries)
+    const registrationKey = taskKey(peer, contextId, taskId)
+    registering.add(registrationKey)
+
     if (truncated) await status?.recordTruncation?.(OPENCLAW_QUEUE_STATUS_SURFACE)
-
-    const registered = await registry.register({ peer, contextId, taskId, sessionID, agentId, state: "submitted" })
-    if (!registered) return { accepted: false, reason: "invalid-record" }
-
-    const entries = pending.get(conversationKey(peer, contextId)) ?? []
-    entries.push({ taskId, text: bounded, bytes: Buffer.byteLength(bounded, "utf8"), enqueuedAt: now() })
-    pending.set(conversationKey(peer, contextId), entries)
+    let registered
+    try {
+      registered = await registry.register({ peer, contextId, taskId, sessionID, agentId, state: "submitted" })
+    } catch (error) {
+      dropEntry(peer, contextId, taskId)
+      throw error
+    } finally {
+      registering.delete(registrationKey)
+    }
+    if (!registered) {
+      dropEntry(peer, contextId, taskId)
+      return { accepted: false, reason: "invalid-record" }
+    }
     await status?.recordSuccess?.(OPENCLAW_QUEUE_STATUS_SURFACE)
-    return { accepted: true, taskId, bytes: Buffer.byteLength(bounded, "utf8"), truncated }
+    return { accepted: true, taskId, bytes: entry.bytes, truncated }
   }
 
   /**
@@ -178,6 +199,8 @@ export function createOpenclawAgentQueue({
     for (;;) {
       const next = registry.nextPendingFor(peer, contextId)
       if (!next) return null
+      const registrationKey = taskKey(peer, contextId, next.taskId)
+      if (registering.has(registrationKey)) return null
       const entries = entriesFor(peer, contextId)
       const index = entries.findIndex((entry) => entry.taskId === next.taskId)
       if (index < 0) {
@@ -241,6 +264,7 @@ export function createOpenclawAgentQueue({
   function clearAll() {
     pending.clear()
     peerWindows.clear()
+    registering.clear()
   }
 
   /**

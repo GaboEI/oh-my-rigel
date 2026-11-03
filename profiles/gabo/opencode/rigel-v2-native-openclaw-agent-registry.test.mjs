@@ -137,6 +137,75 @@ describe("openclaw agent registry", () => {
     expect(reader.lookup("peer-alpha", "rigel-0123456789abcdef01234567", "task-7")).toMatchObject({ taskId: "task-7" })
   })
 
+  test("#given a paginated durable registry with a repeated entry #when hydrating across a restart #then every task and the in-flight slot are restored once", async () => {
+    const writerStorage = memoryStorage()
+    const writer = createOpenclawAgentRegistry({ storage: writerStorage, now: clock("2026-01-01T00:00:00.000Z") })
+    await writer.register(seed({ taskId: "task-inflight" }))
+    await writer.register(seed({ taskId: "task-pending", createdAt: "2026-01-01T00:00:01.000Z" }))
+    await writer.claim("peer-alpha", "rigel-0123456789abcdef01234567", "task-inflight")
+    const [inflight, pending] = [...writerStorage.map.entries()]
+    const scanCalls = []
+    const storage = {
+      scan: async ({ after } = {}) => {
+        scanCalls.push(after)
+        if (after === undefined) return { entries: [{ key: inflight[0], value: inflight[1] }], next: "page-2" }
+        if (after === "page-2") {
+          return {
+            entries: [{ key: inflight[0], value: inflight[1] }, { key: pending[0], value: pending[1] }],
+          }
+        }
+        throw new Error(`unexpected page token: ${String(after)}`)
+      },
+    }
+
+    const reader = createOpenclawAgentRegistry({ storage, now: clock("2026-01-01T00:00:02.000Z") })
+    await reader.hydrate()
+    expect(scanCalls).toEqual([undefined, "page-2"])
+    expect(reader.size()).toBe(2)
+    expect(reader.inflightCount()).toBe(1)
+    expect(reader.lookup("peer-alpha", "rigel-0123456789abcdef01234567", "task-pending")).toMatchObject({ taskId: "task-pending" })
+    expect(reader.nextPendingFor("peer-alpha", "rigel-0123456789abcdef01234567")).toBeNull()
+
+    const restarted = createOpenclawAgentRegistry({ storage, now: clock("2026-01-01T00:00:03.000Z") })
+    await restarted.hydrate()
+    expect(restarted.size()).toBe(2)
+    expect(restarted.inflightCount()).toBe(1)
+    expect(restarted.nextPendingFor("peer-alpha", "rigel-0123456789abcdef01234567")).toBeNull()
+  })
+
+  test("#given a repeated or malformed storage continuation #when hydrating #then scanning stops with a named diagnostic", async () => {
+    const lines = []
+    const repeatedCalls = []
+    const repeated = createOpenclawAgentRegistry({
+      storage: {
+        scan: async ({ after } = {}) => {
+          repeatedCalls.push(after)
+          return { entries: [], next: "again" }
+        },
+      },
+      log: (line) => lines.push(line),
+    })
+    await repeated.hydrate()
+    expect(repeatedCalls).toEqual([undefined, "again"])
+    expect(lines).toContain("[oh-my-rigel] Native V2 openclaw agent registry hydrate stopped on a repeated pagination token")
+
+    const malformedLines = []
+    const malformed = createOpenclawAgentRegistry({
+      storage: { scan: async () => ({ entries: [], next: 3 }) },
+      log: (line) => malformedLines.push(line),
+    })
+    await malformed.hydrate()
+    expect(malformedLines).toContain("[oh-my-rigel] Native V2 openclaw agent registry hydrate stopped on an invalid pagination token")
+
+    const malformedPageLines = []
+    const malformedPage = createOpenclawAgentRegistry({
+      storage: { scan: async () => ({ entries: "not-an-array" }) },
+      log: (line) => malformedPageLines.push(line),
+    })
+    await malformedPage.hydrate()
+    expect(malformedPageLines).toContain("[oh-my-rigel] Native V2 openclaw agent registry hydrate stopped on a malformed storage page")
+  })
+
   test("#given a persisted record of an unknown shape #when hydrating #then it is skipped and reported instead of trusted", async () => {
     const storage = memoryStorage()
     await storage.set(`${OPENCLAW_AGENT_REGISTRY_PREFIX}broken`, { sessionID: "ses_1" })
