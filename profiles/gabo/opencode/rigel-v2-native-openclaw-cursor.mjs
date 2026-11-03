@@ -42,7 +42,10 @@
  *     behind, and the write that lands names the recovery. Nothing is lost in that
  *     state (the in-process frontier still governs), nothing is silently claimed
  *     durable either, and `unsaved()` is how the caller reports the degradation
- *     instead of a healthy poll.
+ *     instead of a healthy poll. That report is SCOPED to the position the poll
+ *     could have written: a rejected write for one platform or channel is not
+ *     evidence about another, so `unsaved(platform, channel)` is what a poller
+ *     asks and the bare `unsaved()` is only the whole-store view.
  *   - A resume position expires where the platform rebuilds its id space. Telegram
  *     reassigns `update_id` after a week of inactivity, so an offset kept from before
  *     that reassignment filters out every new update. `resumeCursorFor` retires such
@@ -145,7 +148,8 @@ export function openclawCursorKey(platform, channel) {
 export function createOpenclawCursorStore({ storage, now = () => Date.now(), log = () => {}, maxTracked, maxCursorAgeMs } = {}) {
   const records = new Map()
   // Records whose in-memory state is ahead of storage: a deferred advance, or a
-  // write that has not landed yet. `unsaved()` exposes exactly this set.
+  // write that has not landed yet. `unsaved()` exposes exactly this set, scoped to
+  // one position when the caller names it.
   const dirty = new Set()
   const failedWrites = new Map()
   const canScan = Boolean(storage && typeof storage.scan === "function")
@@ -279,12 +283,30 @@ export function createOpenclawCursorStore({ storage, now = () => Date.now(), log
   }
 
   /**
-   * How many records are ahead of storage right now. Called after `flush()`, a
-   * non-zero answer is the reason a poll must report a degraded cursor instead of a
-   * healthy one: the advance is in memory and the document is not.
+   * How many records are ahead of storage right now, optionally scoped to the
+   * position the caller is reporting on. Called after `flush()`, a non-zero answer
+   * is the reason a poll must report a degraded cursor instead of a healthy one:
+   * the advance is in memory and the document is not.
+   *
+   * The scope is what keeps one broken domain from degrading another. A poll of
+   * Telegram that owed no write must not inherit a rejected Discord write, so a
+   * poller asks about ITS `(platform, channel)` and never about `dirty.size`.
+   *
+   * - `unsaved(platform, channel)` -> that one record (0 or 1).
+   * - `unsaved(platform)`          -> every channel of that platform.
+   * - `unsaved()`                 -> the whole store: the aggregate health view,
+   *                                  the pre-existing signature, and the answer
+   *                                  `stop()` style callers need.
    */
-  function unsaved() {
-    return dirty.size
+  function unsaved(platform, channel) {
+    if (typeof platform !== "string" || platform.length === 0) return dirty.size
+    const prefix = indexKey(platform, "")
+    if (channel === undefined || channel === null || `${channel}`.length === 0) {
+      let pending = 0
+      for (const key of dirty) if (key.startsWith(prefix)) pending += 1
+      return pending
+    }
+    return dirty.has(indexKey(platform, `${channel}`)) ? 1 : 0
   }
 
   /** The persisted advance boundary for a port, or `null` when none is recorded. */
