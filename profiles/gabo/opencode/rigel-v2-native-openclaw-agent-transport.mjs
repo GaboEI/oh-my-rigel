@@ -27,7 +27,9 @@
  * discovery of `/.well-known/agent-card.json` is lazy, on the first send
  * (`Contrato_Transportes_OpenClaw.md` §11.3). Credentials use the U3 reference
  * forms and fail closed per peer, naming the key and the variable but never a
- * value.
+ * value. The card is untrusted input: the endpoint it advertises is put through
+ * the same URL policy as the configured one before it is cached or handed the
+ * bearer token, and a URL that fails it is never repeated in a diagnostic.
  *
  * Only Node built-ins and sibling native modules are imported so the flat
  * laboratory runtime (no `node_modules`) can load this module.
@@ -90,6 +92,35 @@ const DEFINITIVE_SEND_FAILURES = new Set([
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "")
+}
+
+/**
+ * The endpoint policy of this client, applied to every URL it will cache and
+ * send a bearer token to.
+ *
+ * `validateGatewayUrl` is the same policy the resolver applies to the configured
+ * peer URL: https anywhere, plaintext http only on loopback. A URL that carries
+ * `userinfo` is refused on top of it, because a credential in a URL is a
+ * plaintext secret in a cached value (and `fetch` cannot even build a request
+ * from it). Returns the normalized endpoint, or `null`; the refused value is
+ * never returned, so no caller can leak it into a diagnostic.
+ */
+function safeEndpointUrl(value) {
+  if (typeof value !== "string" || value.length === 0) return null
+  if (!validateGatewayUrl(value)) return null
+  let parsed
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+  if (parsed.username.length > 0 || parsed.password.length > 0) return null
+  return trimTrailingSlash(value)
+}
+
+/** Peer name for a log line. Identity only: never the url, never the token. */
+function peerLabel(peer) {
+  return typeof peer?.name === "string" && peer.name.length > 0 ? peer.name : "<unnamed>"
 }
 
 /**
@@ -368,7 +399,13 @@ export function createOpenclawAgentTransport({ peers = [], fetchImpl = globalThi
   }
 
   async function discoverEndpoint(peer) {
-    const base = trimTrailingSlash(peer.url)
+    // The policy runs BEFORE the card is requested: a peer URL that cannot carry
+    // the token must not receive even the discovery probe.
+    const base = safeEndpointUrl(peer.url)
+    if (base === null) {
+      log(`[oh-my-rigel] Native V2 openclaw a2a peer ${peerLabel(peer)} has no usable url; nothing is dialled`)
+      return null
+    }
     if (base.endsWith(A2A_ENDPOINT_PATH)) return base
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), peer.clientTimeoutMs)
@@ -382,7 +419,17 @@ export function createOpenclawAgentTransport({ peers = [], fetchImpl = globalThi
       const body = JSON.parse(await response.text())
       const interfaces = Array.isArray(body?.supportedInterfaces) ? body.supportedInterfaces : []
       const advertised = interfaces.find((entry) => typeof entry?.url === "string" && entry.url.length > 0)
-      return advertised === undefined ? `${base}${A2A_ENDPOINT_PATH}` : trimTrailingSlash(advertised.url)
+      if (advertised === undefined) return `${base}${A2A_ENDPOINT_PATH}`
+      // The card is untrusted input. An endpoint outside the policy is refused
+      // outright instead of being cached and handed the bearer token; the
+      // documented endpoint of the validated base is the fallback, exactly as it
+      // is when the card is absent.
+      const endpoint = safeEndpointUrl(advertised.url)
+      if (endpoint === null) {
+        log(`[oh-my-rigel] Native V2 openclaw a2a peer ${peerLabel(peer)} advertised an endpoint outside the url policy; using the documented endpoint`)
+        return `${base}${A2A_ENDPOINT_PATH}`
+      }
+      return endpoint
     } catch {
       // The card is decorative (only `skills[]` filtering); the documented
       // endpoint is the correct fallback and the send below reports the truth.
@@ -399,7 +446,9 @@ export function createOpenclawAgentTransport({ peers = [], fetchImpl = globalThi
     const cached = endpoints.get(peerName)
     if (cached !== undefined) return cached
     const resolved = await discoverEndpoint(peer)
-    endpoints.set(peerName, resolved)
+    // A refused URL is not cached: the cache holds endpoints that passed the
+    // policy, never the absence of one.
+    if (resolved !== null) endpoints.set(peerName, resolved)
     return resolved
   }
 
@@ -412,7 +461,10 @@ export function createOpenclawAgentTransport({ peers = [], fetchImpl = globalThi
     const peer = peerIndex.get(peerName)
     if (peer === undefined) return { ok: false, errorClass: "unknown-peer" }
     const endpoint = await endpointFor(peerName)
-    if (endpoint === null) return { ok: false, errorClass: "missing-url" }
+    // The only ways to get here are an unusable peer URL (the unknown peer is
+    // refused above), and both prove no request was made, so the record can be
+    // settled instead of reported lost.
+    if (endpoint === null) return { ok: false, errorClass: "invalid-url" }
     const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : peer.clientTimeoutMs
     const controller = new AbortController()
     let timedOut = false

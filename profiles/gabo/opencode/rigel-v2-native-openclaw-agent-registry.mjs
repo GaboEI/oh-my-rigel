@@ -247,6 +247,25 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   }
 
   /**
+   * Sessions that own a conversation's durable records (§7).
+   *
+   * The responder's binding map is process-local, so it cannot answer "who owned
+   * this conversation before the restart?"; the record can. A hydrated
+   * conversation therefore stays bound to its session and a second session that
+   * names the same `contextId` is refused instead of sharing the remote history.
+   * Stale records are ignored, exactly like `lookup`, so an expired conversation
+   * is claimable again.
+   */
+  function sessionOwners(peer, contextId) {
+    if (!isNonEmptyString(peer) || !isNonEmptyString(contextId)) return []
+    const owners = new Set()
+    for (const record of recordsFor(peer, contextId)) {
+      if (isFresh(record)) owners.add(record.sessionID)
+    }
+    return [...owners]
+  }
+
+  /**
    * The task OpenClaw's `completeNext` would complete: the OLDEST pending task of
    * the conversation that has NOT been sent yet. `null` while a send of that
    * conversation is in flight, which is exactly what keeps two sends from
@@ -425,6 +444,7 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     prune,
     nextPendingFor,
     hasInflight,
+    sessionOwners,
     pendingCount,
     inflightCount,
     list: () => [...map.values()].map((record) => ({ ...record })),
