@@ -50,7 +50,7 @@ import {
   resolveNativePluginConfig,
 } from "./opencode/rigel-v2-native-config.mjs"
 import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
-import { rewriteLegacyDelegationToolExamples } from "./opencode/rigel-v2-native-prompt-tools.mjs"
+import { rewriteLegacyDelegationToolExamples } from "./build/rigel-v2-native-prompt-tools.mjs"
 import { auditOpenclawSecretRefs } from "./opencode/rigel-v2-native-openclaw-secrets.mjs"
 import { buildIsolatedV2Env } from "./isolated-v2-env.mjs"
 

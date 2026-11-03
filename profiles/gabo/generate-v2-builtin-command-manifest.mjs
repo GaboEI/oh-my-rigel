@@ -19,7 +19,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadBuiltinCommands } from "../../packages/omo-opencode/src/features/builtin-commands/commands.ts"
-import { rewriteLegacyDelegationToolExamples } from "./opencode/rigel-v2-native-prompt-tools.mjs"
+import { rewriteLegacyDelegationToolExamples } from "./build/rigel-v2-native-prompt-tools.mjs"
 
 /** The V1 builtin commands migrated by this surface, in V1 declaration order. */
 export const BUILTIN_COMMAND_NAMES = Object.freeze(["refactor", "remove-ai-slops", "handoff", "hyperplan"])
