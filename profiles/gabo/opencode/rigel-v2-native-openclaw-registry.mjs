@@ -16,9 +16,20 @@
  *   - removed for a deleted session;
  *   - pruned after 24 hours, like `MAX_AGE_MS`.
  *
- * A process-local Map is the working index; storage is the durable mirror. When
- * the host exposes no storage domain (a unit fixture or a degraded host) the map
- * still works, so the surface degrades instead of throwing.
+ * Every removal deletes the storage key a record REALLY occupies, never a key
+ * derived from the record's value. Those are not always the same key: the chat
+ * identity changed after records existed on disk, so a record written by the
+ * pre-fix writer holds `sha1(platform\0 messageId)` while its value already names
+ * a chat. Re-deriving on removal deleted a key that never existed, the durable
+ * record survived, and the next process re-indexed the correlation of a session
+ * the user had already deleted. The scanned key is therefore carried WITH the
+ * record (the durable half below), and hydrate never rewrites it.
+ *
+ * The registry keeps two halves. `durable` is every record this process wrote or
+ * scanned, under its real storage key; `index` is one live winner per identity,
+ * fresh only, which is what `lookup`, `size()` and `list()` answer from. When the
+ * host exposes no storage domain (a unit fixture or a degraded host) both halves
+ * still work in memory, so the surface degrades instead of throwing.
  */
 import { createHash } from "node:crypto"
 import { normalizePlatform } from "./rigel-v2-native-openclaw-core.mjs"
@@ -92,7 +103,11 @@ function keyFor(platform, messageId, scope = "") {
  * mappings written by a previous process are visible.
  */
 export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_MAX_AGE_MS, now = () => Date.now(), log = () => {} } = {}) {
-  const map = new Map()
+  // Every record this process wrote or scanned, under the storage key it really
+  // occupies. This is the durable half: removal deletes these keys verbatim.
+  const durable = new Map()
+  // One live winner per identity, fresh only. Never a source of storage keys.
+  const index = new Map()
   const canPersist = Boolean(storage && typeof storage.set === "function" && typeof storage.get === "function")
   const canScan = Boolean(storage && typeof storage.scan === "function")
   const canRemove = Boolean(storage && typeof storage.remove === "function")
@@ -102,8 +117,48 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
     return Number.isFinite(created) && now() - created <= maxAgeMs
   }
 
-  function remember(mapping) {
-    map.set(indexKey(mapping.platform, mapping.messageId, scopeOf(mapping)), mapping)
+  function identityOf(mapping) {
+    return indexKey(mapping.platform, mapping.messageId, scopeOf(mapping))
+  }
+
+  /**
+   * Record one mapping under the key that holds it.
+   *
+   * `newestWins` is the hydration rule: two durable records can describe one
+   * identity across the identity change (the older pre-fix half was never cleaned
+   * up), and the answer a reader must get is the newest one, not whichever half
+   * the scan happened to return last. `register()` is the opposite case - a write
+   * that just happened is the truth - so it wins unconditionally.
+   */
+  function remember(mapping, storageKey, { newestWins = false } = {}) {
+    durable.set(storageKey, mapping)
+    const identity = identityOf(mapping)
+    const currentKey = index.get(identity)
+    if (newestWins && currentKey !== undefined) {
+      const current = durable.get(currentKey)
+      if (current !== undefined && Date.parse(current.createdAt) >= Date.parse(mapping.createdAt)) return
+    }
+    index.set(identity, storageKey)
+  }
+
+  /** Forget one durable key and unindex it only if it was still the winner. */
+  function forget(storageKey) {
+    const mapping = durable.get(storageKey)
+    durable.delete(storageKey)
+    if (mapping === undefined) return null
+    const identity = identityOf(mapping)
+    if (index.get(identity) === storageKey) index.delete(identity)
+    return mapping
+  }
+
+  /** Best-effort durable delete of an exact key. Never re-derives one. */
+  function removeDurable(storageKey) {
+    if (!canRemove) return
+    try {
+      void Promise.resolve(storage.remove(storageKey)).catch(() => {})
+    } catch {
+      // best effort: the in-memory halves are already consistent
+    }
   }
 
   async function hydrate() {
@@ -113,8 +168,22 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
       const entries = Array.isArray(page?.entries) ? page.entries : []
       for (const entry of entries) {
         const value = entry?.value
-        if (!isValidMapping(value) || !isFresh(value)) continue
-        remember(value)
+        if (!isValidMapping(value)) continue
+        // A record with no readable storage key cannot be removed later without
+        // inventing a key, and inventing one is exactly the defect this hydration
+        // repairs. Fail closed: do not index what cannot be deleted.
+        const storageKey = typeof entry?.key === "string" && entry.key.length > 0 ? entry.key : null
+        if (storageKey === null) {
+          log("[oh-my-rigel] Native V2 openclaw registry skipped a record whose storage key is not a string")
+          continue
+        }
+        if (!isFresh(value)) {
+          // Aged records stay in the durable half so `prune()` deletes the key
+          // they really occupy instead of leaving it in storage forever.
+          durable.set(storageKey, value)
+          continue
+        }
+        remember(value, storageKey, { newestWins: true })
       }
     } catch (error) {
       log(`[oh-my-rigel] Native V2 openclaw registry hydrate failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -135,10 +204,13 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
     }
     const normalized = { ...mapping, platform: normalizePlatform(mapping.platform) }
     const scope = scopeOf(normalized)
-    remember(normalized)
+    // The write is the newest truth for this identity, and it names the key it
+    // occupies, so the durable half never has to re-derive one later.
+    const storageKey = keyFor(normalized.platform, normalized.messageId, scope)
+    remember(normalized, storageKey)
     if (canPersist) {
       try {
-        await storage.set(keyFor(normalized.platform, normalized.messageId, scope), normalized)
+        await storage.set(storageKey, normalized)
       } catch (error) {
         log(`[oh-my-rigel] Native V2 openclaw registry persist failed: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -153,12 +225,17 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
    * never silently lost.
    */
   function read(platform, messageId, scope) {
-    const key = indexKey(platform, messageId, scope)
-    const mapping = map.get(key)
-    if (!mapping) return null
+    const identity = indexKey(platform, messageId, scope)
+    const storageKey = index.get(identity)
+    if (storageKey === undefined) return null
+    const mapping = durable.get(storageKey)
+    if (mapping === undefined) {
+      index.delete(identity)
+      return null
+    }
     if (!isFresh(mapping)) {
-      map.delete(key)
-      if (canRemove) void storage.remove(keyFor(platform, messageId, scope)).catch(() => {})
+      forget(storageKey)
+      removeDurable(storageKey)
       return null
     }
     return mapping
@@ -175,13 +252,13 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
 
   async function prune() {
     let removed = 0
-    for (const [key, mapping] of [...map.entries()]) {
+    for (const [storageKey, mapping] of [...durable.entries()]) {
       if (isFresh(mapping)) continue
-      map.delete(key)
+      forget(storageKey)
       removed += 1
       if (canRemove) {
         try {
-          await storage.remove(keyFor(mapping.platform, mapping.messageId, scopeOf(mapping)))
+          await storage.remove(storageKey)
         } catch {
           // best effort; the in-memory entry is already gone
         }
@@ -193,13 +270,15 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
   async function removeSession(sessionID) {
     if (typeof sessionID !== "string" || sessionID.length === 0) return 0
     let removed = 0
-    for (const [key, mapping] of [...map.entries()]) {
+    // Per durable record, not per identity: two records can describe one
+    // identity, and deleting one session must not silence the other.
+    for (const [storageKey, mapping] of [...durable.entries()]) {
       if (mapping.sessionID !== sessionID) continue
-      map.delete(key)
+      forget(storageKey)
       removed += 1
       if (canRemove) {
         try {
-          await storage.remove(keyFor(mapping.platform, mapping.messageId, scopeOf(mapping)))
+          await storage.remove(storageKey)
         } catch {
           // best effort
         }
@@ -214,7 +293,11 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
     lookup,
     prune,
     removeSession,
-    list: () => [...map.values()],
-    size: () => map.size,
+    // The live winners, one mapping per identity: a record known only as a
+    // shadow of another (or a stale one waiting for `prune`) is not listed.
+    list: () => [...index.values()]
+      .map((storageKey) => durable.get(storageKey))
+      .filter((mapping) => mapping !== undefined),
+    size: () => index.size,
   }
 }
