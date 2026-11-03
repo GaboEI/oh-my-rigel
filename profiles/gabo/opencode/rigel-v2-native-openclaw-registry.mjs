@@ -146,6 +146,9 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
   const canRead = Boolean(storage && typeof storage.get === "function")
   const canScan = Boolean(storage && typeof storage.scan === "function")
   const canRemove = Boolean(storage && typeof storage.remove === "function")
+  // A registration can await storage while a session-deleted event arrives. The
+  // generation makes that registration stale without serializing other sessions.
+  const registrationStates = new Map()
   // The displaced-key notice is a state of the store, not of a message: one line
   // per process keeps a chat-less gateway from flooding the log every delivery.
   let loggedDisplaced = false
@@ -157,6 +160,41 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
 
   function identityOf(mapping) {
     return indexKey(mapping.platform, mapping.messageId, scopeOf(mapping))
+  }
+
+  function beginRegistration(sessionID) {
+    let state = registrationStates.get(sessionID)
+    if (state === undefined) {
+      state = { generation: 0, pending: 0 }
+      registrationStates.set(sessionID, state)
+    }
+    state.pending += 1
+    return state.generation
+  }
+
+  function isRegistrationCurrent(sessionID, generation) {
+    return registrationStates.get(sessionID)?.generation === generation
+  }
+
+  function finishRegistration(sessionID) {
+    const state = registrationStates.get(sessionID)
+    if (state === undefined) return
+    state.pending -= 1
+    if (state.pending === 0) registrationStates.delete(sessionID)
+  }
+
+  function invalidateRegistrations(sessionID) {
+    const state = registrationStates.get(sessionID)
+    if (state !== undefined) state.generation += 1
+  }
+
+  async function removePersisted(storageKey) {
+    if (!canRemove) return
+    try {
+      await storage.remove(storageKey)
+    } catch {
+      // best effort: the in-memory halves are already consistent
+    }
   }
 
   /** True when `mapping` cannot occupy `storageKey` without changing its identity. */
@@ -312,34 +350,45 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
       return false
     }
     const normalized = { ...mapping, platform: normalizePlatform(mapping.platform) }
-    const identity = identityOf(normalized)
-    // The write is the newest truth for this identity, and it names the key it
-    // occupies, so the durable half never has to re-derive one later. The key is
-    // allocated, not assumed: a slot that already represents another identity is
-    // left alone and the write moves to a displaced key, so neither record is
-    // overwritten and every index entry keeps pointing at its own identity.
-    const ownKey = keyFor(normalized.platform, normalized.messageId, scopeOf(normalized))
-    const storageKey = await allocateStorageKey(identity, ownKey)
-    if (storageKey === null) {
-      log("[oh-my-rigel] Native V2 openclaw registry refused a mapping because every candidate storage key is held by another identity")
-      return false
-    }
-    if (!remember(normalized, storageKey)) {
-      log("[oh-my-rigel] Native V2 openclaw registry refused a mapping that would replace the identity its storage key already represents")
-      return false
-    }
-    if (storageKey !== ownKey && !loggedDisplaced) {
-      loggedDisplaced = true
-      log("[oh-my-rigel] Native V2 openclaw registry stored a mapping under a displaced key because its own key holds another identity")
-    }
-    if (canPersist) {
-      try {
-        await storage.set(storageKey, normalized)
-      } catch (error) {
-        log(`[oh-my-rigel] Native V2 openclaw registry persist failed: ${error instanceof Error ? error.message : String(error)}`)
+    const generation = beginRegistration(normalized.sessionID)
+    try {
+      const identity = identityOf(normalized)
+      // The write is the newest truth for this identity, and it names the key it
+      // occupies, so the durable half never has to re-derive one later. The key is
+      // allocated, not assumed: a slot that already represents another identity is
+      // left alone and the write moves to a displaced key, so neither record is
+      // overwritten and every index entry keeps pointing at its own identity.
+      const ownKey = keyFor(normalized.platform, normalized.messageId, scopeOf(normalized))
+      const storageKey = await allocateStorageKey(identity, ownKey)
+      if (!isRegistrationCurrent(normalized.sessionID, generation)) return false
+      if (storageKey === null) {
+        log("[oh-my-rigel] Native V2 openclaw registry refused a mapping because every candidate storage key is held by another identity")
+        return false
       }
+      if (!remember(normalized, storageKey)) {
+        log("[oh-my-rigel] Native V2 openclaw registry refused a mapping that would replace the identity its storage key already represents")
+        return false
+      }
+      if (storageKey !== ownKey && !loggedDisplaced) {
+        loggedDisplaced = true
+        log("[oh-my-rigel] Native V2 openclaw registry stored a mapping under a displaced key because its own key holds another identity")
+      }
+      if (canPersist) {
+        try {
+          await storage.set(storageKey, normalized)
+        } catch (error) {
+          log(`[oh-my-rigel] Native V2 openclaw registry persist failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        if (!isRegistrationCurrent(normalized.sessionID, generation)) {
+          if (durable.get(storageKey) === normalized) forget(storageKey)
+          await removePersisted(storageKey)
+          return false
+        }
+      }
+      return true
+    } finally {
+      finishRegistration(normalized.sessionID)
     }
-    return true
   }
 
   /**
@@ -393,6 +442,7 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
 
   async function removeSession(sessionID) {
     if (typeof sessionID !== "string" || sessionID.length === 0) return 0
+    invalidateRegistrations(sessionID)
     let removed = 0
     // Per durable record, not per identity: two records can describe one
     // identity, and deleting one session must not silence the other.
