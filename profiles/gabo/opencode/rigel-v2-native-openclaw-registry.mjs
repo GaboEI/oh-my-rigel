@@ -25,6 +25,17 @@
  * the user had already deleted. The scanned key is therefore carried WITH the
  * record (the durable half below), and hydrate never rewrites it.
  *
+ * One storage key holds one identity, and a write never changes which identity a
+ * key holds. A chat-scoped record and a chat-less record of the same
+ * `(platform, messageId)` are TWO identities that coexist: the scoped one answers
+ * `lookup(platform, messageId, chat)`, the unscoped one is the pre-fix/legacy
+ * identity that a scoped lookup falls back to. The chat-less identity keeps the
+ * pre-fix key while that slot is free (byte compatibility with the previous
+ * build); when the slot already holds another identity, the write moves to a
+ * displaced key that no identity can derive, so neither record is overwritten.
+ * Every removal still deletes the key a record really occupies, which is what
+ * keeps `removeSession()` and `prune()` correct for both halves.
+ *
  * The registry keeps two halves. `durable` is every record this process wrote or
  * scanned, under its real storage key; `index` is one live winner per identity,
  * fresh only, which is what `lookup`, `size()` and `list()` answer from. When the
@@ -98,6 +109,29 @@ function keyFor(platform, messageId, scope = "") {
 }
 
 /**
+ * The key a write falls back to when the identity's own slot already holds a
+ * record of ANOTHER identity.
+ *
+ * Domain-separated from every identity key: `keyFor` hashes an identity that
+ * always starts with `<platform>\0`, and this hashes one that starts with a
+ * marker no platform can be, so a displaced key can never equal the key another
+ * identity derives. The attempt segment keeps the derivation deterministic, so a
+ * repeated write of one identity reuses its displaced key instead of piling up
+ * new ones.
+ */
+function displacedKeyFor(identity, attempt) {
+  const hash = createHash("sha1").update(`\u0002displaced\u0000${attempt}\u0000${identity}`).digest("hex")
+  return `${OPENCLAW_REGISTRY_PREFIX}${hash}`
+}
+
+/**
+ * Candidate keys a write may try before giving up. A hydrated store never spends
+ * the budget (its own records are outnumbered by the candidates); the floor only
+ * matters when storage holds shapes this process has not seen.
+ */
+const DISPLACED_KEY_ATTEMPTS = 8
+
+/**
  * Create the registry. `storage` is the V2 plugin storage domain; it may be
  * absent. `hydrate()` should be awaited once before the inbound poller starts so
  * mappings written by a previous process are visible.
@@ -109,8 +143,12 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
   // One live winner per identity, fresh only. Never a source of storage keys.
   const index = new Map()
   const canPersist = Boolean(storage && typeof storage.set === "function" && typeof storage.get === "function")
+  const canRead = Boolean(storage && typeof storage.get === "function")
   const canScan = Boolean(storage && typeof storage.scan === "function")
   const canRemove = Boolean(storage && typeof storage.remove === "function")
+  // The displaced-key notice is a state of the store, not of a message: one line
+  // per process keeps a chat-less gateway from flooding the log every delivery.
+  let loggedDisplaced = false
 
   function isFresh(mapping) {
     const created = Date.parse(mapping.createdAt)
@@ -121,8 +159,67 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
     return indexKey(mapping.platform, mapping.messageId, scopeOf(mapping))
   }
 
+  /** True when `mapping` cannot occupy `storageKey` without changing its identity. */
+  function displaces(storageKey, mapping) {
+    const occupant = durable.get(storageKey)
+    return occupant !== undefined && identityOf(occupant) !== identityOf(mapping)
+  }
+
+  /**
+   * Whether `storageKey` may hold `identity`.
+   *
+   * A key this process knows is usable only when it already holds the SAME
+   * identity (a legitimate rewrite of one correlation); a key that holds ANOTHER
+   * identity is never overwritten, because the index of that identity points at
+   * it and replacing the value would resolve its readers to a different session
+   * (finding B3).
+   *
+   * A key this process has not seen is asked of storage, so a write that lands
+   * before `hydrate()` (or after a hydrate that failed) still cannot overwrite the
+   * record really stored there. An unreadable value or a failed read is treated as
+   * occupied: allocating a displaced key is harmless, overwriting a record is not.
+   */
+  async function mayUseKey(storageKey, identity) {
+    const known = durable.get(storageKey)
+    if (known !== undefined) return identityOf(known) === identity
+    if (!canRead) return true
+    try {
+      const stored = await storage.get(storageKey)
+      if (stored === undefined || stored === null) return true
+      if (!isValidMapping(stored)) return false
+      return identityOf(stored) === identity
+    } catch (error) {
+      log(`[oh-my-rigel] Native V2 openclaw registry could not read a candidate storage key: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }
+
+  /**
+   * The key a write may use for `identity`.
+   *
+   * The identity's own key is preferred and accepted when it is free or already
+   * holds the same identity; otherwise the write moves to a domain-separated
+   * displaced key. The attempt budget is `max(8, durable.size + 1)`: the records
+   * this process knows are always outnumbered by the candidates, so a hydrated
+   * store never spends the budget. `null` therefore means "a store full of shapes
+   * this build cannot represent", and `register()` fails closed instead of
+   * overwriting one of them.
+   */
+  async function allocateStorageKey(identity, ownKey) {
+    const attempts = Math.max(DISPLACED_KEY_ATTEMPTS, durable.size + 1)
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const candidate = attempt === 0 ? ownKey : displacedKeyFor(identity, attempt)
+      if (await mayUseKey(candidate, identity)) return candidate
+    }
+    return null
+  }
+
   /**
    * Record one mapping under the key that holds it.
+   *
+   * One key, one identity: a write that would change which identity a key
+   * represents is REFUSED (returns false), because the index of the identity
+   * already mapped there would then answer with a different session.
    *
    * `newestWins` is the hydration rule: two durable records can describe one
    * identity across the identity change (the older pre-fix half was never cleaned
@@ -131,14 +228,16 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
    * that just happened is the truth - so it wins unconditionally.
    */
   function remember(mapping, storageKey, { newestWins = false } = {}) {
+    if (displaces(storageKey, mapping)) return false
     durable.set(storageKey, mapping)
     const identity = identityOf(mapping)
     const currentKey = index.get(identity)
     if (newestWins && currentKey !== undefined) {
       const current = durable.get(currentKey)
-      if (current !== undefined && Date.parse(current.createdAt) >= Date.parse(mapping.createdAt)) return
+      if (current !== undefined && Date.parse(current.createdAt) >= Date.parse(mapping.createdAt)) return true
     }
     index.set(identity, storageKey)
+    return true
   }
 
   /** Forget one durable key and unindex it only if it was still the winner. */
@@ -166,6 +265,7 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
     try {
       const page = await storage.scan({ prefix: OPENCLAW_REGISTRY_PREFIX })
       const entries = Array.isArray(page?.entries) ? page.entries : []
+      let declined = 0
       for (const entry of entries) {
         const value = entry?.value
         if (!isValidMapping(value)) continue
@@ -179,11 +279,20 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
         }
         if (!isFresh(value)) {
           // Aged records stay in the durable half so `prune()` deletes the key
-          // they really occupy instead of leaving it in storage forever.
+          // they really occupy instead of leaving it in storage forever. A record
+          // that would change the identity of a key this process already knows is
+          // kept out of the durable half; the existing record stays intact.
+          if (displaces(storageKey, value)) {
+            declined += 1
+            continue
+          }
           durable.set(storageKey, value)
           continue
         }
-        remember(value, storageKey, { newestWins: true })
+        if (!remember(value, storageKey, { newestWins: true })) declined += 1
+      }
+      if (declined > 0) {
+        log("[oh-my-rigel] Native V2 openclaw registry kept the identity a storage key already represents and ignored the record that would replace it")
       }
     } catch (error) {
       log(`[oh-my-rigel] Native V2 openclaw registry hydrate failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -203,11 +312,26 @@ export function createOpenclawRegistry({ storage, maxAgeMs = OPENCLAW_REGISTRY_M
       return false
     }
     const normalized = { ...mapping, platform: normalizePlatform(mapping.platform) }
-    const scope = scopeOf(normalized)
+    const identity = identityOf(normalized)
     // The write is the newest truth for this identity, and it names the key it
-    // occupies, so the durable half never has to re-derive one later.
-    const storageKey = keyFor(normalized.platform, normalized.messageId, scope)
-    remember(normalized, storageKey)
+    // occupies, so the durable half never has to re-derive one later. The key is
+    // allocated, not assumed: a slot that already represents another identity is
+    // left alone and the write moves to a displaced key, so neither record is
+    // overwritten and every index entry keeps pointing at its own identity.
+    const ownKey = keyFor(normalized.platform, normalized.messageId, scopeOf(normalized))
+    const storageKey = await allocateStorageKey(identity, ownKey)
+    if (storageKey === null) {
+      log("[oh-my-rigel] Native V2 openclaw registry refused a mapping because every candidate storage key is held by another identity")
+      return false
+    }
+    if (!remember(normalized, storageKey)) {
+      log("[oh-my-rigel] Native V2 openclaw registry refused a mapping that would replace the identity its storage key already represents")
+      return false
+    }
+    if (storageKey !== ownKey && !loggedDisplaced) {
+      loggedDisplaced = true
+      log("[oh-my-rigel] Native V2 openclaw registry stored a mapping under a displaced key because its own key holds another identity")
+    }
     if (canPersist) {
       try {
         await storage.set(storageKey, normalized)
