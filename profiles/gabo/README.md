@@ -21,11 +21,12 @@ It contains no credentials, accounts, model catalog, SSH targets, database setti
 ## Validation
 
 **Live validation boundary (aligned with `.omo/rules/protect-opencode-v1.md`):** live validation runs
-against the normally installed V2 user surface produced by
-`profiles/gabo/rigel-v2-user-install.mjs`, driven the way a real user drives it, inside the sandboxed
-environment the boundary requires, with a snapshot taken before the change and a verified rollback
-after it. The runners described below are historical: they are kept for reference, they are not a
-live gate, and none of them substitutes for the installed surface.
+against a V2 user surface that `profiles/gabo/rigel-v2-user-install.mjs` installs inside the sandbox
+the boundary requires, with `--home`, `--state`, and `--config` pointed at that sandbox, and driven
+the way a real user drives it, with a snapshot taken before the change and a verified rollback after
+it. The sandbox is the mutable test surface; the real user installation stays read-only. The runners
+described below are historical: they are kept for reference, they are not a live gate, and none of
+them substitutes for the installed surface.
 
 **Dark goal vendor:** `node profiles/gabo/rigel-v2-goal-vendor.mjs verify` checks the pinned artifact,
 its closure, the upstream `LICENSE` and the deterministic `NOTICE`; `materialize --out <dir>` lays the

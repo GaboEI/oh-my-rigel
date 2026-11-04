@@ -60,12 +60,20 @@ This skill provides no authorization to repair, restart, or inspect the real ins
 
 ## Live validation: validate hard, leave nothing behind
 
-Live validation runs against the normally installed V2 user surface that
-`profiles/gabo/rigel-v2-user-install.mjs` produces, driven the way a real user drives it, and
-contained by the boundary above. Inside that surface you have standing authorization for the full
-operating loop, without asking per action: install, uninstall, reinstall, run real sessions with
-real agents, break things, fix them, restart the OpenCode service, and reboot the machine when it
-is saturated. A live run costs provider budget, so spend it on observables rather than on blind endurance runs.
+Live validation runs against a V2 user surface that `profiles/gabo/rigel-v2-user-install.mjs`
+installs inside the sandbox the boundary above requires, named explicitly on every invocation
+(`--home <sandbox-home> --state <sandbox-home>/oh-my-rigel --config
+<sandbox-home>/.config/opencode/opencode.json`), and driven the way a real user drives it. On that
+sandboxed surface you have standing authorization for the full operating loop, without asking per
+action: install, uninstall, reinstall, run real sessions with real agents, break things, fix them,
+make local commits, and take the technical decisions the work needs. A live run costs provider
+budget, so spend it on observables rather than on blind endurance runs.
+
+That authorization ends at the sandbox. It never covers the host or the real user installation: no
+writes, reloads, restarts, stops, or service restarts against either, and no machine reboot. If the
+sandbox is saturated or wedged, discard it and build a fresh one inside the boundary's own cleanup
+scope. A restart or reboot that would reach anything outside the sandbox is not authorized by this
+skill and needs a separate, explicit, task-specific instruction from Gabo.
 
 The single condition on that authorization is that the validated surface is not a landfill. It
 exists to be used and validated thoroughly, not to accumulate:

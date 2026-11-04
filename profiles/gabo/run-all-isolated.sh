@@ -4,7 +4,9 @@
 # Layers:
 #   1. Bun unit tests for the native V2 runtime modules.
 #   2. Isolated V2 QA contracts (each spawns the real V2 lab binary with a
-#      temporary HOME/XDG sandbox and a deterministic fake provider).
+#      temporary HOME/XDG sandbox and a deterministic fake provider) plus the
+#      session-authority preflight, which runs directly on the checkout: it
+#      uses no container and launches no OpenCode process.
 #   3. Historical container lab runners. They are not the live gate and never
 #      required: layer 3 runs only under an explicit RIGEL_SUITE_DOCKER=1
 #      opt-in, and is skipped with a declared reason otherwise.
@@ -72,6 +74,10 @@ if [ "${RIGEL_LAB_REFRESH:-0}" = "1" ]; then
 else
   run_step "bash: run-lab-acceptance.sh" bash "$suite_dir/run-lab-acceptance.sh"
 fi
+# Direct layer: the session-authority preflight runs on the checkout itself. It
+# uses no container and launches no OpenCode process, so it must never be gated
+# behind the layer 3 container opt-in.
+run_step "bash: run-session-authority-preflight.sh" bash "$suite_dir/run-session-authority-preflight.sh"
 if [ "${RIGEL_SUITE_ALLOW_NODE_CONTRACTS:-0}" = "1" ]; then
   # The rules-injector contract is hermetic (spawns no OpenCode, no --standalone) and
   # belongs to the authorized lab lane via run-lab-acceptance.sh, not this host-spawn lane.
@@ -85,7 +91,6 @@ fi
 echo "layer 3: historical container lab runners (opt-in via RIGEL_SUITE_DOCKER=1)"
 run_docker_step "bash: run-v2-isolated.sh" bash "$suite_dir/run-v2-isolated.sh"
 run_docker_step "bash: run-delegation-preflight.sh" bash "$suite_dir/run-delegation-preflight.sh"
-run_docker_step "bash: run-session-authority-preflight.sh" bash "$suite_dir/run-session-authority-preflight.sh"
 run_docker_step "bash: run-mcp-policy-preflight.sh" bash "$suite_dir/run-mcp-policy-preflight.sh"
 run_docker_step "bash: run-delegation-e2e.sh" bash "$suite_dir/run-delegation-e2e.sh"
 
