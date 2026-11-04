@@ -14,7 +14,8 @@
  * renders "error". No value is ever inferred or invented.
  *
  * Representations: a leading flat "Agents per session" block (G4: one
- * `agent model` row per session whose status was read, no tree) followed by R2
+ * `agent model` row per session that is not a category entry, exposes an agent,
+ * and whose read status is `idle` or `running`, no tree) followed by R2
  * "Sessions" and R3 "Models"/"Agents"/"Providers" (the catalog representation),
  * each with its own isolated state, all inside the one <text> node the adapter
  * renders.
@@ -350,7 +351,10 @@ export function buildPanelModel(reads = {}) {
 
 /**
  * Title of the agent block (G4). It names exactly what its rows show: the agent
- * and effective model of each session whose status this panel actually read.
+ * and effective model of each eligible session, meaning a session that is not a
+ * category entry, exposes an agent, and whose read status is `idle` or `running`.
+ * A session with no read status, or with a status outside that set (`terminated`),
+ * contributes no row even if its status was read.
  *
  * It makes NO activity claim. I-3 admits one status read, for the
  * slot-selected session, so the panel cannot know whether any other listed
@@ -392,7 +396,10 @@ function sectionLines(section) {
 }
 
 /**
- * G4 keeps the agent of every session whose status was read visible; G5's tree
+ * G4 keeps the agent of each row-eligible session visible: a row exists only for
+ * a session that is not a category entry, exposes an agent, and whose read status
+ * is `idle` or `running`, so a session with no read status or with a status
+ * outside that set (`terminated`) is omitted. G5's tree
  * form (a `*` main row, indented children, `|_` nesting) and its enumeration stay
  * BLOQUEADO until the host demonstrates `parentID`, depth and a stable enumeration,
  * so this block renders a FLAT list: no glyph, no indentation level, no counter,
@@ -455,12 +462,13 @@ function bodyLines(model) {
 }
 
 /**
- * The read-session information a compact block may keep: a session row is
- * rendered only when its status was actually read. A session whose status was
- * never read keeps no state claim, so it contributes no line and no invented
- * value. `status` is the model's already-derived field, never a fresh read.
+ * The read-status session rows a compact block may keep: a session row is
+ * rendered only when its `status` is a non-empty string, meaning the status was
+ * actually read. A session whose status was never read keeps no state claim, so
+ * it contributes no line and no invented value. `status` is the model's
+ * already-derived field, never a fresh read.
  */
-function activeSessionLines(model) {
+function readStatusSessionLines(model) {
   const sections = isRecord(model) && Array.isArray(model.sections) ? model.sections : []
   const sessions = sections.find((section) => isRecord(section) && section.id === "sessions")
   if (!isRecord(sessions) || !Array.isArray(sessions.rows)) return []
@@ -483,7 +491,7 @@ export function layoutPanelLines(model, headerLine) {
   const header = fitLine(typeof headerLine === "string" ? headerLine : "")
   const full = [header, ...bodyLines(model)]
   if (full.length <= PANEL_MAX_LINES) return { mode: PANEL_LAYOUT.FULL, lines: full }
-  const compact = [header, ...activeSessionLines(model)]
+  const compact = [header, ...readStatusSessionLines(model)]
   if (compact.length <= PANEL_MAX_LINES) return { mode: PANEL_LAYOUT.COMPACT, lines: compact }
   return { mode: PANEL_LAYOUT.NONE, lines: [] }
 }
