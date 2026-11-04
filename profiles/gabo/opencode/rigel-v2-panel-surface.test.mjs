@@ -345,7 +345,7 @@ describe("#given the panel surface at the host boundary", () => {
     })
   })
 
-  describe("#given a roster longer than the observed terminal", () => {
+  describe("#given a roster longer than the rows the sidebar allots", () => {
     test("#then only the selected accessor status survives in the compact block", () => {
       const sessions = Array.from({ length: 120 }, (_, index) => ({ id: `ses_${index}`, agent: "atlas" }))
       const solid = stubSolid()
@@ -585,7 +585,7 @@ describe("#given an active session with an agent but no sourced model", () => {
 
     const lines = renderedText(fake, { sessionID: "ses_a" }).split("\n")
 
-    expect(lines).toContain("Active agents")
+    expect(lines).toContain("Agents per session")
     expect(lines).toContain("  - atlas -")
     expect(lines).not.toContain("  - atlas Catalog-only")
   })
@@ -607,7 +607,7 @@ describe("#given an active session with an agent but no sourced model", () => {
     const fake = fakeContext({ sessions: undefined, models: [], agents: [], providers: [] })
     createPanelSurface({ solid: stubSolid() }).setup(fake.context)
 
-    expect(renderedText(fake)).not.toContain("Active agents")
+    expect(renderedText(fake)).not.toContain("Agents per session")
   })
 })
 

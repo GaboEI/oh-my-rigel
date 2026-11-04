@@ -152,7 +152,7 @@ describe("#given the read-only panel core", () => {
   })
 
   describe("#given active V2 sessions and a rendered block", () => {
-    test("#then every active agent is visible as `agent model`, with `-` when none was sourced", () => {
+    test("#then every read session's agent is visible as `agent model`, with `-` when none was sourced", () => {
       const model = buildPanelModel({
         sessions: [
           { id: "ses_model", agent: "sisyphus", model: { providerID: "openai", modelID: "gpt-6" } },
@@ -163,11 +163,27 @@ describe("#given the read-only panel core", () => {
       })
 
       const lines = formatPanel(model).split("\n")
-      const start = lines.indexOf("Active agents")
+      const start = lines.indexOf("Agents per session")
 
       expect(start).toBeGreaterThan(-1)
       // The missing model is `-`, never the catalog entry listed further down.
       expect(lines.slice(start + 1, start + 3)).toEqual(["  - sisyphus openai/gpt-6", "  - atlas -"])
+    })
+
+    test("#then the block title claims the agent and model of each read session, never activity", () => {
+      const model = buildPanelModel({
+        sessions: [{ id: "ses_sel", agent: "atlas", model: "openai/gpt-6" }],
+        statusOf: () => "running",
+      })
+
+      const lines = formatPanel(model).split("\n")
+      const titleIndex = lines.indexOf("Agents per session")
+
+      expect(titleIndex).toBeGreaterThan(-1)
+      expect(lines[titleIndex + 1]).toBe("  - atlas openai/gpt-6")
+      // I-3 reads one status, for the slot-selected session. The panel cannot
+      // know the roster's activity, so the title may not name activity at all.
+      expect(lines[titleIndex]).not.toMatch(/active|activo|running|busy/i)
     })
 
     test("#then the block is a flat list with no tree glyph, indentation level or counter", () => {
@@ -175,7 +191,7 @@ describe("#given the read-only panel core", () => {
       const model = buildPanelModel({ sessions, statusOf: () => "running" })
 
       const lines = formatPanel(model).split("\n")
-      const start = lines.indexOf("Active agents")
+      const start = lines.indexOf("Agents per session")
       const rows = lines.slice(start + 1, start + 4)
 
       expect(rows).toEqual(["  - agent-1 -", "  - agent-2 -", "  - agent-3 -"])
@@ -202,7 +218,7 @@ describe("#given the read-only panel core", () => {
         { id: "ses_unread", title: "Title", status: null },
       ])
       const lines = formatPanel(model).split("\n")
-      const start = lines.indexOf("Active agents")
+      const start = lines.indexOf("Agents per session")
       const rows = lines.slice(start + 1).filter((line) => line.startsWith("  - ") && !line.includes("Title"))
 
       expect(rows).toEqual(["  - atlas -"])
@@ -219,7 +235,7 @@ describe("#given the read-only panel core", () => {
 
       for (const model of models) {
         const text = formatPanel(model)
-        expect(text).not.toContain("Active agents")
+        expect(text).not.toContain("Agents per session")
         expect(text).not.toContain("atlas")
       }
     })
@@ -231,7 +247,7 @@ describe("#given the read-only panel core", () => {
       })
 
       const lines = formatPanel(model).split("\n")
-      const row = lines[lines.indexOf("Active agents") + 1]
+      const row = lines[lines.indexOf("Agents per session") + 1]
 
       expect(displayWidth(row)).toBeLessThanOrEqual(PANEL_TEXT_WIDTH)
       expect(row.startsWith("  - agent-")).toBe(true)
@@ -296,11 +312,11 @@ describe("#given the read-only panel core", () => {
     })
   })
 
-  describe("#given a block longer than the observed terminal height", () => {
+  describe("#given a block longer than the rows the sidebar allots it", () => {
     const manySessions = (count, idOf = (index) => `ses_${index}`) =>
       Array.from({ length: count }, (_, index) => ({ id: idOf(index) }))
 
-    test("#then it keeps the header and the active-session row and omits the rest", () => {
+    test("#then it keeps the header and the read-session row and omits the rest", () => {
       const model = buildPanelModel({
         sessions: manySessions(PANEL_MAX_LINES - 5),
         titleOf: (id) => `Title ${id}`,
@@ -317,7 +333,7 @@ describe("#given the read-only panel core", () => {
       expect(layout.lines[0]).toBe("oh-my-rigel \u00b7 models")
       expect(layout.lines[1]).toBe("  - Title ses_0 [idle]")
       expect(layout.lines.length).toBeLessThanOrEqual(PANEL_MAX_LINES)
-      // Compact keeps the active information and drops the catalog sections.
+      // Compact keeps the read rows and drops the catalog sections.
       expect(layout.lines.join("\n")).not.toContain("Models")
       expect(layout.lines.join("\n")).not.toContain("no disponible")
     })
@@ -351,6 +367,56 @@ describe("#given the read-only panel core", () => {
         statusOf: () => "idle",
       })
       const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+      expect(layout.mode).toBe(PANEL_LAYOUT.NONE)
+      expect(layout.lines).toEqual([])
+    })
+  })
+
+  describe("#given the exact rows the sidebar allots this block", () => {
+    // The sealed F6c capture allots this block 52 rows from its header down to
+    // the last sidebar row (PANEL_MAX_LINES). A rendered block is header +
+    // location + the Sessions title with one row per session + three two-line
+    // catalog sections, so its length is 9 + sessions: 43 sessions fill it to
+    // exactly the allotment.
+    const blockOf = (sessionCount) =>
+      buildPanelModel({
+        location: { directory: "/w" },
+        sessions: Array.from({ length: sessionCount }, (_, index) => ({ id: `ses_${index}` })),
+        statusOf: () => "idle",
+        models: [],
+        agents: [],
+        providers: [],
+      })
+
+    test("#then a block of exactly the allotment renders in full", () => {
+      const model = blockOf(43)
+      expect(formatPanel(model).split("\n").length).toBe(PANEL_MAX_LINES)
+
+      const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+
+      expect(layout.mode).toBe(PANEL_LAYOUT.FULL)
+      expect(layout.lines).toHaveLength(PANEL_MAX_LINES)
+    })
+
+    test("#then one row past the allotment degrades to compact instead of overflowing", () => {
+      const model = blockOf(44)
+      expect(formatPanel(model).split("\n").length).toBe(PANEL_MAX_LINES + 1)
+
+      const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+
+      expect(layout.mode).toBe(PANEL_LAYOUT.COMPACT)
+      // Header plus one row per session; the catalog sections are dropped.
+      expect(layout.lines).toHaveLength(1 + 44)
+    })
+
+    test("#then a compact block that still exceeds the allotment emits no line at all", () => {
+      // Every row carries a read status, so compact keeps all of them: 52 rows
+      // plus the header is 53, one past the allotment, and the whole block is 61.
+      const model = blockOf(52)
+      expect(formatPanel(model).split("\n").length).toBe(61)
+
+      const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+
       expect(layout.mode).toBe(PANEL_LAYOUT.NONE)
       expect(layout.lines).toEqual([])
     })

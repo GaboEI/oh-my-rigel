@@ -13,13 +13,15 @@
  * demonstrated-but-empty list renders the section's empty state; a failed read
  * renders "error". No value is ever inferred or invented.
  *
- * Representations: a leading flat "Active agents" block (G4: one row per active
- * session, `agent model`, no tree) followed by R2 "Sessions" and R3
- * "Models"/"Agents"/"Providers" (the catalog representation), each with its own
- * isolated state, all inside the one <text> node the adapter renders.
+ * Representations: a leading flat "Agents per session" block (G4: one
+ * `agent model` row per session whose status was read, no tree) followed by R2
+ * "Sessions" and R3 "Models"/"Agents"/"Providers" (the catalog representation),
+ * each with its own isolated state, all inside the one <text> node the adapter
+ * renders.
  *
- * Layout (F5): every boundary below comes from the one live layout the F4 capture
- * produced, never from a measurement this module or the surface would have to take.
+ * Layout (F5): every boundary below comes from a sealed live capture, never from a
+ * measurement this module or the surface would have to take. Width comes from the
+ * F4 capture, height from the F6c capture.
  * At the 200x80 terminal of `.omo/evidence/20261104-rigel-v2-sidebar-implementation/
  * f4/live-20261104/probe-A.txt` the host paints its border cell at 0-based column
  * 155 of the 199 captured columns, so the sidebar content column is 199 - 156 = 43
@@ -33,9 +35,10 @@
  * wrap into a second row and split a row's meaning.
  *
  * Growth is vertical only: no scroll, no clipping, no hiding. A block longer than
- * the observed 80-row terminal height can never be fully visible, so it degrades to
- * the header plus the active-session information, and when not even that fits it
- * emits no line at all for the adapter to render.
+ * the 52 rows the F6c capture observed between this block's own header and the
+ * last sidebar row can never be fully visible, so it degrades to the header plus
+ * the read session rows, and when not even that fits it emits no line at all for
+ * the adapter to render.
  */
 
 export const PANEL_ID = "oh-my-rigel.panel"
@@ -68,12 +71,19 @@ export const PANEL_GUTTER_WIDTH = 2
 export const PANEL_TEXT_WIDTH = PANEL_CONTENT_WIDTH - PANEL_GUTTER_WIDTH
 
 /**
- * Observed terminal height of the same capture. The sidebar column cannot be
- * taller than the terminal, so a longer block can never be fully visible.
+ * Rows this block can actually use, taken from the sealed live capture
+ * `.omo/evidence/20261104-rigel-v2-sidebar-implementation/f6c/visible-after.txt`
+ * instead of from the terminal height the previous value carried. In that capture
+ * the sidebar column spans rows 2-72 and the block header (`oh-my-rigel · models`)
+ * sits at row 21, as `cat -n` numbers them (rows 1-71 and header row 20 counting
+ * from zero), so the host allotted the block 72 - 21 + 1 = 52 rows from its own
+ * header down to the last sidebar row. The terminal is taller than that (80 rows),
+ * but the host paints the native Context and MCP panels above this block, so the
+ * terminal height is a budget this block cannot use.
  */
-export const PANEL_MAX_LINES = 80
+export const PANEL_MAX_LINES = 52
 
-/** Layout outcomes: the whole block, header plus active session, or no line. */
+/** Layout outcomes: the whole block, the header plus the read session rows, or no line. */
 export const PANEL_LAYOUT = Object.freeze({
   FULL: "completo",
   COMPACT: "compacto",
@@ -339,11 +349,17 @@ export function buildPanelModel(reads = {}) {
 }
 
 /**
- * Title of the active-agent block (G4). It is deliberately NOT the catalog
- * "Agents" title: one section lists sessions that are running, the other lists
- * the installed catalog, and merging them would claim the catalog is running.
+ * Title of the agent block (G4). It names exactly what its rows show: the agent
+ * and effective model of each session whose status this panel actually read.
+ *
+ * It makes NO activity claim. I-3 admits one status read, for the
+ * slot-selected session, so the panel cannot know whether any other listed
+ * session is active; a title such as "Active agents" would assert a roster-wide
+ * activity truth this panel does not have. It is also deliberately NOT the
+ * catalog "Agents" title: that section lists what is installed, this block lists
+ * what the read sessions run, and merging them would claim the catalog is live.
  */
-const ACTIVE_AGENT_TITLE = "Active agents"
+const AGENT_BLOCK_TITLE = "Agents per session"
 
 const EMPTY_LINES = Object.freeze({
   sessions: "  (sin sesiones)",
@@ -376,11 +392,11 @@ function sectionLines(section) {
 }
 
 /**
- * G4 keeps every active agent visible; G5's tree form (a `*` main row, indented
- * children, `|_` nesting) and its enumeration stay BLOQUEADO until the host
- * demonstrates `parentID`, depth and a stable enumeration, so this block renders
- * a FLAT list: no glyph, no indentation level, no counter, and no ordering claim
- * beyond the roster order the read already carries.
+ * G4 keeps the agent of every session whose status was read visible; G5's tree
+ * form (a `*` main row, indented children, `|_` nesting) and its enumeration stay
+ * BLOQUEADO until the host demonstrates `parentID`, depth and a stable enumeration,
+ * so this block renders a FLAT list: no glyph, no indentation level, no counter,
+ * and no ordering claim beyond the roster order the read already carries.
  *
  * Each row is `agent model`. The model is the session's own effective model, or
  * `-` when the source supplied none; a catalog entry is never substituted for it.
@@ -406,7 +422,7 @@ function activeAgentLines(model) {
     const modelLabel = typeof row.model === "string" && row.model.length > 0 ? row.model : "-"
     lines.push(`  - ${agent} ${modelLabel}`)
   }
-  return lines.length > 0 ? [ACTIVE_AGENT_TITLE, ...lines] : []
+  return lines.length > 0 ? [AGENT_BLOCK_TITLE, ...lines] : []
 }
 
 /**
@@ -439,7 +455,7 @@ function bodyLines(model) {
 }
 
 /**
- * The active-session information a compact block may keep: a session row is
+ * The read-session information a compact block may keep: a session row is
  * rendered only when its status was actually read. A session whose status was
  * never read keeps no state claim, so it contributes no line and no invented
  * value. `status` is the model's already-derived field, never a fresh read.
@@ -458,10 +474,10 @@ function activeSessionLines(model) {
 
 /**
  * Decide what the block renders without measuring anything: the whole block while
- * it fits the observed height, otherwise the header plus the active-session
- * information, otherwise no line at all. The returned lines are final and fitted;
- * the mode says which of the three outcomes produced them, so the adapter never
- * has to infer a degradation.
+ * it fits the 52 rows the sidebar actually leaves it, otherwise the header plus
+ * the read-session information, otherwise no line at all. The returned lines are
+ * final and fitted; the mode says which of the three outcomes produced them, so
+ * the adapter never has to infer a degradation.
  */
 export function layoutPanelLines(model, headerLine) {
   const header = fitLine(typeof headerLine === "string" ? headerLine : "")
