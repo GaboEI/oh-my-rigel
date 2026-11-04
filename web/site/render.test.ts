@@ -280,6 +280,22 @@ describe("#given the header navigation #when the route is read #then only the ma
     }
   })
 
+  // Deep links must land on a section that exists on the page. The cover route carries the
+  // section anchors, so a nav href whose fragment has no matching id is a dead in-page link.
+  test("#given each language cover #when its fragment links are resolved #then every target id exists on the page", () => {
+    // given / when / then
+    for (const lang of ["es", "en"] as const) {
+      const html = HOME[lang]
+      const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]))
+      const frags = [...html.matchAll(/href="([^"]*#[^"]+)"/g)]
+        .map((m) => m[1])
+        .filter((href) => !/^https?:/.test(href))
+        .map((href) => href.slice(href.indexOf("#") + 1))
+      expect(frags.length).toBeGreaterThan(0)
+      for (const frag of frags) expect([lang, frag, ids.has(frag)]).toEqual([lang, frag, true])
+    }
+  })
+
   test("#given the nav toggle #when rendered #then it carries the hamburger and close icons", () => {
     // given / when / then
     for (const lang of ["es", "en"] as const) {

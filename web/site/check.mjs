@@ -510,7 +510,6 @@ const EXTERNAL_ORIGIN_ALLOWLIST = new Set([
 const REQUIRED_EXTERNAL_URLS = [
   "https://github.com/GaboEI/oh-my-rigel/tree/v2-mirror",
   "https://github.com/GaboEI/oh-my-rigel/issues",
-  "https://opencode.ai/v2/docs/migrate-v1/",
 ]
 const seenExternal = new Set()
 for (const file of htmlFiles) {

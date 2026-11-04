@@ -587,13 +587,13 @@ describe("#given the guide source #when checked against the real product surface
     expect(install.queToca).toContain("laboratorio")
     expect(install.queToca).toContain("rigel-v2-user-install.mjs")
     expect(uninstall.queToca).toContain("laboratorio")
-    expect(uninstall.queToca).toContain("V1")
+    expect(uninstall.queToca).toContain("--platform")
     const enInstall = guideOverlay.commands["rigel-v2:install"]
     const enUninstall = guideOverlay.commands["rigel-v2:uninstall"]
     expect(enInstall.queToca).toContain("laboratory")
     expect(enInstall.queToca).toContain("rigel-v2-user-install.mjs")
     expect(enUninstall.queToca).toContain("laboratory")
-    expect(enUninstall.queToca).toContain("V1")
+    expect(enUninstall.queToca).toContain("--platform")
   })
 
   test("#given the effect-bearing command cards #when read #then each names its real surface: cleanup is Codex-only and the two worktree-sweep flags differ", () => {

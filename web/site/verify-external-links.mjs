@@ -4,7 +4,6 @@
 const URLS = [
   "https://github.com/GaboEI/oh-my-rigel/tree/v2-mirror",
   "https://github.com/GaboEI/oh-my-rigel/issues",
-  "https://opencode.ai/v2/docs/migrate-v1/",
 ]
 
 let failed = 0
