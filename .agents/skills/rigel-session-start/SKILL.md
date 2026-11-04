@@ -69,11 +69,14 @@ action: install, uninstall, reinstall, run real sessions with real agents, break
 make local commits, and take the technical decisions the work needs. A live run costs provider
 budget, so spend it on observables rather than on blind endurance runs.
 
-That authorization ends at the sandbox. It never covers the host or the real user installation: no
-writes, reloads, restarts, stops, or service restarts against either, and no machine reboot. If the
-sandbox is saturated or wedged, discard it and build a fresh one inside the boundary's own cleanup
-scope. A restart or reboot that would reach anything outside the sandbox is not authorized by this
-skill and needs a separate, explicit, task-specific instruction from Gabo.
+That authorization ends at the sandbox. It never covers the host's OpenCode state or the real user
+installation: no writes into either one's paths, config, data, cache, plugin state, goal state, or
+service, no reloads, restarts, stops, or service restarts against them, and no machine reboot.
+Repository work is not that state: local commits, tags, and the `.omo/evidence/` writes described
+below stay authorized, and nothing in this paragraph restricts them. If the sandbox is saturated or
+wedged, discard it and build a fresh one inside the boundary's own cleanup scope. A restart or
+reboot that would reach anything outside the sandbox is not authorized by this skill and needs a
+separate, explicit, task-specific instruction from Gabo.
 
 The single condition on that authorization is that the validated surface is not a landfill. It
 exists to be used and validated thoroughly, not to accumulate:
