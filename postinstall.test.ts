@@ -78,7 +78,8 @@ function countNativeNotices(output: string): number {
   return output.split("\n").filter((line) => line.trim() === NATIVE_NOTICE).length
 }
 
-describe("postinstall rename notice", () => {  test("names the install line of the package's own channel", async () => {
+describe("postinstall rename notice", () => {
+  test("names the install line of the package's own channel", async () => {
     const { nativeNotice } = await import("./postinstall.mjs")
     expect(nativeNotice("5.0.0")).toEndWith("bun add -g omo-ai")
     expect(nativeNotice("5.0.0-beta.90")).toEndWith("bun add -g omo-ai@beta")

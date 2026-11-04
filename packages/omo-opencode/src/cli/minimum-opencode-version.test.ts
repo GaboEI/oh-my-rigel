@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { MINIMUM_OPENCODE_VERSION } from "../shared"
 import { MIN_OPENCODE_VERSION } from "./doctor/framework/constants"
 import { getUnsupportedOpenCodeVersionMessage } from "./minimum-opencode-version"
 
@@ -8,7 +9,8 @@ describe("minimum OpenCode version", () => {
       // given the floor the installer refuses below
       // when the shared constant and the doctor constant are compared
       // then both copies agree on the V2 line
-      expect(MIN_OPENCODE_VERSION).toBe("2.0.19")
+      expect(MINIMUM_OPENCODE_VERSION).toBe("2.0.19")
+      expect(MIN_OPENCODE_VERSION).toBe(MINIMUM_OPENCODE_VERSION)
     })
   })
 
