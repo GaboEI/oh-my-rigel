@@ -337,7 +337,258 @@ describe("#given the panel surface at the host boundary", () => {
     })
   })
 
-  describe("#given a headless host", () => {
+  /**
+ * Read-census seam. A reviewer cannot check "the panel only reads what it was
+ * allowed to read" from the surface alone, so every host access is recorded by a
+ * stable logical name and the whole set is pinned by exact equality. `session.get`
+ * records the property actually consumed, and `session.status` records the
+ * identity it was asked for, so a widened read shows up instead of passing.
+ */
+function censusContext({ sessions = [], titles = {}, statuses = {}, models = [], agents = [], providers = [], contextLocation = true } = {}) {
+  const reads = []
+  const selectorCalls = []
+  const renders = []
+  const slotCalls = []
+  const fixtures = {
+    sessions,
+    titles,
+    statuses,
+    models,
+    agents,
+    providers,
+    location: { directory: "/w" },
+  }
+  const context = {
+    renderer: { isDestroyed: false },
+    data: {
+      session: {
+        list: (...args) => {
+          reads.push("data.session.list")
+          selectorCalls.push({ name: "data.session.list", args })
+          return fixtures.sessions
+        },
+        get: (id) => {
+          selectorCalls.push({ name: "data.session.get", args: [id] })
+          const entry = { title: fixtures.titles[id] }
+          return new Proxy(entry, {
+            get(target, property) {
+              reads.push(`data.session.get.${String(property)}`)
+              return target[property]
+            },
+          })
+        },
+        status: (id) => {
+          reads.push(`data.session.status:${id}`)
+          selectorCalls.push({ name: "data.session.status", args: [id] })
+          return fixtures.statuses[id]
+        },
+      },
+      location: {
+        default: (...args) => {
+          reads.push("location")
+          selectorCalls.push({ name: "data.location.default", args })
+          return fixtures.location
+        },
+        model: {
+          list: (...args) => {
+            reads.push("data.location.model.list")
+            selectorCalls.push({ name: "data.location.model.list", args })
+            return fixtures.models
+          },
+        },
+        agent: {
+          list: (...args) => {
+            reads.push("data.location.agent.list")
+            selectorCalls.push({ name: "data.location.agent.list", args })
+            return fixtures.agents
+          },
+        },
+        provider: {
+          list: (...args) => {
+            reads.push("data.location.provider.list")
+            selectorCalls.push({ name: "data.location.provider.list", args })
+            return fixtures.providers
+          },
+        },
+      },
+    },
+    ui: {
+      slot: (options) => {
+        slotCalls.push(options)
+        renders.push(options.render)
+        return () => {}
+      },
+    },
+  }
+  if (contextLocation) {
+    Object.defineProperty(context, "location", {
+      get() {
+        reads.push("location")
+        return fixtures.location
+      },
+    })
+  }
+  return { context, fixtures, reads, selectorCalls, renders, slotCalls }
+}
+
+const EXPECTED_HOST_READS = [
+  "data.location.agent.list",
+  "data.location.model.list",
+  "data.location.provider.list",
+  "data.session.get.title",
+  "data.session.get.title",
+  "data.session.list",
+  "data.session.status:ses_b",
+  "location",
+]
+
+function expectedSelectorCalls({ location, sessionIDs, slotSessionID }) {
+  return [
+    { name: "data.session.list", args: [] },
+    { name: "data.location.model.list", args: [location] },
+    { name: "data.location.agent.list", args: [location] },
+    { name: "data.location.provider.list", args: [location] },
+    { name: "data.session.status", args: [slotSessionID] },
+    ...sessionIDs.map((id) => ({ name: "data.session.get", args: [id] })),
+  ]
+}
+
+describe("#given the host read census", () => {
+  test("#then one render performs exactly the passive read set, with status only for the slot identity", () => {
+    const census = censusContext({
+      sessions: [{ id: "ses_a" }, { id: "ses_b" }],
+      titles: { ses_a: "Other", ses_b: "Selected" },
+      statuses: { ses_a: "running", ses_b: "idle" },
+      models: [{ id: "m" }],
+      agents: [{ id: "a" }],
+      providers: [{ id: "p" }],
+    })
+    createPanelSurface({ solid: stubSolid() }).setup(census.context)
+
+    const node = census.renders[0]({ sessionID: "ses_b" })
+
+    // A census over a render that never happened would prove nothing.
+    expect(node.tag).toBe("text")
+    expect([...census.reads].sort()).toEqual(EXPECTED_HOST_READS)
+    expect(census.selectorCalls).toEqual(
+      expectedSelectorCalls({
+        location: census.fixtures.location,
+        sessionIDs: ["ses_a", "ses_b"],
+        slotSessionID: "ses_b",
+      }),
+    )
+    // I-3's reactive read is not one-per-session: it is one, for the input identity.
+    expect(census.reads.filter((read) => read.startsWith("data.session.status"))).toEqual(["data.session.status:ses_b"])
+  })
+
+  test("#then a second render repeats the same set with current values and selector arguments", () => {
+    const census = censusContext({
+      sessions: [{ id: "ses_a" }, { id: "ses_b" }],
+      titles: { ses_a: "Other", ses_b: "Selected" },
+      statuses: { ses_b: "idle" },
+      models: [{ id: "first-model", name: "First model" }],
+      agents: [{ id: "first-agent", name: "First agent" }],
+      providers: [{ id: "first-provider", name: "First provider" }],
+    })
+    createPanelSurface({ solid: stubSolid() }).setup(census.context)
+
+    const firstNode = census.renders[0]({ sessionID: "ses_b" })
+    const firstText = firstNode.children[0]
+    const firstLength = census.reads.length
+    const firstCallLength = census.selectorCalls.length
+    const firstRender = [...census.reads].sort()
+    const firstCalls = census.selectorCalls.slice(0, firstCallLength)
+    expect(firstRender).toEqual(EXPECTED_HOST_READS)
+    expect(firstCalls).toEqual(
+      expectedSelectorCalls({
+        location: census.fixtures.location,
+        sessionIDs: ["ses_a", "ses_b"],
+        slotSessionID: "ses_b",
+      }),
+    )
+
+    census.fixtures.location = { directory: "/second" }
+    census.fixtures.sessions = [{ id: "ses_a" }, { id: "ses_b" }]
+    census.fixtures.titles = { ses_a: "Current other", ses_b: "Current selected" }
+    census.fixtures.statuses = { ses_b: "running" }
+    census.fixtures.models = [{ id: "second-model", name: "Second model" }]
+    census.fixtures.agents = [{ id: "second-agent", name: "Second agent" }]
+    census.fixtures.providers = [{ id: "second-provider", name: "Second provider" }]
+
+    const secondNode = census.renders[0]({ sessionID: "ses_b" })
+    const secondText = secondNode.children[0]
+    const secondRender = [...census.reads.slice(firstLength)].sort()
+    const secondCalls = census.selectorCalls.slice(firstCallLength)
+
+    expect(secondRender).toEqual(firstRender)
+    expect(secondCalls).toEqual(
+      expectedSelectorCalls({
+        location: census.fixtures.location,
+        sessionIDs: ["ses_a", "ses_b"],
+        slotSessionID: "ses_b",
+      }),
+    )
+    expect(secondText).not.toBe(firstText)
+    expect(firstText).toContain("- Selected [idle]")
+    expect(firstText).toContain("- First model")
+    expect(firstText).toContain("- First agent")
+    expect(firstText).toContain("- First provider")
+    expect(secondText).toContain("- Current selected [running]")
+    expect(secondText).toContain("- Second model")
+    expect(secondText).toContain("- Second agent")
+    expect(secondText).toContain("- Second provider")
+    expect(secondText).not.toContain("Selected")
+    expect(secondText).not.toContain("First model")
+  })
+
+  test("#then a host without a context location still costs exactly one location read", () => {
+    const census = censusContext({ contextLocation: false, sessions: [{ id: "ses_b" }], statuses: { ses_b: "idle" } })
+    createPanelSurface({ solid: stubSolid() }).setup(census.context)
+
+    census.renders[0]({ sessionID: "ses_b" })
+
+    expect(census.reads.filter((read) => read === "location")).toHaveLength(1)
+  })
+})
+
+describe("#given an active session with an agent but no sourced model", () => {
+  test("#then the active-agent block reaches the mounted node and the catalog never fills the gap", () => {
+    const fake = fakeContext({
+      sessions: [{ id: "ses_a", agent: "atlas" }],
+      statuses: { ses_a: "running" },
+      models: [{ id: "catalog-only", name: "Catalog-only" }],
+    })
+    createPanelSurface({ solid: stubSolid() }).setup(fake.context)
+
+    const lines = renderedText(fake, { sessionID: "ses_a" }).split("\n")
+
+    expect(lines).toContain("Active agents")
+    expect(lines).toContain("  - atlas -")
+    expect(lines).not.toContain("  - atlas Catalog-only")
+  })
+
+  test("#then an unread non-selected agent is not rendered as active", () => {
+    const fake = fakeContext({
+      sessions: [{ id: "ses_a", agent: "sisyphus" }, { id: "ses_b", agent: "atlas" }],
+      statuses: { ses_a: "running", ses_b: "running" },
+    })
+    createPanelSurface({ solid: stubSolid() }).setup(fake.context)
+
+    const lines = renderedText(fake, { sessionID: "ses_b" }).split("\n")
+
+    expect(lines).toContain("  - atlas -")
+    expect(lines).not.toContain("  - sisyphus -")
+  })
+
+  test("#then no agent block is rendered when the roster read is absent", () => {
+    const fake = fakeContext({ sessions: undefined, models: [], agents: [], providers: [] })
+    createPanelSurface({ solid: stubSolid() }).setup(fake.context)
+
+    expect(renderedText(fake)).not.toContain("Active agents")
+  })
+})
+
+describe("#given a headless host", () => {
     test("#then a destroyed renderer self-skips and registers nothing", () => {
       const fake = fakeContext({ renderer: { isDestroyed: true } })
       const dispose = createPanelSurface({ solid: stubSolid() }).setup(fake.context)
