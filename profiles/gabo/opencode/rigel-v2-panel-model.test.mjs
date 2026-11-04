@@ -152,7 +152,7 @@ describe("#given the read-only panel core", () => {
   })
 
   describe("#given active V2 sessions and a rendered block", () => {
-    test("#then every read session's agent is visible as `agent model`, with `-` when none was sourced", () => {
+    test("#then each eligible session's agent is visible as `agent model`, with `-` when none was sourced", () => {
       const model = buildPanelModel({
         sessions: [
           { id: "ses_model", agent: "sisyphus", model: { providerID: "openai", modelID: "gpt-6" } },
@@ -170,7 +170,7 @@ describe("#given the read-only panel core", () => {
       expect(lines.slice(start + 1, start + 3)).toEqual(["  - sisyphus openai/gpt-6", "  - atlas -"])
     })
 
-    test("#then the block title claims the agent and model of each read session, never activity", () => {
+    test("#then the block title claims the agent and model of each eligible session, never activity", () => {
       const model = buildPanelModel({
         sessions: [{ id: "ses_sel", agent: "atlas", model: "openai/gpt-6" }],
         statusOf: () => "running",
