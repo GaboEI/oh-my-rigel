@@ -4,9 +4,9 @@
 # markers, while the retired external state/cache stay absent and delegated-child
 # continuation remains.
 #
-# No Docker. Docker and every container-based runner are prohibited for this
-# project; the previous container-based form of this preflight was historical and
-# is intentionally replaced.
+# Runs directly on the checkout: this preflight uses no container and launches
+# no OpenCode process. The earlier container-based form is historical and is not
+# part of this path.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"

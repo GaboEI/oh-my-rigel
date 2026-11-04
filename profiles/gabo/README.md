@@ -21,11 +21,12 @@ It contains no credentials, accounts, model catalog, SSH targets, database setti
 ## Validation
 
 **Live validation boundary (aligned with `.omo/rules/protect-opencode-v1.md`):** live validation runs
-only on **kris**, with a snapshot taken before the change and a verified rollback after it. **NLS1 is
-retired** and must not be used for validation. Other laboratories, services, sandboxes and runners are
-prohibited and must not be used as a live gate or as a substitute for kris. Docker is prohibited for
-this project. Every laboratory runner described below is therefore historical and inapplicable to a
-live gate; `profiles/gabo/check-rule-nls1-only.mjs` fails if that alignment is reverted.
+against a V2 user surface that `profiles/gabo/rigel-v2-user-install.mjs` installs inside the sandbox
+the boundary requires, with `--home`, `--state`, and `--config` pointed at that sandbox, and driven
+the way a real user drives it, with a snapshot taken before the change and a verified rollback after
+it. The sandbox is the mutable test surface; the real user installation stays read-only. The runners
+described below are historical: they are kept for reference, they are not a live gate, and none of
+them substitutes for the installed surface.
 
 **Dark goal vendor:** `node profiles/gabo/rigel-v2-goal-vendor.mjs verify` checks the pinned artifact,
 its closure, the upstream `LICENSE` and the deterministic `NOTICE`; `materialize --out <dir>` lays the
@@ -34,7 +35,7 @@ editing the vendored bytes.
 
 Run `node profiles/gabo/validate-profile.mjs`. It validates the static integration contract and rejects personal paths, secret markers, WatchdogVPN content, a duplicate OmO Context7, a competing OmO root goal, and a non-placeholder plugin path.
 
-Run `bash profiles/gabo/run-v2-isolated.sh` to boot the host OpenCode **V2** binary (default `$HOME/.opencode/bin/opencode`, override with `RIGEL_V2_BINARY`) against a disposable Docker home and XDG tree. The runner copies only this kit, mounts the fork source read-only, starts an authenticated local server, verifies the V2 OpenAPI surface plus the selected profile and agent definitions, and removes the sandbox on exit. It does not mount or read the active OpenCode configuration.
+`bash profiles/gabo/run-v2-isolated.sh` boots the host OpenCode **V2** binary (default `$HOME/.opencode/bin/opencode`, override with `RIGEL_V2_BINARY`) against a disposable Docker home and XDG tree. The runner copies only this kit, mounts the fork source read-only, starts an authenticated local server, verifies the V2 OpenAPI surface plus the selected profile and agent definitions, and removes the sandbox on exit. It does not mount or read the active OpenCode configuration. It is historical: it records how that isolated smoke was produced, and it is not a live gate.
 
 Run `bash profiles/gabo/run-delegation-preflight.sh` to execute that isolated smoke plus focused tests of OmO's real delegated-session engine. It proves session creation, synchronous routing, continuation metadata, and child-session permission isolation; it deliberately does not use a model provider or account.
 
@@ -42,11 +43,11 @@ Run `bash profiles/gabo/run-session-authority-preflight.sh` to verify the manage
 
 Run `bash profiles/gabo/run-mcp-policy-preflight.sh` to validate singleton ownership, the embedded protective SSH MCP, and the absence of credentials or duplicate external MCP declarations.
 
-Run `bash profiles/gabo/run-all-isolated.sh` for the full non-account acceptance suite. See [UPSTREAM-MAINTENANCE.md](UPSTREAM-MAINTENANCE.md) for the isolated upstream-review and rollback procedure.
+Run `bash profiles/gabo/run-all-isolated.sh` for the full non-account acceptance suite. Inside the suite the session-authority preflight grades a disposable managed installation that `run-session-authority-preflight-isolated.mjs` prepares in its own sandbox through the productized installer, so the suite never grades, and never requires, the invoking operator's own installation; run the preflight directly (above) to grade the installation you actually have. See [UPSTREAM-MAINTENANCE.md](UPSTREAM-MAINTENANCE.md) for the isolated upstream-review and rollback procedure.
 
-Run `bash profiles/gabo/run-lab-acceptance.sh` to validate the isolated V2 laboratory (`opencode-v2-lab.service`, roots under `~/.local/share/opencode-v2-lab`). It never launches OpenCode, never uses Docker, and never addresses V1: it checks the unit's isolation, the service binary and port, the lab API, that every config source resolves inside the lab (no V1 path), and read-only V1 integrity before/after. Add `--refresh` to rebuild the lab runtime first through `apply-v2-runtime-service.sh`.
+`bash profiles/gabo/run-lab-acceptance.sh` validates the historical isolated V2 laboratory (`opencode-v2-lab.service`, roots under `~/.local/share/opencode-v2-lab`). It never launches OpenCode and checks only the unit's isolation, the service binary and port, the lab API, and that every config source resolves inside the lab. Like the other laboratory runners it is historical reference, not a live gate. Add `--refresh` to rebuild the lab runtime first through `apply-v2-runtime-service.sh`.
 
-For the parallel V2 laboratory, `bash profiles/gabo/apply-v2-runtime-service.sh` refreshes the native V2 runtime and its generated agent manifest through `opencode-v2-lab.service`. The runtime registers the manifest through `agent.transform` and `agent.reload`; it does not write agents into OpenCode's V1 configuration. The script never addresses `opencode-lan.service`.
+For the parallel V2 laboratory, `bash profiles/gabo/apply-v2-runtime-service.sh` refreshes the native V2 runtime and its generated agent manifest through `opencode-v2-lab.service`. The runtime registers the manifest through `agent.transform` and `agent.reload`; it does not write agents into OpenCode's own configuration. The script never addresses `opencode-lan.service`. Historical, like the laboratory it starts.
 
 ## Activation for a future isolated test
 

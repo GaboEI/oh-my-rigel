@@ -60,7 +60,8 @@ try {
     { mode: 0o600 },
   )
 
-  // Positive isolation proof; the contract spawns nothing, so nothing can touch V1.
+  // Positive isolation proof; the contract spawns nothing, so nothing can touch
+  // the real user installation.
   const isolatedEnv = buildIsolatedV2Env({ sandbox: temporary, home })
   assert.ok(isolatedEnv.HOME.startsWith(temporary), "isolated HOME escapes the sandbox")
 
@@ -88,7 +89,7 @@ try {
     "",
     "- OpenCode process spawned: no.",
     "- `--standalone` used: no.",
-    "- V1 read or written: no.",
+    "- Real user installation read or written: no.",
     `- Shipped module under test: ${path.relative(sourceRoot, rulesModuleSource)}.`,
     `- Lab-materialized module byte-identical: ${labModuleByteIdentical ? "yes" : "no (lab copy not materialized)"}.`,
     `- Matched alwaysApply rule injected into the read result: ${injectedAlways ? "yes" : "no"}.`,

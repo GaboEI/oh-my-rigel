@@ -312,14 +312,14 @@
       "surface": "rigel-v2",
       "name": "install",
       "queHace": "Instala o refresca la superficie Rigel V2 para una plataforma.",
-      "queToca": "Con --platform opencode solo refresca el runtime dentro del laboratorio aislado (opencode-v2-lab); rechaza mover la instalación fuera de él y nunca toca tu OpenCode V1. No es la ruta pública: esa es script/agent/setup.sh más rigel-v2-user-install.mjs install --version 1. Las plataformas codex y native delegan en sus instaladores."
+      "queToca": "Con --platform opencode solo refresca el runtime dentro del laboratorio aislado (opencode-v2-lab); rechaza mover la instalación fuera de él. No es la ruta pública: esa es script/agent/setup.sh más rigel-v2-user-install.mjs install --version 1. Las plataformas codex y native delegan en sus instaladores."
     },
     {
       "id": "rigel-v2:uninstall",
       "surface": "rigel-v2",
       "name": "uninstall",
       "queHace": "Desinstala la superficie Rigel V2 para una plataforma.",
-      "queToca": "Con --platform opencode quita la entrada del runtime del laboratorio aislado y borra el runtime y el estado de activación; se niega si la configuración no registra ese runtime y nunca toca tu OpenCode V1. Las plataformas codex y native delegan en sus desinstaladores."
+      "queToca": "Con --platform opencode quita la entrada del runtime del laboratorio aislado y borra el runtime y el estado de activación; se niega si la configuración no registra ese runtime. Las plataformas codex y native delegan en sus desinstaladores."
     },
     {
       "id": "rigel-v2:ulw-loop",
@@ -389,7 +389,7 @@
       "surface": "omo",
       "name": "cleanup",
       "queHace": "Limpia el estado gestionado de Codex Light (caché y marketplace) y repara artefactos Codex locales del proyecto.",
-      "queToca": "Solo admite --platform codex; no desinstala OmO ni Oh My Rigel y no toca tu OpenCode V1."
+      "queToca": "Solo admite --platform codex; no desinstala OmO ni Oh My Rigel."
     },
     {
       "id": "omo:refresh-model-capabilities",

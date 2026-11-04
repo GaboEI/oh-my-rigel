@@ -186,9 +186,6 @@ const UI = {
     modelsGuideLink: "Ver guía de modelos, skills y comandos",
     relationshipBody: "Oh My OpenCode (OmO) es el proyecto padre. Oh My Rigel (OMR) es un fork comunitario que migra las funciones de OmO al runtime de OpenCode V2. OpenCode es el programa anfitrión y se mantiene aparte de OMR. La instalación añade además una capa extra en beta, separada en su propio perfil, que se pulirá más adelante. OMR conserva la atribución al proyecto padre.",
     attribution: "Atribución al proyecto padre: Oh My OpenCode.",
-    migrationNote: "¿Instalas OpenCode V2 por primera vez? La guía oficial exige retirar OpenCode V1 y sus restos antes de una instalación limpia de V2. OpenCode V1/V2 (el programa anfitrión) y Oh My Rigel V1/V2 (este plugin) son cosas distintas.",
-    migrationDoc: "https://opencode.ai/v2/docs/migrate-v1/",
-    migrationDocLabel: "Guía de migración de OpenCode",
     githubLabel: "Repositorio en GitHub (rama v2-mirror)",
     copy: "Copiar",
     copied: "Copiado",
@@ -197,7 +194,6 @@ const UI = {
     lifecycleTitle: "Ciclo de vida del plugin",
     lifecycleLead: "Verifica el estado, reinstala, actualiza, revierte o desinstala Oh My Rigel sin tocar OpenCode V2 ni plugins ajenos.",
     lifecyclePreserveNote: "La desinstalación quita solo las entradas y skills de Oh My Rigel; conserva OpenCode V2, tu configuración y otros plugins.",
-    lifecycleHostNote: "No confundir con la retirada de OpenCode V1 (el anfitrión) para migrar a V2.",
     noticeParentSetupPre: "El comando ",
     noticeParentSetupPost: " configura el producto padre Oh My OpenCode, no Oh My Rigel.",
     noticeRigelSetupPre: "",
@@ -327,9 +323,6 @@ const UI = {
     modelsGuideLink: "Open the models, skills and commands guide",
     relationshipBody: "Oh My OpenCode (OmO) is the parent project. Oh My Rigel (OMR) is a community fork that migrates the OmO feature set to the OpenCode V2 runtime. OpenCode is the host program and stays separate from OMR. The installation also adds an extra beta layer, kept apart in its own profile, to be polished later. OMR keeps attribution to the parent project.",
     attribution: "Parent-project attribution: Oh My OpenCode.",
-    migrationNote: "Installing OpenCode V2 for the first time? The official guide requires removing OpenCode V1 and its remnants before a clean V2 install. OpenCode V1/V2 (the host program) and Oh My Rigel V1/V2 (this plugin) are distinct.",
-    migrationDoc: "https://opencode.ai/v2/docs/migrate-v1/",
-    migrationDocLabel: "OpenCode migration guide",
     githubLabel: "Repository on GitHub (v2-mirror branch)",
     copy: "Copy",
     copied: "Copied",
@@ -338,7 +331,6 @@ const UI = {
     lifecycleTitle: "Plugin lifecycle",
     lifecycleLead: "Check status, reinstall, update, roll back or uninstall Oh My Rigel without touching OpenCode V2 or unrelated plugins.",
     lifecyclePreserveNote: "Uninstall removes only the Oh My Rigel entries and skills; it preserves OpenCode V2, your configuration and other plugins.",
-    lifecycleHostNote: "Not to be confused with removing OpenCode V1 (the host) to migrate to V2.",
     noticeParentSetupPre: "The ",
     noticeParentSetupPost: " command configures the parent Oh My OpenCode product, not Oh My Rigel.",
     noticeRigelSetupPre: "",
@@ -848,7 +840,6 @@ export function homePage(lang, source) {
     ${installRoutes(lang)}
     <p class="cta-row"><a class="button" href="${GITHUB_URL}" rel="external noopener">${GITHUB_SVG}<span>GitHub</span></a></p>
     ${notices(lang)}
-    <p class="migration-note">${htmlEscape(t.migrationNote)} <a href="${attr(t.migrationDoc)}" rel="external noopener">${t.migrationDocLabel}</a></p>
   </section>
   <section id="configure" class="panel">
     <h2>${t.configureTitle}</h2>
@@ -869,7 +860,6 @@ export function homePage(lang, source) {
     <p>${htmlEscape(t.lifecycleLead)}</p>
     ${lifecycleCommands(lang)}
     <p class="preserve-note">${htmlEscape(t.lifecyclePreserveNote)}</p>
-    <p class="migration-note">${htmlEscape(t.lifecycleHostNote)} <a href="${attr(t.migrationDoc)}" rel="external noopener">${t.migrationDocLabel}</a></p>
   </section>
   <section id="help" class="panel">
     <h2>${t.helpTitle}</h2>

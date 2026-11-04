@@ -118,7 +118,7 @@ describe("runTuiInstaller", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(tuiInstallPrompts, "promptInstallConfig").mockResolvedValue({
         platform: "opencode",
         hasOpenCode: true,
@@ -193,7 +193,7 @@ describe("runTuiInstaller", () => {
           hasVercelAiGateway: false,
         }),
         spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-        spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+        spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
         spyOn(tuiInstallPrompts, "promptInstallConfig").mockResolvedValue(createOpenCodeInstallConfig()),
         spyOn(configManager, "addPluginToOpenCodeConfig").mockImplementation(async () => {
           writeFileSync(join(configDir, "opencode.json"), JSON.stringify({ plugin: [PLUGIN_NAME] }), "utf-8")
@@ -277,7 +277,7 @@ describe("runTuiInstaller", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(tuiInstallPrompts, "promptInstallConfig").mockResolvedValue(
         createOpenCodeInstallConfig({ hasBailianCodingPlan: true }),
       ),
@@ -334,7 +334,7 @@ describe("runTuiInstaller", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(tuiInstallPrompts, "promptInstallConfig").mockResolvedValue(createOpenCodeInstallConfig()),
       spyOn(configManager, "addPluginToOpenCodeConfig").mockResolvedValue({
         success: true,
@@ -448,7 +448,7 @@ describe("runTuiInstaller", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(tuiInstallPrompts, "promptInstallConfig").mockResolvedValue({
         platform: "opencode",
         hasOpenCode: true,

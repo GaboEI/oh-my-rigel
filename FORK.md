@@ -6,8 +6,9 @@ OmO OpenCode integration to the OpenCode V2 plugin runtime while keeping
 OpenCode itself independent and upgradeable.
 
 Rigel targets OpenCode V2 exclusively. Update OpenCode to V2 before installing
-Rigel. Running Rigel while retaining an active V1 installation is neither
-recommended nor supported because shared state can contaminate V1.
+Rigel. Running Rigel while retaining an active pre-V2 installation is neither
+recommended nor supported because shared state can contaminate the installation
+you already use.
 
 ## Project boundary
 

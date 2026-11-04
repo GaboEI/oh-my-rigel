@@ -6,7 +6,9 @@ import type { PathLike } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PLUGIN_NAME } from "../../../shared"
+import { MIN_OPENCODE_VERSION } from "../framework/constants"
 import type { PluginInfo } from "./system-plugin"
+import { compareVersions as realCompareVersions } from "./system-binary"
 import type { OpenCodeBinaryInfo } from "./system-binary"
 import { checkSystem } from "./system"
 
@@ -264,6 +266,81 @@ describe("system check", () => {
 
       //#then
       expect(result.issues.some((issue) => issue.title === "Using legacy package name")).toBe(false)
+    })
+  })
+
+  describe("#given the real OpenCode version comparator", () => {
+    function depsForHostVersion(hostVersion: string) {
+      return {
+        findOpenCodeBinary: async () => ({ binary: "opencode", path: "/usr/local/bin/opencode" }),
+        getOpenCodeVersion: async () => hostVersion,
+        compareVersions: realCompareVersions,
+        getPluginInfo: () => ({
+          registered: true,
+          entry: PLUGIN_NAME,
+          isPinned: false,
+          pinnedVersion: null,
+          configPath: null,
+          isLocalDev: false,
+        }),
+        getLoadedPluginVersion: () => ({
+          cacheDir: "/tmp/opencode-cache",
+          cachePackagePath: "/tmp/package.json",
+          installedPackagePath: "/tmp/node_modules/oh-my-opencode/package.json",
+          expectedVersion: "3.0.0",
+          loadedVersion: "3.0.0",
+        }),
+        getLatestPluginVersion: async () => null,
+        getSuggestedInstallTag: () => "latest",
+        configExists: () => true,
+        readConfigFile: () => "{}",
+        parseConfigContent: () => ({}),
+      }
+    }
+
+    async function checkSystemForHost(hostVersion: string) {
+      // A cache-busted import keeps this contract independent of any module mock
+      // another test file in the same process leaves behind.
+      const { checkSystem: freshCheckSystem } = await import(`./system?version-floor=${hostVersion}`)
+      return freshCheckSystem(depsForHostVersion(hostVersion))
+    }
+
+    it("fails a V1 host with an error that names the V2 floor", async () => {
+      //#given
+      // a host on the retired V1 line
+      //#when
+      const result = await checkSystemForHost("1.4.0")
+
+      //#then
+      const issue = result.issues.find((candidate) => candidate.title === "OpenCode version below minimum")
+      expect(issue?.severity).toBe("error")
+      expect(issue?.description).toContain("1.4.0")
+      expect(issue?.description).toContain(`${MIN_OPENCODE_VERSION}+`)
+      expect(issue?.fix).toContain(MIN_OPENCODE_VERSION)
+      expect(result.status).toBe("fail")
+    })
+
+    it("fails a host one patch below the floor", async () => {
+      //#given
+      const belowFloor = "2.0.18"
+
+      //#when
+      const result = await checkSystemForHost(belowFloor)
+
+      //#then
+      expect(result.issues.some((issue) => issue.title === "OpenCode version below minimum")).toBe(true)
+    })
+
+    it("passes the floor and every newer V2 host", async () => {
+      //#given
+      for (const hostVersion of ["2.0.19", "2.0.20", "2.1.0"]) {
+        //#when
+        const result = await checkSystemForHost(hostVersion)
+
+        //#then
+        expect(result.issues.some((issue) => issue.title === "OpenCode version below minimum")).toBe(false)
+        expect(result.issues.some((issue) => issue.severity === "error")).toBe(false)
+      }
     })
   })
 })

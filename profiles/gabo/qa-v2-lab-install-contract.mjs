@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Runs the native Rigel V2 staging pipeline in a disposable lab and proves it
- * cannot mutate the user's V1 configuration. No OpenCode service is started.
+ * cannot mutate the real user installation's configuration. No OpenCode service
+ * is started.
  */
 import assert from "node:assert/strict"
 import { buildIsolatedV2Env } from "./isolated-v2-env.mjs"
@@ -55,9 +56,13 @@ function run(script, env) {
 }
 
 try {
-  assert.ok(fs.existsSync(v1Config), "V1 configuration is required for the immutability assertion")
   assert.ok(fs.existsSync(v2Config), "V2 lab configuration is required as the disposable fixture source")
-  const v1Before = hashFile(v1Config)
+  // The real installation is read-only whether or not it exists yet: a staging
+  // run must leave an existing configuration byte-identical AND must never create
+  // one. Neither branch needs the real tree to be present, so this contract passes
+  // on a host that has no user configuration at all.
+  const realConfigExisted = fs.existsSync(v1Config)
+  const v1Before = realConfigExisted ? hashFile(v1Config) : null
   fs.mkdirSync(path.dirname(labConfig), { recursive: true, mode: 0o700 })
   fs.copyFileSync(v2Config, labConfig)
   const beforeConfig = JSON.parse(fs.readFileSync(labConfig, "utf8"))
@@ -78,7 +83,11 @@ try {
   const afterConfig = JSON.parse(fs.readFileSync(labConfig, "utf8"))
   const runtime = path.join(labRoot, "rigel/runtime/rigel-v2-native")
 
-  assert.equal(hashFile(v1Config), v1Before, "V1 configuration changed during a V2-only staging run")
+  if (realConfigExisted) {
+    assert.equal(hashFile(v1Config), v1Before, "Real installation configuration changed during a V2-only staging run")
+  } else {
+    assert.equal(fs.existsSync(v1Config), false, "the staging run created a configuration in the real user installation")
+  }
   assert.deepEqual(afterConfig.agent, beforeConfig.agent, "native agents leaked into V2 static config instead of the runtime manifest")
   assert.ok(configPluginSpecs(afterConfig).includes(runtime), "V2 config did not receive the native runtime entry")
   assert.equal(state.configFile, labConfig)
@@ -104,7 +113,8 @@ try {
     "- Native manifest generation: passed.",
     "- Native runtime staging: passed.",
     "- V2-only plugin registration: passed.",
-    "- V1 configuration hash unchanged: passed.",
+    "- Real installation configuration untouched: passed.",
+    `- Real installation configuration projection: ${realConfigExisted ? "present, hash unchanged" : "absent before and after"}.`,
     "- V2 static agent config unchanged: passed (agents remain native runtime registrations).",
     "- Personal V2 skills materialized: passed.",
   ].join("\n") + "\n"

@@ -233,12 +233,12 @@ describe("Rigel lab goal gate: probe and invariant", () => {
     expect(probeGoalState(home)).toEqual({ present: false, version: null, count: 0 })
   })
 
-  test("#given managed mode #when the retired V1 goals.json stays absent #then the invariant passes", () => {
+  test("#given managed mode #when the retired external goals.json stays absent #then the invariant passes", () => {
     const verdict = verifyGoalInvariant("managed", { present: false, version: null, count: 0 }, { present: false, version: null, count: 0 })
     expect(verdict.pass).toBe(true)
   })
 
-  test("#given managed mode #when the retired V1 goals.json appears #then the invariant fails", () => {
+  test("#given managed mode #when the retired external goals.json appears #then the invariant fails", () => {
     const verdict = verifyGoalInvariant("managed", { present: false, version: null, count: 0 }, { present: true, version: "2", count: 1 })
     expect(verdict.pass).toBe(false)
     expect(verdict.reason).toContain("managed goal mode")

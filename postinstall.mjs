@@ -14,7 +14,10 @@ import { detectPlatformBinaryMismatch } from "./bin/version-mismatch.js";
 
 const require = createRequire(import.meta.url);
 
-const MIN_OPENCODE_VERSION = "1.4.0";
+// Rigel targets the OpenCode V2 runtime. Keep this literal in sync with
+// MINIMUM_OPENCODE_VERSION in packages/omo-opencode/src/shared/opencode-version.ts;
+// postinstall.test.ts fails the build if the two drift apart.
+const MIN_OPENCODE_VERSION = "2.0.19";
 const OPENCODE_VERSION_PROBE_TIMEOUT_MS = 3_000;
 const OPENCODE_PLUGIN_PACKAGES = ["oh-my-opencode", "oh-my-openagent"];
 const RENAME_NOTICE =
@@ -74,7 +77,10 @@ function checkOpenCodeVersion() {
       stdio: ["pipe", "pipe", "ignore"],
       timeout: OPENCODE_VERSION_PROBE_TIMEOUT_MS,
     });
-    const version = result.trim();
+    // `opencode --version` prints a prefixed banner (for example "opencode v2.2.5"),
+    // so the comparable value is the semver inside it, never the raw line.
+    const printed = result.trim();
+    const version = printed.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/)?.[1] ?? printed;
     const ok = compareVersions(version, MIN_OPENCODE_VERSION);
     return { ok, version };
   } catch {
@@ -159,9 +165,9 @@ function main() {
   // Check opencode version requirement
   const versionCheck = checkOpenCodeVersion();
   if (versionCheck.version && !versionCheck.ok) {
-    console.warn(`⚠ oh-my-opencode requires OpenCode >= ${MIN_OPENCODE_VERSION}`);
+    console.warn(`⚠ oh-my-opencode requires OpenCode ${MIN_OPENCODE_VERSION}+ (V2)`);
     console.warn(`  Detected: ${versionCheck.version}`);
-    console.warn(`  Please update OpenCode to avoid compatibility issues.`);
+    console.warn(`  Pre-V2 OpenCode hosts are not supported; upgrade to ${MIN_OPENCODE_VERSION} or newer.`);
   }
 
   try {

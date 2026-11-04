@@ -5,9 +5,10 @@ import { dirname, join } from "path"
 
 /**
  * Minimum OpenCode version required for this plugin.
- * This plugin only supports OpenCode 1.4.0+.
+ * Rigel targets the OpenCode V2 plugin runtime, so the admitted floor is the
+ * V2 line: 2.0.19+. A pre-V2 host is unsupported, not "older but compatible".
  */
-export const MINIMUM_OPENCODE_VERSION = "1.4.0"
+export const MINIMUM_OPENCODE_VERSION = "2.0.19"
 
 /**
  * OpenCode version that introduced native AGENTS.md injection.

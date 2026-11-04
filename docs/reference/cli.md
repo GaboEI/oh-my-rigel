@@ -152,7 +152,7 @@ bunx oh-my-openagent doctor
 
 ### Notes
 
-- The current minimum OpenCode version check is `>= 1.4.0`.
+- The current minimum OpenCode version check is `>= 2.0.19`, the OpenCode V2 line. A pre-V2 host is reported as an error.
 - The doctor command warns when legacy plugin registration (`oh-my-opencode`) is still present in `opencode.json`.
 - OmO Native's `doctor` subcommand also reports computer use (experimental) without opening a desktop session or requesting OS permissions. It prints:
   - whether the effective Native config enables computer use and whether the host is supported;

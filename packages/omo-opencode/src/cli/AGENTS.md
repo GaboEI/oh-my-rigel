@@ -57,7 +57,7 @@ Common patterns: Claude/OpenAI/Gemini are preferred when an agent chain includes
 
 | Category | Validates |
 |----------|-----------|
-| **System** | Binary found, version >=1.0.150, plugin registered, version match |
+| **System** | Binary found, version >=2.0.19 (OpenCode V2 floor), plugin registered, version match |
 | **Config** | JSONC validity, Zod schema, model override syntax |
 | **Tools** | AST-Grep, comment-checker, LSP servers, GH CLI, MCP servers |
 | **Models** | Cache exists, model resolution, agent/category overrides, availability |

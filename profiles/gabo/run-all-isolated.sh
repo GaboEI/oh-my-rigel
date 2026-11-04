@@ -4,9 +4,14 @@
 # Layers:
 #   1. Bun unit tests for the native V2 runtime modules.
 #   2. Isolated V2 QA contracts (each spawns the real V2 lab binary with a
-#      temporary HOME/XDG sandbox and a deterministic fake provider).
-#   3. Docker lab runners (opt-in via RIGEL_SUITE_DOCKER=1; skipped with a
-#      declared reason otherwise).
+#      temporary HOME/XDG sandbox and a deterministic fake provider) plus the
+#      session-authority preflight, which grades a disposable managed
+#      installation the suite prepares in its own sandbox. It never reads the
+#      invoking operator's home: a host without a Rigel installation of its
+#      own cannot fail an otherwise valid lab run.
+#   3. Historical container lab runners. They are not the live gate and never
+#      required: layer 3 runs only under an explicit RIGEL_SUITE_DOCKER=1
+#      opt-in, and is skipped with a declared reason otherwise.
 #
 # Output: one status line per step plus a final summary; exits non-zero when
 # any executed step fails. Never runs the quarantined attic/ surface.
@@ -71,6 +76,15 @@ if [ "${RIGEL_LAB_REFRESH:-0}" = "1" ]; then
 else
   run_step "bash: run-lab-acceptance.sh" bash "$suite_dir/run-lab-acceptance.sh"
 fi
+# Direct layer: the session-authority preflight grades a Rigel-managed
+# installation, and it has none of its own - it reads $HOME. Run bare it grades
+# the OPERATOR's installation, so a host without the managed Goal shims failed a
+# lab run that never concerned it. The driver installs a disposable managed
+# installation through the productized installer, proves the sandbox isolation,
+# and hands the untouched preflight that installation's home, state and config.
+# It uses no container and launches no OpenCode process, so it must never be
+# gated behind the layer 3 container opt-in.
+run_step "node: run-session-authority-preflight.sh (disposable managed installation)" node "$suite_dir/run-session-authority-preflight-isolated.mjs"
 if [ "${RIGEL_SUITE_ALLOW_NODE_CONTRACTS:-0}" = "1" ]; then
   # The rules-injector contract is hermetic (spawns no OpenCode, no --standalone) and
   # belongs to the authorized lab lane via run-lab-acceptance.sh, not this host-spawn lane.
@@ -81,10 +95,9 @@ else
   declare_status "node contracts" "SKIP (RIGEL_SUITE_ALLOW_NODE_CONTRACTS!=1; host-side node spawn cannot prove full isolation, use the lab service lane)"
 fi
 
-echo "layer 3: docker lab runners"
+echo "layer 3: historical container lab runners (opt-in via RIGEL_SUITE_DOCKER=1)"
 run_docker_step "bash: run-v2-isolated.sh" bash "$suite_dir/run-v2-isolated.sh"
 run_docker_step "bash: run-delegation-preflight.sh" bash "$suite_dir/run-delegation-preflight.sh"
-run_docker_step "bash: run-session-authority-preflight.sh" bash "$suite_dir/run-session-authority-preflight.sh"
 run_docker_step "bash: run-mcp-policy-preflight.sh" bash "$suite_dir/run-mcp-policy-preflight.sh"
 run_docker_step "bash: run-delegation-e2e.sh" bash "$suite_dir/run-delegation-e2e.sh"
 

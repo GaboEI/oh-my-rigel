@@ -295,7 +295,7 @@ describe("runTuiInstaller Codex install failure exit status", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(configManager, "addPluginToOpenCodeConfig").mockResolvedValue({
         success: true,
         configPath: "/tmp/opencode.jsonc",

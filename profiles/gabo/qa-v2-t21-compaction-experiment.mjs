@@ -17,7 +17,7 @@
  *
  * Isolation boundary: `.omo/rules/protect-opencode-v1.md`. The sandbox comes
  * from `buildIsolatedV2Env`; every state root points inside the disposable
- * mkdtemp directory, never at production V1.
+ * mkdtemp directory, never at the real user installation.
  */
 import childProcess from "node:child_process"
 import { buildIsolatedV2Env } from "./isolated-v2-env.mjs"

@@ -95,7 +95,7 @@ const NON_TEXT_PAIRS: [string, string, string][] = [
   ["--info", "--surf", "command chip / agent-prompt / setting left border"],
   ["--info", "--bg", "agent-prompt left border on page"],
   ["--ok", "--bg", "preserve-note border"],
-  ["--warn", "--bg", "migration-note border"],
+  ["--warn", "--bg", "lifecycle-env-note border"],
   ["--err", "--ficha-bg", "copy error icon and error border on the command row"],
   ["--err", "--bg", "error command-row border against the page background"],
 ]

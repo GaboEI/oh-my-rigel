@@ -10,7 +10,8 @@
  * creates a session through the lab API, refreshes (stop+start), and proves the
  * session survives.
  *
- * Isolation: no Docker, no `--standalone`, no direct OpenCode spawn, no V1 access.
+ * Isolation: no container runner, no `--standalone`, no direct OpenCode spawn,
+ * no access to the real user installation.
  * A created lab session is deleted in `finally` even when an assertion throws.
  */
 import assert from "node:assert/strict"

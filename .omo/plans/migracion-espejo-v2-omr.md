@@ -78,12 +78,12 @@ Tu siguiente paso: aprobar este plan y autorizar la Fase 0.
   - Commit: `docs(profiles): reconcile docs with native runtime; extend personal-path scan`
 
 - [x] 5. Suite de aceptación orquestada
-  - Estado (reconciliado 2026-10-03): hecho con la política de frontera vigente. Commits d51ea1b2f, 1535edccf, c6e4ff796, 33c68a218. Capa 0 (aislamiento) PASS, unit tests PASS, lab acceptance PASS; lane Docker y contratos node SKIP declarados (Docker prohibido; node-spawn no prueba aislamiento). Evidencia `.omo/evidence/20261003-rigel-isolation-proof/` y `.omo/evidence/20261003-rigel-lab-acceptance/`.
+  - Estado (reconciliado 2026-10-03): hecho con la política de frontera vigente. Commits d51ea1b2f, 1535edccf, c6e4ff796, 33c68a218. Capa 0 (aislamiento) PASS, unit tests PASS, lab acceptance PASS; lane Docker y contratos node SKIP declarados (runner Docker histórico; node-spawn no prueba aislamiento). Evidencia `.omo/evidence/20261003-rigel-isolation-proof/` y `.omo/evidence/20261003-rigel-lab-acceptance/`.
   - Objetivo: que `run-all-isolated.sh` ejecute toda la batería real.
   - Alcance: el runner ejecuta (a) la prueba de aislamiento como capa 0 y aborta si falla; (b) `bun test profiles/gabo/opencode`; (c) los contratos `qa-v2-*.mjs` que arrancan el binario V2; (d) los runners Docker; y produce un resumen con estado por paso.
-  - Política de frontera (2026-10-03): por `protect-opencode-v1.md`, un contrato node que lanza el binario V2 como subproceso no puede probar aislamiento total (el hijo resuelve rutas de la home real aun con HOME/XDG/goal-state reemplazados). La capa de contratos node queda en SKIP por defecto con motivo declarado y exige `RIGEL_SUITE_ALLOW_NODE_CONTRACTS=1`; el runner Docker es la vía aprobada. Decisión de Gabo pendiente para cerrar la tarea.
+  - Política de frontera (2026-10-03, revisada 2026-11-04): en su momento un contrato node que lanza el binario V2 como subproceso no demostraba aislamiento total, así que la capa de contratos node queda en SKIP por defecto con motivo declarado y exige `RIGEL_SUITE_ALLOW_NODE_CONTRACTS=1`. La frontera vigente vive en `.omo/rules/protect-opencode-v1.md`: contención obligatoria de todo proceso a través de `profiles/gabo/isolated-v2-env.mjs`, y `profiles/gabo/isolation-proof.mjs` en `verdict=ISOLATED` antes de lanzar. El runner Docker es histórico y no es una vía aprobada de validación.
   - No debe: no inventar skip silencioso; todo omitido se declara con motivo; no lanzar OpenCode sin la capa 0 en verde.
-  - Aceptación: un solo comando produce un informe con estado por paso; se integra como script npm y queda listo para CI; los contratos se ejecutan por la vía aprobada (contenedor).
+  - Aceptación: un solo comando produce un informe con estado por paso; se integra como script npm y queda listo para CI; los contratos node se ejecutan sólo cuando se habilitan de forma explícita, dentro del entorno contenido.
   - QA: evidencia `<dir>/task-5.txt` con el informe completo.
   - Commit: `test(profiles): orchestrate isolated acceptance suite`
 

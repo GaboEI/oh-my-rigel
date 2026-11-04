@@ -122,10 +122,10 @@ export async function checkSystem(deps: SystemCheckDeps = defaultDeps): Promise<
   ) {
     issues.push({
       title: "OpenCode version below minimum",
-      description: `Detected ${systemInfo.opencodeVersion}; required >= ${MIN_OPENCODE_VERSION}.`,
-      fix: "Update OpenCode to the latest stable release",
-      severity: "warning",
-      affects: ["tooling", "doctor"],
+      description: `Detected OpenCode ${systemInfo.opencodeVersion}; this build requires OpenCode ${MIN_OPENCODE_VERSION}+ (V2).`,
+      fix: `Upgrade OpenCode to ${MIN_OPENCODE_VERSION} or newer (V2); pre-V2 hosts are not supported`,
+      severity: "error",
+      affects: ["all agents", "tooling", "doctor"],
     })
   }
 

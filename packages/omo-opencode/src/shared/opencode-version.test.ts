@@ -293,8 +293,41 @@ describe("opencode-version", () => {
   })
 
   describe("MINIMUM_OPENCODE_VERSION", () => {
-    test("is set to 1.4.0", () => {
-      expect(MINIMUM_OPENCODE_VERSION).toBe("1.4.0")
+    test("admits the OpenCode V2 floor and every newer host", () => {
+      // given the declared floor for this plugin
+      // then it is the V2 line, not the retired V1-era 1.4.0
+      expect(MINIMUM_OPENCODE_VERSION).toBe("2.0.19")
+
+      // when each candidate host is compared against the floor
+      // then the floor itself and anything above it is accepted
+      for (const accepted of ["2.0.19", "2.0.20", "2.1.0", "v2.0.19"]) {
+        expect(compareVersions(accepted, MINIMUM_OPENCODE_VERSION)).toBeGreaterThanOrEqual(0)
+      }
+    })
+
+    test("rejects a pre-V2 host and the patch below the floor", () => {
+      // given hosts that predate the V2 line or sit just under the floor
+      // when each is compared against the floor
+      // then every one of them is rejected
+      for (const rejected of ["1.4.0", "1.0.0", "1.99.99", "2.0.18"]) {
+        expect(compareVersions(rejected, MINIMUM_OPENCODE_VERSION)).toBeLessThan(0)
+      }
+    })
+
+    test("the runtime version gate rejects a V1 host and admits a V2 host", () => {
+      // given a detected V2 host at the floor
+      setVersionCache("2.0.19")
+
+      // when gated against the floor
+      // then it passes
+      expect(isOpenCodeVersionAtLeast(MINIMUM_OPENCODE_VERSION)).toBe(true)
+
+      // given a detected pre-V2 host
+      setVersionCache("1.4.0")
+
+      // when gated against the same floor
+      // then it does not pass
+      expect(isOpenCodeVersionAtLeast(MINIMUM_OPENCODE_VERSION)).toBe(false)
     })
   })
 

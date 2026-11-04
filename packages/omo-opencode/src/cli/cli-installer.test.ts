@@ -101,7 +101,7 @@ describe("runCliInstaller", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(configManager, "addPluginToOpenCodeConfig").mockResolvedValue({
         success: true,
         configPath: "/tmp/opencode.jsonc",
@@ -162,7 +162,7 @@ describe("runCliInstaller", () => {
           hasVercelAiGateway: false,
         }),
         spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-        spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+        spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
         spyOn(configManager, "addPluginToOpenCodeConfig").mockImplementation(async () => {
           writeFileSync(join(configDir, "opencode.json"), JSON.stringify({ plugin: [PLUGIN_NAME] }), "utf-8")
           return { success: true, configPath: join(configDir, "opencode.json") }
@@ -277,7 +277,7 @@ describe("runCliInstaller", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(configManager, "addPluginToOpenCodeConfig").mockResolvedValue({
         success: true,
         configPath: "/tmp/opencode.jsonc",
@@ -337,7 +337,7 @@ describe("runCliInstaller", () => {
         hasVercelAiGateway: false,
       }),
       spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true),
-      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0"),
+      spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19"),
       spyOn(configManager, "addPluginToOpenCodeConfig").mockResolvedValue({
         success: true,
         configPath: "/tmp/opencode.jsonc",

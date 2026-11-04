@@ -330,7 +330,7 @@ fi
 
 If missing, spawn a subagent to install OpenCode and report back — saves context.
 
-Required: OpenCode `>= 1.4.0`.
+Required: OpenCode `2.0.19` or newer, which is the V2 plugin runtime this plugin targets. The installer refuses a pre-V2 host.
 
 #### For platform `codex` or `both`
 
@@ -429,7 +429,7 @@ Both halves are independent and idempotent — re-running is safe.
 #### Verify OpenCode plugin (skip if platform=codex)
 
 ```bash
-opencode --version  # Should be 1.4.0 or higher
+opencode --version  # Should be 2.0.19 or higher
 cat ~/.config/opencode/opencode.json
 # Plugin array should contain "oh-my-openagent" (legacy "oh-my-opencode" still loads with a warning)
 bunx oh-my-openagent doctor

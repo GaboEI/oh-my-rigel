@@ -8,8 +8,9 @@
  * three files byte-identical to their pre-operation bytes and must not leave a
  * partially materialised version directory behind.
  *
- * Hermetic: no OpenCode spawn, no Docker, no `--standalone`; the isolated
- * HOME/XDG roots are asserted clear of V1 before and after.
+ * Hermetic: no OpenCode spawn, no container runner, no `--standalone`; the
+ * isolated HOME/XDG roots are asserted clear of the real user installation
+ * before and after.
  */
 import { spawnSync } from "node:child_process"
 import crypto from "node:crypto"

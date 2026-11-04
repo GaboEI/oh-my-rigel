@@ -270,7 +270,6 @@ dt { color: var(--fg-muted); font-size: 0.875rem; text-transform: uppercase; }
 .command { background: var(--surf); border: 1px solid var(--border-ui); border-inline-start: 2px solid var(--info); font-family: var(--font-mono); max-inline-size: 100%; overflow-wrap: anywhere; padding: 0.12rem 0.4rem; }
 .setting { border: 1px solid var(--border-ui); border-radius: var(--radius-ui); color: var(--fg-muted); font-family: var(--font-mono); font-size: 0.9rem; padding: 0.12rem 0.45rem; }
 .warnings { color: var(--fg-muted); margin: 0.5rem 0 0; padding-inline-start: 1.1rem; }
-.migration-note { border-inline-start: 2px solid var(--warn); margin-block-start: 0.75rem; padding-inline-start: 0.7rem; }
 .beta-note { border-inline-start: 3px solid var(--info); color: var(--fg-muted); margin-block-start: 0.75rem; padding-inline-start: 0.7rem; }
 .footer-nav { display: flex; flex-wrap: wrap; gap: 0.4rem 1.25rem; }
 .footer-nav a:is(:link, :visited) { color: var(--fg-label); }
