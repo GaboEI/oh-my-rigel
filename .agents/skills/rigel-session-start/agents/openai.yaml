@@ -1,4 +1,4 @@
 interface:
   display_name: "Rigel Session Start"
-  short_description: "Load mandatory Rigel V2 isolation and V1 protection rules"
+  short_description: "Load mandatory Rigel V2 security boundary rules"
   default_prompt: "Read and apply the mandatory Oh My Rigel session-start rules before doing any project work."

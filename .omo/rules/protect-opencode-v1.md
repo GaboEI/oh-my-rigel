@@ -1,127 +1,85 @@
 ---
 alwaysApply: true
-description: Absolute isolation boundary protecting the user's production OpenCode V1 from all Oh My Rigel V2 development and experimentation.
+description: Mandatory V2 security boundary for Oh My Rigel work. Enforces sandboxed containment of every spawned process, proof before launch, one Rigel runtime per launch config, goal state inside its own state root, read-only treatment of the real user installation, reversible evidence, and fail-closed admission.
 ---
 
-# OpenCode V1 is untouchable
+# Rigel V2 security boundary
 
-This is a mandatory safety boundary, not guidance. It overrides convenience, test shortcuts, inherited environment defaults, and an agent's assumption that an operation is harmless.
+This file keeps its historical filename, and a few modules keep a `V1`-prefixed identifier, because both are named after the real user installation they protect. No OpenCode V1 installation exists on the machines this project runs on. Every "protected surface" below means the real installation in use, whatever version it reports.
 
-## Non-negotiable rule
+This is a mandatory boundary, not guidance. It overrides convenience, test shortcuts, inherited environment defaults, and any assumption that an operation is harmless.
 
-All Oh My Rigel development, experimentation, probes, QA, migrations, plugin loading, agent tests, server launches, and OpenCode subprocesses MUST run exclusively inside the approved isolated OpenCode V2 environment.
+The failure class is concrete: a probe that inherited the real `HOME` rewrote a shared goal-state file in place. The process already using that file could no longer decode it, and every prompt failed. Containment, not a second installation, was the missing control.
 
-For this project, Docker and every container-based runner are explicitly prohibited. Do not propose Docker, request permission to use Docker, fall back to Docker, or treat a container as the solution to an isolation problem. This prohibition remains in force until Gabo explicitly changes this rule.
+## 1. Contain every process
 
-OpenCode V1 is the user's production installation. Nothing performed for this repository may read, write, migrate, lock, truncate, replace, reload, restart, stop, inspect through a mutating API, or otherwise influence V1 state or processes.
+All Oh My Rigel development, experimentation, probes, QA, migrations, plugin loading, agent tests, server launches, and OpenCode subprocesses MUST run inside a disposable sandbox. Every spawned process gets a sandbox `HOME` plus `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` that resolve inside that sandbox and nowhere else, and every state-bearing variable is stripped or rebuilt: the `XDG_`, `OPENCODE_`, `OMO_`, `SENPI_`, and `PI_` families, `OPENCODE_GOAL_STATE_PATH`, `RIGEL_V2_USER_ROOT`, and the agent-home selectors. Build that environment through `profiles/gabo/isolated-v2-env.mjs` instead of composing it by hand.
 
-Using a V2 binary does not prove isolation. A process is considered V2-safe only when its complete configuration, data, state, cache, home, plugin state, sockets, ports, and service identity are isolated from V1. If that isolation cannot be positively proven before execution, do not run the command.
+A V2 binary proves nothing. A process is safe only when its home, config, data, state, cache, plugin state, sockets, ports, and goal state all live inside the sandbox and cannot resolve to the real installation. If that cannot be proven before execution, do not run the command.
 
-## Protected V1 surfaces
+## 2. Prove isolation before launch
 
-Treat the following as production V1 and read-only unless Gabo gives an explicit, task-specific instruction to repair V1 itself:
+Run `profiles/gabo/isolation-proof.mjs` first and read its output. Do not launch until it reports `verdict=ISOLATED`, a clean `protected[...]` line for every root, `goal_state_is_production=false`, exactly one Rigel runtime in the launch config chain, and a goal state inside that runtime's own state root. A `verdict=UNSAFE` or any `REFUSED` line is a stop, not a warning.
+
+## 3. One Rigel runtime per launch
+
+Never hand the host a config chain that can load two Rigel runtimes. The host loads every declared plugin in one process, the first registration keeps the tool names and the prompt seams, and the newer runtime never executes, so the run proves nothing about the code it was meant to exercise. There is no safe partial mode: declare exactly one runtime, or stop.
+
+## 4. Goal state stays inside its runtime
+
+`OPENCODE_GOAL_STATE_PATH` must resolve inside the state root of the runtime the launch actually loads, normally `<stateRoot>/goal-state/goals.json`. Leave it unset when the runtime can derive its own root and let the runtime install its default. Never point it at the real user's goal file, and never let it escape the runtime's root: the plugin then fails closed, loads with zero registrations, and the session looks isolated while no tool exists. A mismatch is an environment defect to fix, never a result to record.
+
+## 5. The real user installation is read-only
+
+Nothing done for this repository may write, migrate, lock, truncate, replace, reload, restart, stop, or inspect through a mutating API anything that belongs to the real user installation. Treat these as read-only:
 
 - `~/.config/opencode/**`
 - `~/.local/share/opencode/**`
 - `~/.local/share/opencode-goal-plugin/**`
 - `~/.cache/opencode/**`
-- the live `~/.opencode/bin/opencode` process environment
-- `opencode-lan.service` and every process, socket, port, database, plugin, or child process belonging to V1
+- the environment of the live `~/.opencode/bin/opencode` process, and the service that starts it
 - any default `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, or `XDG_CACHE_HOME` that resolves to the user's real home directories
 
-Do not interpret this list as exhaustive. Any path or process that might be shared with V1 is protected.
+The list is not exhaustive. Any path, process, socket, port, database, or plugin state that might be shared with the real installation is protected.
 
-## The only permitted live validation surface
+## 6. Evidence stays reversible
 
-Live validation for Oh My Rigel V2 happens only on **kris**: the real, installed Rigel V2 user
-surface, deployed by a normal install (`profiles/gabo/rigel-v2-user-install.mjs`) and driven the way
-a real user would drive it. There is no second approved live path.
+Every change against a live surface carries all three:
 
-**NLS1 is retired.** It must not be used for validation, and any NLS1 evidence is historical
-technical support only, never conclusive.
+1. A snapshot taken before the change.
+2. A rollback verified after it.
+3. A hash for every artifact you rely on.
 
-Every live gate obeys all of the following:
+Each change shows its own observables. An earlier run or a related test does not stand in for the behavior you just changed.
 
-1. A snapshot is taken **before** the change.
-2. A rollback is **verified** after it.
-3. **kris is the only laboratory.** Any other laboratory, service, sandbox, or runner is prohibited
-   and may not be used as a live gate, as a substitute for kris, or as grounds for accepting a change.
-4. Historical evidence (including NLS1 and earlier laboratory runs) may be kept as technical
-   support, but it is never conclusive.
-5. Repeating an old laboratory test does not replace a live demonstration: each change must show its
-   own relevant observables on kris.
+## 7. Fail closed
 
-Docker and every container-based runner are prohibited for this project: do not propose Docker, ask
-for permission to use it, fall back to it, or treat a container as the solution to an isolation
-problem. `profiles/gabo/run-v2-isolated.sh`, the other container-based runners and
-`profiles/gabo/apply-v2-runtime-service.sh` are historical or otherwise inapplicable to this rule;
-Gabo may change this only with an explicit instruction.
+If any check is unknown, ambiguous, inherited, or unverified, STOP. Do not experiment first and inspect afterward. The safe outcome is an unexecuted test reported with its exact reason, never a guessed environment.
 
-Do not replace the kris path with a direct `opencode run`, `opencode serve`, `opencode --standalone`,
-a Node contract that spawns OpenCode as a subprocess, or any manually constructed process
-environment. A test that cannot run on kris must remain unexecuted and be reported as blocked: the
-agent must not invent an alternative runner.
+## 8. Cleanup stays inside the sandbox
 
-Before any OpenCode process is launched for an isolated probe, prove all of the following:
-
-1. `HOME` is a disposable or dedicated V2 home, not the user's real home.
-2. `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` point only to the isolated V2 sandbox.
-3. Goal/plugin state cannot resolve to `~/.local/share/opencode-goal-plugin` from the real home. Set `OPENCODE_GOAL_STATE_PATH` inside the sandbox when the goal plugin is present.
-4. The process cannot address the V1 service, database, socket, port, configuration, cache, or plugin directories.
-5. Cleanup is scoped to the V2 sandbox and cannot kill, restart, refresh, or remove V1 resources.
-
-If any check is unknown, ambiguous, inherited, or unverified, STOP. Do not experiment first and inspect afterward.
+Scope every stop, restart, kill, refresh, and removal to the sandbox this run created. Cleanup must be unable to signal, restart, refresh, or delete anything outside it, and must never sweep every process that shares a binary name.
 
 ## Forbidden actions
 
-The following are prohibited even for a quick probe:
+- Launching an OpenCode child process with `{ ...process.env }` unless every home, XDG, and state variable is overwritten with verified sandbox paths.
+- Running OpenCode from a temporary working directory while keeping the real home or XDG roots. A work directory is not an isolation boundary.
+- Loading experimental plugins against the real installation's plugin or goal state.
+- Running a state migration, schema change, plugin startup, shutdown, or recovery against the real installation's data.
+- Treating `--standalone`, a different working directory, a different port, or a different binary version as proof of isolation.
+- Proceeding because a command looks read-only when plugin startup or shutdown can still mutate shared state.
+- Changing a file outside the sandbox and planning to restore it later.
 
-- Running Docker, Docker Compose, a containerized OpenCode runner, or any script that launches or requires a container.
-- Offering Docker as a decision for Gabo, or proposing any runner or laboratory in place of kris, when the kris surface already exists.
-- Modifying a test merely to route it through Docker or another newly invented isolation mechanism.
-- Launching an OpenCode child process with `{ ...process.env }` unless every home/XDG/state variable is overwritten with verified V2 sandbox paths.
-- Running OpenCode from `/tmp` while retaining the real home or XDG directories. A temporary working directory is not isolation.
-- Loading experimental plugins against the user's global OpenCode plugin or goal state.
-- Testing state migrations, schema changes, plugin startup, shutdown, or recovery against V1 data.
-- Changing a V1 file and planning to restore it later.
-- Restarting or signaling every OpenCode process indiscriminately.
-- Treating `--standalone`, a different working directory, a different port, or the V2 binary version as sufficient proof of isolation.
-- Proceeding because a command is read-only when plugin startup or shutdown can still mutate shared state.
+## When a boundary is at risk
 
-## Incident that created this rule
+If a command unexpectedly touches a protected path or a process outside the sandbox:
 
-On 2026-10-03, an agent created a probe under `/tmp/opencode/probe` and launched another OpenCode process with the existing environment. The temporary working directory was isolated, but the process's data environment was not. It inherited the user's real home and global OpenCode state.
-
-During that probe, shared goal state at `~/.local/share/opencode-goal-plugin/goals.json` changed from schema version 1 to schema version 2. The already-running V1 process still had a plugin implementation that accepted only schema version 1. Every subsequent prompt failed with:
-
-```text
-StateDecodeError
-Expected 1, actual 2
-```
-
-The visible symptom was `Failed to send prompt` followed by `Unexpected server error`.
-
-The repair was deliberately minimal and reversible:
-
-1. Preserve a byte-identical backup of the damaged goal-state file.
-2. Change only the top-level schema marker from version 2 back to version 1.
-3. Verify that the objective, progress, session identifier, and all other state remained identical.
-4. Leave the OpenCode session database untouched.
-
-The production session recovered, but the incident was preventable. The mistake was not the probe's code; it was spawning a supposedly isolated OpenCode process without isolating every persistent state root.
-
-## Required response to a boundary risk
-
-If a requested test appears to require V1 access, do not improvise and do not weaken this rule. Report the exact dependency, explain why the approved V2 sandbox is insufficient, and wait for Gabo's explicit direction.
-
-If a requested test appears to require Docker or any path other than kris, do not present alternative execution schemes. Stop before launching anything, report the exact incompatibility, and wait. The correct failure mode is a transparent blocked test, never a new container, subprocess, service, sandbox, or laboratory.
-
-If any command unexpectedly touches a protected path or V1 process:
-
-1. Stop the V2 experiment without signaling V1.
+1. Stop the sandboxed work without signaling anything outside it.
 2. Make no further writes.
-3. Preserve evidence from the isolated side only.
+3. Preserve evidence from the sandboxed side only.
 4. Report the exact command, resolved paths, process identity, and possible impact immediately.
-5. Do not attempt an unrequested repair or cleanup against V1.
+5. Do not attempt an unrequested repair or cleanup outside your own sandbox.
 
-No experiment, deadline, convenience, or validation claim justifies risking V1. V1 must remain operational and unchanged at all times.
+If a requested test seems to need the real installation, do not improvise and do not weaken this rule. Report the exact dependency and why the sandbox is insufficient.
+
+No experiment, deadline, convenience, or validation claim justifies risking the real live installation.

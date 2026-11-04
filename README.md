@@ -13,7 +13,7 @@ The OmO functionality ported to OpenCode V2 is the confirmed product set, and th
 ## Compatibility
 
 - Requires OpenCode V2.
-- Do not install or run Rigel while keeping an active OpenCode V1 installation in parallel. Shared state can contaminate V1.
+- Rigel targets OpenCode V2. If a pre-V2 OpenCode installation is still present, close it before installing Rigel: running both side by side is unsupported because shared configuration, data, and plugin state can contaminate the installation you already use.
 - OpenCode V2 and its plugin API are still evolving, so integrations may need updates as the host changes.
 - The source install path currently expects a POSIX shell, Git, Bun, Node.js, and an OpenCode V2 configuration stored as JSON.
 
@@ -30,7 +30,7 @@ Rigel installs from source for OpenCode V2; there is no public one-line installe
 - Web install guide: <https://omr.gabodev.dev/#install>
 - Source install steps: [OH-MY-RIGEL.md → Install and run the V2 preview](OH-MY-RIGEL.md#install-and-run-the-v2-preview)
 
-Prerequisites: OpenCode V2, a POSIX shell, Git, Bun, and Node.js, with no active OpenCode V1 installation running in parallel (see [Compatibility](#compatibility)).
+Prerequisites: OpenCode V2, a POSIX shell, Git, Bun, and Node.js, with no other OpenCode installation running in parallel (see [Compatibility](#compatibility)).
 
 Prepare the source checkout the guide describes:
 

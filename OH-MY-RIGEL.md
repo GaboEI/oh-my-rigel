@@ -45,10 +45,11 @@ V2 preview. It installs the upstream OmO product, not Oh My Rigel.
 ## Install and run the V2 preview
 
 Rigel is only for OpenCode V2. The recommended path is a clean upgrade to V2,
-followed by a source installation of Rigel. Do not keep OpenCode V1 active in
-parallel: shared configuration, data, cache, plugin, or goal state can
-contaminate V1. If you cannot identify the active OpenCode version and every
-state path it uses, stop before installing Rigel.
+followed by a source installation of Rigel. Do not leave a pre-V2 OpenCode
+installation active in parallel: shared configuration, data, cache, plugin, or
+goal state can contaminate the installation you already use. If you cannot
+identify the active OpenCode version and every state path it uses, stop before
+installing Rigel.
 
 > **Scope note:** the OmO functionality ported to OpenCode V2 is confirmed. This
 > preview installation additionally includes an external **beta** layer of agents

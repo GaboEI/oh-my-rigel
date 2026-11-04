@@ -67,9 +67,10 @@ If English isn't your first language, don't worry! We value your contributions r
 
 Oh My Rigel is building a developer preview of OmO exclusively for the evolving
 OpenCode V2 plugin API. Update OpenCode to V2 before installing Rigel. Do not
-keep an active OpenCode V1 installation in parallel because shared state can
-contaminate V1. The complete OmO feature set has not yet been demonstrated on
-V2, and the preview is not ready for production use.
+keep an active pre-V2 OpenCode installation in parallel, because shared state
+can contaminate the installation you already use. The complete OmO feature set
+has not yet been demonstrated on V2, and the preview is not ready for production
+use.
 
 The compatibility target includes agents, delegation, skills, permissions,
 tools, context handling, and continuity. Do not remove or silently weaken one
