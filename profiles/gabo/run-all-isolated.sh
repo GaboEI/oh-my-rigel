@@ -5,8 +5,10 @@
 #   1. Bun unit tests for the native V2 runtime modules.
 #   2. Isolated V2 QA contracts (each spawns the real V2 lab binary with a
 #      temporary HOME/XDG sandbox and a deterministic fake provider) plus the
-#      session-authority preflight, which runs directly on the checkout: it
-#      uses no container and launches no OpenCode process.
+#      session-authority preflight, which grades a disposable managed
+#      installation the suite prepares in its own sandbox. It never reads the
+#      invoking operator's home: a host without a Rigel installation of its
+#      own cannot fail an otherwise valid lab run.
 #   3. Historical container lab runners. They are not the live gate and never
 #      required: layer 3 runs only under an explicit RIGEL_SUITE_DOCKER=1
 #      opt-in, and is skipped with a declared reason otherwise.
@@ -74,10 +76,15 @@ if [ "${RIGEL_LAB_REFRESH:-0}" = "1" ]; then
 else
   run_step "bash: run-lab-acceptance.sh" bash "$suite_dir/run-lab-acceptance.sh"
 fi
-# Direct layer: the session-authority preflight runs on the checkout itself. It
-# uses no container and launches no OpenCode process, so it must never be gated
-# behind the layer 3 container opt-in.
-run_step "bash: run-session-authority-preflight.sh" bash "$suite_dir/run-session-authority-preflight.sh"
+# Direct layer: the session-authority preflight grades a Rigel-managed
+# installation, and it has none of its own - it reads $HOME. Run bare it grades
+# the OPERATOR's installation, so a host without the managed Goal shims failed a
+# lab run that never concerned it. The driver installs a disposable managed
+# installation through the productized installer, proves the sandbox isolation,
+# and hands the untouched preflight that installation's home, state and config.
+# It uses no container and launches no OpenCode process, so it must never be
+# gated behind the layer 3 container opt-in.
+run_step "node: run-session-authority-preflight.sh (disposable managed installation)" node "$suite_dir/run-session-authority-preflight-isolated.mjs"
 if [ "${RIGEL_SUITE_ALLOW_NODE_CONTRACTS:-0}" = "1" ]; then
   # The rules-injector contract is hermetic (spawns no OpenCode, no --standalone) and
   # belongs to the authorized lab lane via run-lab-acceptance.sh, not this host-spawn lane.

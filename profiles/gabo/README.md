@@ -43,7 +43,7 @@ Run `bash profiles/gabo/run-session-authority-preflight.sh` to verify the manage
 
 Run `bash profiles/gabo/run-mcp-policy-preflight.sh` to validate singleton ownership, the embedded protective SSH MCP, and the absence of credentials or duplicate external MCP declarations.
 
-Run `bash profiles/gabo/run-all-isolated.sh` for the full non-account acceptance suite. See [UPSTREAM-MAINTENANCE.md](UPSTREAM-MAINTENANCE.md) for the isolated upstream-review and rollback procedure.
+Run `bash profiles/gabo/run-all-isolated.sh` for the full non-account acceptance suite. Inside the suite the session-authority preflight grades a disposable managed installation that `run-session-authority-preflight-isolated.mjs` prepares in its own sandbox through the productized installer, so the suite never grades, and never requires, the invoking operator's own installation; run the preflight directly (above) to grade the installation you actually have. See [UPSTREAM-MAINTENANCE.md](UPSTREAM-MAINTENANCE.md) for the isolated upstream-review and rollback procedure.
 
 `bash profiles/gabo/run-lab-acceptance.sh` validates the historical isolated V2 laboratory (`opencode-v2-lab.service`, roots under `~/.local/share/opencode-v2-lab`). It never launches OpenCode and checks only the unit's isolation, the service binary and port, the lab API, and that every config source resolves inside the lab. Like the other laboratory runners it is historical reference, not a live gate. Add `--refresh` to rebuild the lab runtime first through `apply-v2-runtime-service.sh`.
 
