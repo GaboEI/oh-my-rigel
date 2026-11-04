@@ -32,7 +32,8 @@
  *
  *   node profiles/gabo/qa-v2-t22-todo-continuation-experiment.mjs --self-test
  *     HERMETIC. Re-execs itself in a disposable isolated environment (its own
- *     HOME and XDG roots; never V1) and drives the REAL runtime `plugin.setup()`
+ *     HOME and XDG roots; never the real user installation) and drives the REAL
+ *     runtime `plugin.setup()`
  *     against an in-memory V2 context and an in-process mock provider. No live
  *     lab, no OpenCode spawn. Exit 0 iff all four hermetic experiments PASS.
  *
@@ -43,13 +44,13 @@
  *     provider temporarily points at the proxy, and real sessions run the E1-E5
  *     scenarios. The durable `kv` store is read read-only from the lab SQLite
  *     DB. The lab config is backed up and restored; the canonical runtime is
- *     redeployed from the main checkout; V1 is only ever READ for the
- *     before/after integrity projection.
+ *     redeployed from the main checkout; the real user installation is only
+ *     ever READ for the before/after integrity projection.
  *
  * Isolation: this drive addresses ONLY 127.0.0.1:4097 (the lab), 4098/4099 (its
  * own mocks). The refresh script stops/starts ONLY opencode-v2-lab.service;
- * opencode-lan.service (V1) is never touched. No Docker, no `opencode` spawn.
- * See `.omo/rules/protect-opencode-v1.md`.
+ * opencode-lan.service is never touched. No container runner, no `opencode`
+ * spawn. See `.omo/rules/protect-opencode-v1.md`.
  *
  * Harness pattern mirrors `qa-v2-t21-compaction-experiment.mjs` and the proven
  * `.omo/evidence/20261006-t21-compaction/live-qa/run-lab-compaction-qa.mjs`.
@@ -664,7 +665,7 @@ async function runExperiment4(plugin, temporary) {
     await pushIdle(harness.events)
     const injections = harness.promptCalls.filter((call) => String(call?.text ?? "").includes(CONTINUATION_PROMPT_MARKER))
     checks.push({ name: "exactly one continuation is queued despite duplicate idle events", ok: injections.length === 1, detail: `injections=${injections.length}` })
-    checks.push(check("the queued continuation targets the idle session with the V1 marker", injections[0]?.sessionID === SESSION && String(injections[0]?.text).includes("Continue me")))
+    checks.push(check("the queued continuation targets the idle session that owns the tracked todo", injections[0]?.sessionID === SESSION && String(injections[0]?.text).includes("Continue me")))
     await dispose()
   }
 
@@ -801,7 +802,7 @@ function sha256File(file) {
 /**
  * Content-hash a file tree. `exclude` is an optional predicate over the
  * root-relative path; excluded files are counted but not hashed, which is the
- * churn filter the V1 share tree needs (see `V1_SHARE_EXCLUDE`).
+ * churn filter the real installation's share tree needs (see `V1_SHARE_EXCLUDE`).
  */
 function shaFileTree(directory, options = {}) {
   const exclude = typeof options.exclude === "function" ? options.exclude : () => false
@@ -853,7 +854,7 @@ function changedPaths(before, after) {
 }
 
 /**
- * The V1 share tree is a LIVE production surface: the host OpenCode session
+ * The real installation's share tree is a LIVE surface: the host OpenCode session
  * writes its own TUI state, log, session DB/WAL and git snapshots continuously.
  * T21 proved a naive whole-tree hash there is a false positive
  * (`.omo/evidence/20261006-t21-compaction/live-qa/v1-integrity-incident.md`), so
@@ -867,10 +868,11 @@ const V1_SHARE_EXCLUDE = (relative) => {
 }
 
 /**
- * The V1 config tree also holds the `context-mode` plugin's live session and
- * content SQLite databases (`context-mode/sessions/*.db*`), which the host V1
- * session writes continuously. Those are live write surfaces, not configuration,
- * so they are excluded; every real config file is still hashed strictly.
+ * The real installation's config tree also holds the `context-mode` plugin's live
+ * session and content SQLite databases (`context-mode/sessions/*.db*`), which the
+ * live host session writes continuously. Those are live write surfaces, not
+ * configuration, so they are excluded; every real config file is still hashed
+ * strictly.
  */
 const V1_CONFIG_EXCLUDE = (relative) => {
   const normalized = relative.replace(/\\/g, "/")
@@ -902,7 +904,7 @@ function v1IntegritySnapshot(before, after) {
     config_changed: changedPaths(before.config, after.config),
     share_changed: changedPaths(before.share, after.share),
     intact: configIntact && shareIntact,
-    note: "The share projection excludes the live V1 write surfaces (opencode.db*, log, storage, snapshot, tool-output, repos, worktree, shell); the config projection excludes the live context-mode session/content SQLite DBs. Every other V1 config and share file is hashed strictly.",
+    note: "The share projection excludes the live write surfaces of the real installation (opencode.db*, log, storage, snapshot, tool-output, repos, worktree, shell); the config projection excludes the live context-mode session/content SQLite DBs. Every other config and share file is hashed strictly.",
   }
 }
 
@@ -1409,8 +1411,9 @@ async function runLiveExperiment2(lab, ctx) {
     ctx.saveDbSnapshot("e2-task-mirror.json", { sessionID, key: durable.key, todos: durable.todos })
     const rows = traceRows(readTrace(ctx.traceFile)).slice(traceStart).filter((row) => row.scenario === "task-mirror")
     const mirror = durable.todos.find((todo) => todo.content === "Mirror task")
-    // Under `experimental.task_system` the V1 config denies `todowrite`, so the
-    // unrelated todo is a second mirrored task; identity is matched by content.
+    // Under `experimental.task_system` the real installation's config denies
+    // `todowrite`, so the unrelated todo is a second mirrored task; identity is
+    // matched by content.
     const unrelated = durable.todos.find((todo) => todo.content === "Unrelated todo must persist")
 
     checks.push(check("the mirrored task appears as a session todo", Boolean(mirror), JSON.stringify(durable.todos)))
@@ -2074,7 +2077,8 @@ async function runLive() {
     report.push(`drive_error=${teardownNote}`)
   } finally {
     // Teardown: kill the mocks, restore the lab config, redeploy the canonical
-    // runtime from the MAIN checkout (never the worktree), then re-check V1.
+    // runtime from the MAIN checkout (never the worktree), then re-check the real
+    // installation.
     try {
       proxy?.close()
     } catch {
@@ -2113,7 +2117,7 @@ async function runLive() {
   }
 
   if (!v1Integrity || !v1Integrity.intact) {
-    process.stderr.write("V1 INTEGRITY VIOLATION - report immediately, no further writes\n")
+    process.stderr.write("REAL INSTALLATION INTEGRITY VIOLATION - report immediately, no further writes\n")
   }
 
   const liveVerdicts = results.map((entry) => ({

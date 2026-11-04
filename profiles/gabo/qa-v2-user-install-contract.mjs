@@ -6,8 +6,9 @@
  * HOME/XDG: clean install from source, first operation, idempotent reinstall,
  * upgrade between two real runtime versions with state migration, rollback to the
  * previous version (byte-identical), and bounded uninstall that preserves foreign
- * data. It never launches OpenCode, never uses Docker or `--standalone`, and
- * refuses to run if the isolated roots resolve under V1.
+ * data. It never launches OpenCode, never uses a container runner or
+ * `--standalone`, and refuses to run if the isolated roots resolve under the
+ * real user installation.
  *
  * Not a laboratory harness: the installer is the productized user route; the
  * laboratory wrapper is only re-exercised separately by the lab acceptance.

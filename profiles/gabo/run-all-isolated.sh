@@ -5,8 +5,9 @@
 #   1. Bun unit tests for the native V2 runtime modules.
 #   2. Isolated V2 QA contracts (each spawns the real V2 lab binary with a
 #      temporary HOME/XDG sandbox and a deterministic fake provider).
-#   3. Docker lab runners (opt-in via RIGEL_SUITE_DOCKER=1; skipped with a
-#      declared reason otherwise).
+#   3. Historical container lab runners. They are not the live gate and never
+#      required: layer 3 runs only under an explicit RIGEL_SUITE_DOCKER=1
+#      opt-in, and is skipped with a declared reason otherwise.
 #
 # Output: one status line per step plus a final summary; exits non-zero when
 # any executed step fails. Never runs the quarantined attic/ surface.
@@ -81,7 +82,7 @@ else
   declare_status "node contracts" "SKIP (RIGEL_SUITE_ALLOW_NODE_CONTRACTS!=1; host-side node spawn cannot prove full isolation, use the lab service lane)"
 fi
 
-echo "layer 3: docker lab runners"
+echo "layer 3: historical container lab runners (opt-in via RIGEL_SUITE_DOCKER=1)"
 run_docker_step "bash: run-v2-isolated.sh" bash "$suite_dir/run-v2-isolated.sh"
 run_docker_step "bash: run-delegation-preflight.sh" bash "$suite_dir/run-delegation-preflight.sh"
 run_docker_step "bash: run-session-authority-preflight.sh" bash "$suite_dir/run-session-authority-preflight.sh"

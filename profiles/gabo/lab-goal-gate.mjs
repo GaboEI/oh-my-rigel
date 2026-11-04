@@ -157,12 +157,13 @@ export function probeGoalState(home, goalsFile) {
 
 export function verifyGoalInvariant(mode, before, after) {
   if (mode === "managed") {
-    // The shim-managed engine's state lives inside the Rigel state tree, never
-    // at the retired V1 path. The invariant is that the V1 goals.json stays absent.
+    // The shim-managed engine owns goal state inside the Rigel state tree, so the
+    // retired external package's goals.json must stay absent. If it appears, a
+    // second goal owner is writing state and the single-owner invariant is broken.
     if (before.present || after.present) {
-      return { pass: false, reason: `managed goal mode requires the retired V1 goals.json absent; before.present=${before.present} after.present=${after.present}` }
+      return { pass: false, reason: `managed goal mode requires the retired external goal state absent; before.present=${before.present} after.present=${after.present}` }
     }
-    return { pass: true, reason: "managed goal mode: third-party shim shape verified; V1 goals.json absent before and after (invariant held)" }
+    return { pass: true, reason: "managed goal mode: third-party shim shape verified; retired external goals.json absent before and after (invariant held)" }
   }
   if (mode === "legacy") {
     if (!before.present || !after.present) {

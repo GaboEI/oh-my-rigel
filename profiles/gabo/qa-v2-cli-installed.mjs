@@ -6,8 +6,9 @@
  * `apply-v2-runtime-service.sh` (`<labRoot>/rigel/bin/rigel-v2`, exposed at
  * `<labHome>/.local/bin/rigel-v2`) - NOT the source file. It demonstrates help
  * and version, positive and negative results of the applicable commands, that
- * the CLI resolves only inside the lab (never V1), and that V1 stays
- * byte-identical. It never launches OpenCode and never uses Docker.
+ * the CLI resolves only inside the lab (never the real user installation), and
+ * that the real installation stays byte-identical. It never launches OpenCode and
+ * never uses a container runner.
  *
  * Usage: bun profiles/gabo/qa-v2-cli-installed.mjs
  */
@@ -85,7 +86,7 @@ function check(name, pass, detail) {
   checks.push({ name, pass, detail })
 }
 
-// 1. The installed launcher lives under the lab, never V1.
+// 1. The installed launcher lives under the lab, never the real installation.
 check("launcher.underLabRoot", under(launcher, labRoot), launcher)
 check("launcher.homeExposed", fs.existsSync(homeLauncher), homeLauncher)
 for (const v1 of V1_ROOTS) check(`launcher.notUnderV1:${path.basename(v1)}`, !under(launcher, v1), v1)
@@ -198,7 +199,7 @@ check("refresh.writesSnapshot", refresh.status === 0 && fs.existsSync(out) && JS
 const refreshDown = cli(["refresh-model-capabilities", "--host", "http://127.0.0.1:9", "--out", path.join(tempDir("rigel-cli-cap-"), "cap.json")])
 check("refresh.unreachableRefused", refreshDown.status === 1, `exit ${refreshDown.status}`)
 
-// 5. V1 stays byte-identical.
+// 5. The real user installation stays byte-identical.
 const afterConfig = sha(V1_CONFIG)
 const afterProtected = buildProtectedManifest(os.homedir())
 check("v1.configByteIdentical", beforeConfig === afterConfig, `${String(beforeConfig).slice(0, 16)} -> ${String(afterConfig).slice(0, 16)}`)
