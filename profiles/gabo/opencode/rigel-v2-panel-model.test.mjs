@@ -107,9 +107,10 @@ describe("#given the read-only panel core", () => {
     test("#then every sourced agent stays visible with its effective model or a dash", () => {
       const model = buildPanelModel({
         sessions: [
-          { id: "ses_model", agent: "sisyphus", status: "running", model: { providerID: "openai", modelID: "gpt-6" } },
-          { id: "ses_missing", agent: "atlas", status: "idle" },
+          { id: "ses_model", agent: "sisyphus", model: { providerID: "openai", modelID: "gpt-6" } },
+          { id: "ses_missing", agent: "atlas" },
         ],
+        statusOf: (id) => (id === "ses_model" ? "running" : "idle"),
         models: [{ id: "catalog-only", name: "Catalog-only" }],
       })
       expect(model.agentRows).toEqual({
@@ -125,11 +126,12 @@ describe("#given the read-only panel core", () => {
     test("#then explicitly terminated sessions and category entries do not become agent rows", () => {
       const model = buildPanelModel({
         sessions: [
-          { id: "ses_active", agent: "sisyphus", status: "idle" },
-          { id: "ses_terminated", agent: "atlas", status: "terminated" },
-          { id: "ses_category", agent: "category", status: "running", category: true },
-          { id: "ses_kind", agent: "category", status: "running", kind: "category" },
+          { id: "ses_active", agent: "sisyphus" },
+          { id: "ses_terminated", agent: "atlas" },
+          { id: "ses_category", agent: "category", category: true },
+          { id: "ses_kind", agent: "category", kind: "category" },
         ],
+        statusOf: (id) => ({ ses_active: "idle", ses_terminated: "terminated", ses_category: "running", ses_kind: "running" })[id],
       })
       expect(model.agentRows).toMatchObject({
         state: PANEL_STATE.AVAILABLE,
@@ -153,9 +155,10 @@ describe("#given the read-only panel core", () => {
     test("#then every active agent is visible as `agent model`, with `-` when none was sourced", () => {
       const model = buildPanelModel({
         sessions: [
-          { id: "ses_model", agent: "sisyphus", status: "running", model: { providerID: "openai", modelID: "gpt-6" } },
-          { id: "ses_missing", agent: "atlas", status: "idle" },
+          { id: "ses_model", agent: "sisyphus", model: { providerID: "openai", modelID: "gpt-6" } },
+          { id: "ses_missing", agent: "atlas" },
         ],
+        statusOf: (id) => (id === "ses_model" ? "running" : "idle"),
         models: [{ id: "catalog-only", name: "Catalog-only" }],
       })
 
@@ -168,8 +171,8 @@ describe("#given the read-only panel core", () => {
     })
 
     test("#then the block is a flat list with no tree glyph, indentation level or counter", () => {
-      const sessions = [1, 2, 3].map((index) => ({ id: `ses_${index}`, agent: `agent-${index}`, status: "running" }))
-      const model = buildPanelModel({ sessions })
+      const sessions = [1, 2, 3].map((index) => ({ id: `ses_${index}`, agent: `agent-${index}` }))
+      const model = buildPanelModel({ sessions, statusOf: () => "running" })
 
       const lines = formatPanel(model).split("\n")
       const start = lines.indexOf("Active agents")
@@ -184,16 +187,20 @@ describe("#given the read-only panel core", () => {
       expect(lines.some((line) => /^\s*\d+[.)]\s/.test(line))).toBe(false)
     })
 
-    test("#then a session whose status was never read contributes no row and no status claim", () => {
+    test("#then an inline roster status neither overrides the selected accessor nor claims an unread session", () => {
       const model = buildPanelModel({
         sessions: [
-          { id: "ses_sel", agent: "atlas", status: "running" },
-          { id: "ses_unread", agent: "sisyphus" },
+          { id: "ses_sel", agent: "atlas", status: "idle" },
+          { id: "ses_unread", agent: "sisyphus", status: "running" },
         ],
         statusOf: (id) => (id === "ses_sel" ? "running" : undefined),
         titleOf: () => "Title",
       })
 
+      expect(section(model, "sessions").rows).toEqual([
+        { id: "ses_sel", title: "Title", status: "running" },
+        { id: "ses_unread", title: "Title", status: null },
+      ])
       const lines = formatPanel(model).split("\n")
       const start = lines.indexOf("Active agents")
       const rows = lines.slice(start + 1).filter((line) => line.startsWith("  - ") && !line.includes("Title"))
@@ -205,8 +212,8 @@ describe("#given the read-only panel core", () => {
     test("#then the block is omitted entirely when the roster is unavailable, errored, inactive or empty", () => {
       const models = [
         buildPanelModel({ sessions: undefined }),
-        buildPanelModel({ sessions: [{ id: "ses_1", agent: "atlas", status: "running" }], sessionsError: true }),
-        buildPanelModel({ sessions: [{ id: "ses_1", agent: "atlas", status: "terminated" }] }),
+        buildPanelModel({ sessions: [{ id: "ses_1", agent: "atlas" }], sessionsError: true }),
+        buildPanelModel({ sessions: [{ id: "ses_1", agent: "atlas" }], statusOf: () => "terminated" }),
         buildPanelModel({ sessions: [] }),
       ]
 
@@ -219,7 +226,8 @@ describe("#given the read-only panel core", () => {
 
     test("#then a long agent or model is fitted to the text budget with the agent kept visible", () => {
       const model = buildPanelModel({
-        sessions: [{ id: "ses_long", agent: `agent-${"x".repeat(60)}`, status: "running", model: `provider/${"m".repeat(60)}` }],
+        sessions: [{ id: "ses_long", agent: `agent-${"x".repeat(60)}`, model: `provider/${"m".repeat(60)}` }],
+        statusOf: () => "running",
       })
 
       const lines = formatPanel(model).split("\n")
@@ -230,8 +238,8 @@ describe("#given the read-only panel core", () => {
     })
 
     test("#then the block takes part in the height decision instead of overrunning it", () => {
-      const sessions = Array.from({ length: 40 }, (_, index) => ({ id: `ses_${index}`, agent: "atlas", status: "running" }))
-      const model = buildPanelModel({ sessions, titleOf: (id) => `Title ${id}` })
+      const sessions = Array.from({ length: 40 }, (_, index) => ({ id: `ses_${index}`, agent: "atlas" }))
+      const model = buildPanelModel({ sessions, titleOf: (id) => `Title ${id}`, statusOf: () => "running" })
 
       expect(formatPanel(model).split("\n").length).toBeGreaterThan(PANEL_MAX_LINES)
 
@@ -271,8 +279,9 @@ describe("#given the read-only panel core", () => {
     test("#then every emitted line fits the observed text budget so no row wraps", () => {
       const model = buildPanelModel({
         location: { directory: `/${"deep/".repeat(20)}` },
-        sessions: [{ id: "ses_wide", status: "running" }],
-        titleOf: () => "\u5f00\u59cb Atlas \u8ba1\u5212\u6267\u884c\u4f1a\u8bdd\u6807\u9898\u5f88\u957f\u5f88\u957f\u975e\u5e38\u957f",
+        sessions: [{ id: "ses_wide" }],
+        titleOf: () => "开始 Atlas 计划执行会话标题很长很长非常长",
+        statusOf: () => "running",
         models: [{ id: "m", name: "m".repeat(120) }],
         agents: [{ id: "sisyphus", name: "Sisyphus" }],
         providers: [{ id: "p", name: "p".repeat(120) }],
@@ -289,12 +298,13 @@ describe("#given the read-only panel core", () => {
 
   describe("#given a block longer than the observed terminal height", () => {
     const manySessions = (count, idOf = (index) => `ses_${index}`) =>
-      Array.from({ length: count }, (_, index) => ({ id: idOf(index), status: "idle" }))
+      Array.from({ length: count }, (_, index) => ({ id: idOf(index) }))
 
     test("#then it keeps the header and the active-session row and omits the rest", () => {
       const model = buildPanelModel({
         sessions: manySessions(PANEL_MAX_LINES - 5),
         titleOf: (id) => `Title ${id}`,
+        statusOf: () => "idle",
         models: [{ id: "m" }],
         agents: [{ id: "a" }],
         providers: [{ id: "p" }],
@@ -318,6 +328,7 @@ describe("#given the read-only panel core", () => {
       const model = buildPanelModel({
         sessions: [...read, ...unread],
         titleOf: (id) => (id.startsWith("ses_read") ? "Read row" : "Unread row"),
+        statusOf: (id) => (id.startsWith("ses_read") ? "idle" : undefined),
         models: [{ id: "m" }],
         agents: [{ id: "a" }],
         providers: [{ id: "p" }],
@@ -337,6 +348,7 @@ describe("#given the read-only panel core", () => {
       const model = buildPanelModel({
         sessions: manySessions(PANEL_MAX_LINES + 10),
         titleOf: (id) => `Title ${id}`,
+        statusOf: () => "idle",
       })
       const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
       expect(layout.mode).toBe(PANEL_LAYOUT.NONE)

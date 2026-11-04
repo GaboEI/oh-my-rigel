@@ -194,8 +194,7 @@ function resolveStatus(statusOf, id) {
 
 const ACTIVE_SESSION_STATUSES = new Set(["idle", "running"])
 
-function sessionStatus(session, statusOf, id) {
-  if (isRecord(session) && typeof session.status === "string" && session.status.length > 0) return session.status
+function sessionStatus(statusOf, id) {
   return resolveStatus(statusOf, id)
 }
 
@@ -279,7 +278,7 @@ export function buildPanelModel(reads = {}) {
   const providers = normalizeList(reads.providers)
   const sessionEntries = sessions.items.map((session, index) => {
     const id = asId(session, index)
-    return { session, id, status: sessionStatus(session, reads.statusOf, id) }
+    return { session, id, status: sessionStatus(reads.statusOf, id) }
   })
   const activeAgents = activeAgentRows(
     sessionEntries.map(({ session, id, status }) => ({ session, sessionID: id, status })),
@@ -420,7 +419,7 @@ export function formatPanel(model) {
   try {
     const lines = ["Oh My Rigel"]
     const location = isRecord(model) && typeof model.location === "string" && model.location.length > 0 ? model.location : null
-    lines.push(location ? `  ${truncate(location, 60)}` : "  no disponible")
+    lines.push(location ? `  ${location}` : "  no disponible")
     lines.push(...activeAgentLines(model))
     const sections = isRecord(model) && Array.isArray(model.sections) ? model.sections : []
     for (const section of sections) {
