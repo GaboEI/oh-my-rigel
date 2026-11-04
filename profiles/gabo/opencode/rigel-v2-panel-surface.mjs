@@ -58,10 +58,11 @@
  * line it renders is fitted by the pure core to the 41 usable text cells the F4
  * capture observed inside the 43-cell sidebar content column, so no row can wrap
  * and split its meaning. Growth is vertical only. When the whole block cannot fit
- * the observed 80-row terminal the core degrades it to the header plus the
- * active-session information, and when not even that fits `render` returns `null`
- * instead of a node: the block is omitted, never scrolled, clipped or hidden. No
- * terminal size is polled, cached or measured, and no width is invented here.
+ * the 52 rows the F6c capture measured between this block's header and the last
+ * sidebar row, the core degrades it to the header plus the read-session
+ * information, and when not even that fits `render` returns `null` instead of a
+ * node: the block is omitted, never scrolled, clipped or hidden. No terminal size
+ * is polled, cached or measured, and no width is invented here.
  *
  * The OpenTUI Solid peer is resolved by a STATIC bare import; the V2 host injects
  * it at load time, so the module stays buildless with no node_modules.
