@@ -78,13 +78,16 @@ function renderedText(fake) {
 }
 
 describe("#given the panel surface at the host boundary", () => {
-  test("#then setup registers exactly the sidebar.content slot with a render", () => {
+  test("#then setup registers exactly one additive sidebar.content slot with a render", () => {
     const fake = fakeContext()
     const dispose = createPanelSurface({ solid: stubSolid() }).setup(fake.context)
     expect(typeof dispose).toBe("function")
     expect(fake.slotCalls).toHaveLength(1)
     expect(fake.slotCalls[0].append).toBe(PANEL_SLOT_APPEND)
     expect(typeof fake.slotCalls[0].render).toBe("function")
+    // The host-owned lifecycle receives only the additive slot contract: no
+    // replacement target, ordering claim, subscription, or active capability.
+    expect(Object.keys(fake.slotCalls[0]).sort()).toEqual(["append", "render"])
   })
 
   describe("#when render runs with available data for every representation", () => {
