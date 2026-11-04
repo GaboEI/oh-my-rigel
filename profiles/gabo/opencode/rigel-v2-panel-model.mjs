@@ -13,9 +13,10 @@
  * demonstrated-but-empty list renders the section's empty state; a failed read
  * renders "error". No value is ever inferred or invented.
  *
- * Representations: R2 "Sessions" plus R3 "Models"/"Agents"/"Providers" (the
- * catalog representation), each with its own isolated state, all inside the one
- * <text> node the adapter renders.
+ * Representations: a leading flat "Active agents" block (G4: one row per active
+ * session, `agent model`, no tree) followed by R2 "Sessions" and R3
+ * "Models"/"Agents"/"Providers" (the catalog representation), each with its own
+ * isolated state, all inside the one <text> node the adapter renders.
  *
  * Layout (F5): every boundary below comes from the one live layout the F4 capture
  * produced, never from a measurement this module or the surface would have to take.
@@ -338,6 +339,13 @@ export function buildPanelModel(reads = {}) {
   }
 }
 
+/**
+ * Title of the active-agent block (G4). It is deliberately NOT the catalog
+ * "Agents" title: one section lists sessions that are running, the other lists
+ * the installed catalog, and merging them would claim the catalog is running.
+ */
+const ACTIVE_AGENT_TITLE = "Active agents"
+
 const EMPTY_LINES = Object.freeze({
   sessions: "  (sin sesiones)",
   models: "  No hay modelos disponibles",
@@ -369,6 +377,40 @@ function sectionLines(section) {
 }
 
 /**
+ * G4 keeps every active agent visible; G5's tree form (a `*` main row, indented
+ * children, `|_` nesting) and its enumeration stay BLOQUEADO until the host
+ * demonstrates `parentID`, depth and a stable enumeration, so this block renders
+ * a FLAT list: no glyph, no indentation level, no counter, and no ordering claim
+ * beyond the roster order the read already carries.
+ *
+ * Each row is `agent model`. The model is the session's own effective model, or
+ * `-` when the source supplied none; a catalog entry is never substituted for it.
+ * No row shows a status: only the slot-selected session's status was read (I-3),
+ * so a per-row status would either invent one or repeat a read this panel never
+ * performed.
+ *
+ * The block is omitted entirely when the roster read is unavailable or errored
+ * and when no session qualifies. The Sessions section already carries that same
+ * degradation, so repeating "no disponible"/"error" here would claim one fact
+ * twice and could be read as a second, independent failure.
+ */
+function activeAgentLines(model) {
+  const active = isRecord(model) ? model.agentRows : undefined
+  if (!isRecord(active) || active.state !== PANEL_STATE.AVAILABLE) return []
+  if (!Array.isArray(active.rows)) return []
+
+  const lines = []
+  for (const row of active.rows) {
+    if (!isRecord(row)) continue
+    const agent = typeof row.agent === "string" && row.agent.length > 0 ? row.agent : null
+    if (agent === null) continue
+    const modelLabel = typeof row.model === "string" && row.model.length > 0 ? row.model : "-"
+    lines.push(`  - ${agent} ${modelLabel}`)
+  }
+  return lines.length > 0 ? [ACTIVE_AGENT_TITLE, ...lines] : []
+}
+
+/**
  * Format the model as ONE plain multiline string, with every line fitted to the
  * observed sidebar text budget. This is the only textual contract; the adapter
  * renders it into a single OpenTUI <text> node. The function never throws: a
@@ -379,6 +421,7 @@ export function formatPanel(model) {
     const lines = ["Oh My Rigel"]
     const location = isRecord(model) && typeof model.location === "string" && model.location.length > 0 ? model.location : null
     lines.push(location ? `  ${truncate(location, 60)}` : "  no disponible")
+    lines.push(...activeAgentLines(model))
     const sections = isRecord(model) && Array.isArray(model.sections) ? model.sections : []
     for (const section of sections) {
       if (isRecord(section) && typeof section.id === "string") lines.push(...sectionLines(section))

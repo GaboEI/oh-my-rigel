@@ -149,6 +149,99 @@ describe("#given the read-only panel core", () => {
     })
   })
 
+  describe("#given active V2 sessions and a rendered block", () => {
+    test("#then every active agent is visible as `agent model`, with `-` when none was sourced", () => {
+      const model = buildPanelModel({
+        sessions: [
+          { id: "ses_model", agent: "sisyphus", status: "running", model: { providerID: "openai", modelID: "gpt-6" } },
+          { id: "ses_missing", agent: "atlas", status: "idle" },
+        ],
+        models: [{ id: "catalog-only", name: "Catalog-only" }],
+      })
+
+      const lines = formatPanel(model).split("\n")
+      const start = lines.indexOf("Active agents")
+
+      expect(start).toBeGreaterThan(-1)
+      // The missing model is `-`, never the catalog entry listed further down.
+      expect(lines.slice(start + 1, start + 3)).toEqual(["  - sisyphus openai/gpt-6", "  - atlas -"])
+    })
+
+    test("#then the block is a flat list with no tree glyph, indentation level or counter", () => {
+      const sessions = [1, 2, 3].map((index) => ({ id: `ses_${index}`, agent: `agent-${index}`, status: "running" }))
+      const model = buildPanelModel({ sessions })
+
+      const lines = formatPanel(model).split("\n")
+      const start = lines.indexOf("Active agents")
+      const rows = lines.slice(start + 1, start + 4)
+
+      expect(rows).toEqual(["  - agent-1 -", "  - agent-2 -", "  - agent-3 -"])
+      for (const row of rows) expect(row.match(/^ */)[0]).toHaveLength(2)
+      // G5's parent/depth/enumeration stay BLOQUEADO, so nothing may imply a tree
+      // shape or a persisted position the host never demonstrated.
+      expect(model.agentRows.hierarchy).toEqual({ parentID: HIERARCHY_BLOCKED, depth: HIERARCHY_BLOCKED, enumeration: HIERARCHY_BLOCKED })
+      expect(lines.some((line) => line.includes("*") || line.includes("|_"))).toBe(false)
+      expect(lines.some((line) => /^\s*\d+[.)]\s/.test(line))).toBe(false)
+    })
+
+    test("#then a session whose status was never read contributes no row and no status claim", () => {
+      const model = buildPanelModel({
+        sessions: [
+          { id: "ses_sel", agent: "atlas", status: "running" },
+          { id: "ses_unread", agent: "sisyphus" },
+        ],
+        statusOf: (id) => (id === "ses_sel" ? "running" : undefined),
+        titleOf: () => "Title",
+      })
+
+      const lines = formatPanel(model).split("\n")
+      const start = lines.indexOf("Active agents")
+      const rows = lines.slice(start + 1).filter((line) => line.startsWith("  - ") && !line.includes("Title"))
+
+      expect(rows).toEqual(["  - atlas -"])
+      expect(rows.some((row) => row.includes("["))).toBe(false)
+    })
+
+    test("#then the block is omitted entirely when the roster is unavailable, errored, inactive or empty", () => {
+      const models = [
+        buildPanelModel({ sessions: undefined }),
+        buildPanelModel({ sessions: [{ id: "ses_1", agent: "atlas", status: "running" }], sessionsError: true }),
+        buildPanelModel({ sessions: [{ id: "ses_1", agent: "atlas", status: "terminated" }] }),
+        buildPanelModel({ sessions: [] }),
+      ]
+
+      for (const model of models) {
+        const text = formatPanel(model)
+        expect(text).not.toContain("Active agents")
+        expect(text).not.toContain("atlas")
+      }
+    })
+
+    test("#then a long agent or model is fitted to the text budget with the agent kept visible", () => {
+      const model = buildPanelModel({
+        sessions: [{ id: "ses_long", agent: `agent-${"x".repeat(60)}`, status: "running", model: `provider/${"m".repeat(60)}` }],
+      })
+
+      const lines = formatPanel(model).split("\n")
+      const row = lines[lines.indexOf("Active agents") + 1]
+
+      expect(displayWidth(row)).toBeLessThanOrEqual(PANEL_TEXT_WIDTH)
+      expect(row.startsWith("  - agent-")).toBe(true)
+    })
+
+    test("#then the block takes part in the height decision instead of overrunning it", () => {
+      const sessions = Array.from({ length: 40 }, (_, index) => ({ id: `ses_${index}`, agent: "atlas", status: "running" }))
+      const model = buildPanelModel({ sessions, titleOf: (id) => `Title ${id}` })
+
+      expect(formatPanel(model).split("\n").length).toBeGreaterThan(PANEL_MAX_LINES)
+
+      const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+
+      expect(layout.mode).toBe(PANEL_LAYOUT.COMPACT)
+      expect(layout.lines.length).toBeLessThanOrEqual(PANEL_MAX_LINES)
+    })
+  })
+
   describe("#given a long label", () => {
     test("#then truncation is purely visual and bounded", () => {
       const long = "x".repeat(LABEL_MAX + 10)

@@ -17,6 +17,25 @@
  * Every other listed session keeps an UNREAD status, so the block omits its state
  * instead of reading a wider roster or inventing an activity value.
  *
+ * Passive read census. I-3's reactive read is not the only host access: the panel
+ * also performs the pre-existing, passive catalog reads the F1 guards and the
+ * plan's data-model table established, and NOTHING ELSE. Per render the whole set
+ * is exactly:
+ *
+ *   context.location            (or data.location.default() when the context
+ *                                carries no location; one logical read)
+ *   data.session.list()         passive roster: no widening, no extra fields
+ *   data.session.get(id).title  once per listed session, for its row label
+ *   data.location.model.list(location)
+ *   data.location.agent.list(location)
+ *   data.location.provider.list(location)
+ *   data.session.status(id)     ONCE, and only for the slot-provided identity
+ *
+ * `rigel-v2-panel-surface.test.mjs` pins that census as an exact multiset, so a
+ * read that is added or removed changes the test outcome instead of passing
+ * unnoticed. Every read is synchronous, discarded between renders, and wrapped so
+ * one failure degrades one section only.
+ *
  * Header contract (G2): exactly two visible headers, `oh-my-rigel · models` at
  * rest and `oh-my-rigel · working` while the selected session is active. G1's
  * optional `running` -> `busy` label is deliberately NOT applied: it would need a
