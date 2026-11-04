@@ -156,6 +156,27 @@ describe("#given the panel surface at the host boundary", () => {
       expect(fake.statusCalls).toEqual(["ses_b"])
       expect(text).not.toContain("[running]")
     })
+
+    test("#then inline roster statuses neither override the selected accessor nor claim another session", () => {
+      const fake = fakeContext({
+        sessions: [
+          { id: "ses_a", agent: "sisyphus", status: "idle" },
+          { id: "ses_b", agent: "atlas", status: "idle" },
+        ],
+        titles: { ses_a: "Unread", ses_b: "Selected" },
+        statuses: { ses_b: "running" },
+      })
+      createPanelSurface({ solid: stubSolid() }).setup(fake.context)
+
+      const text = renderedText(fake, { sessionID: "ses_b" })
+
+      expect(firstLine(text)).toBe(PANEL_HEADER_WORKING)
+      expect(fake.statusCalls).toEqual(["ses_b"])
+      expect(text).toContain("- Selected [running]")
+      expect(text).toContain("- Unread")
+      expect(text).not.toContain("- Unread [idle]")
+      expect(text).not.toContain("- Selected [idle]")
+    })
   })
 
   describe("#given a host that provides no slot input", () => {
@@ -324,16 +345,18 @@ describe("#given the panel surface at the host boundary", () => {
     })
   })
 
-  describe("#given a block that cannot fit even in its compact form", () => {
-    test("#then render returns null instead of a node, and never a bare string", () => {
-      const sessions = Array.from({ length: 120 }, (_, index) => ({ id: `ses_${index}`, status: "idle", agent: "atlas" }))
+  describe("#given a roster longer than the observed terminal", () => {
+    test("#then only the selected accessor status survives in the compact block", () => {
+      const sessions = Array.from({ length: 120 }, (_, index) => ({ id: `ses_${index}`, agent: "atlas" }))
       const solid = stubSolid()
-      const fake = fakeContext({ sessions })
+      const fake = fakeContext({ sessions, statuses: { ses_0: "idle" } })
       createPanelSurface({ solid }).setup(fake.context)
 
-      expect(fake.renders[0]({ sessionID: "ses_0" })).toBeNull()
-      // Nothing was mounted for the omitted block.
-      expect(solid.nodes).toHaveLength(0)
+      const node = fake.renders[0]({ sessionID: "ses_0" })
+      expect(node).not.toBeNull()
+      expect(node.tag).toBe("text")
+      expect(node.children[0].split("\n")).toEqual([PANEL_HEADER_REST, "  - ses_0 [idle]"])
+      expect(solid.nodes).toHaveLength(1)
     })
   })
 
