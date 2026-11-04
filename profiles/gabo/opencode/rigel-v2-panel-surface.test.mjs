@@ -346,19 +346,30 @@ describe("#given the panel surface at the host boundary", () => {
  */
 function censusContext({ sessions = [], titles = {}, statuses = {}, models = [], agents = [], providers = [], contextLocation = true } = {}) {
   const reads = []
+  const selectorCalls = []
   const renders = []
   const slotCalls = []
-  const location = { directory: "/w" }
+  const fixtures = {
+    sessions,
+    titles,
+    statuses,
+    models,
+    agents,
+    providers,
+    location: { directory: "/w" },
+  }
   const context = {
     renderer: { isDestroyed: false },
     data: {
       session: {
-        list: () => {
+        list: (...args) => {
           reads.push("data.session.list")
-          return sessions
+          selectorCalls.push({ name: "data.session.list", args })
+          return fixtures.sessions
         },
         get: (id) => {
-          const entry = { title: titles[id] }
+          selectorCalls.push({ name: "data.session.get", args: [id] })
+          const entry = { title: fixtures.titles[id] }
           return new Proxy(entry, {
             get(target, property) {
               reads.push(`data.session.get.${String(property)}`)
@@ -368,30 +379,35 @@ function censusContext({ sessions = [], titles = {}, statuses = {}, models = [],
         },
         status: (id) => {
           reads.push(`data.session.status:${id}`)
-          return statuses[id]
+          selectorCalls.push({ name: "data.session.status", args: [id] })
+          return fixtures.statuses[id]
         },
       },
       location: {
-        default: () => {
+        default: (...args) => {
           reads.push("location")
-          return location
+          selectorCalls.push({ name: "data.location.default", args })
+          return fixtures.location
         },
         model: {
-          list: () => {
+          list: (...args) => {
             reads.push("data.location.model.list")
-            return models
+            selectorCalls.push({ name: "data.location.model.list", args })
+            return fixtures.models
           },
         },
         agent: {
-          list: () => {
+          list: (...args) => {
             reads.push("data.location.agent.list")
-            return agents
+            selectorCalls.push({ name: "data.location.agent.list", args })
+            return fixtures.agents
           },
         },
         provider: {
-          list: () => {
+          list: (...args) => {
             reads.push("data.location.provider.list")
-            return providers
+            selectorCalls.push({ name: "data.location.provider.list", args })
+            return fixtures.providers
           },
         },
       },
@@ -408,11 +424,11 @@ function censusContext({ sessions = [], titles = {}, statuses = {}, models = [],
     Object.defineProperty(context, "location", {
       get() {
         reads.push("location")
-        return location
+        return fixtures.location
       },
     })
   }
-  return { context, reads, renders, slotCalls }
+  return { context, fixtures, reads, selectorCalls, renders, slotCalls }
 }
 
 const EXPECTED_HOST_READS = [
@@ -425,6 +441,17 @@ const EXPECTED_HOST_READS = [
   "data.session.status:ses_b",
   "location",
 ]
+
+function expectedSelectorCalls({ location, sessionIDs, slotSessionID }) {
+  return [
+    { name: "data.session.list", args: [] },
+    { name: "data.location.model.list", args: [location] },
+    { name: "data.location.agent.list", args: [location] },
+    { name: "data.location.provider.list", args: [location] },
+    { name: "data.session.status", args: [slotSessionID] },
+    ...sessionIDs.map((id) => ({ name: "data.session.get", args: [id] })),
+  ]
+}
 
 describe("#given the host read census", () => {
   test("#then one render performs exactly the passive read set, with status only for the slot identity", () => {
@@ -443,29 +470,75 @@ describe("#given the host read census", () => {
     // A census over a render that never happened would prove nothing.
     expect(node.tag).toBe("text")
     expect([...census.reads].sort()).toEqual(EXPECTED_HOST_READS)
+    expect(census.selectorCalls).toEqual(
+      expectedSelectorCalls({
+        location: census.fixtures.location,
+        sessionIDs: ["ses_a", "ses_b"],
+        slotSessionID: "ses_b",
+      }),
+    )
     // I-3's reactive read is not one-per-session: it is one, for the input identity.
     expect(census.reads.filter((read) => read.startsWith("data.session.status"))).toEqual(["data.session.status:ses_b"])
   })
 
-  test("#then a second render repeats the same set instead of retaining or widening it", () => {
+  test("#then a second render repeats the same set with current values and selector arguments", () => {
     const census = censusContext({
       sessions: [{ id: "ses_a" }, { id: "ses_b" }],
       titles: { ses_a: "Other", ses_b: "Selected" },
       statuses: { ses_b: "idle" },
-      models: [],
-      agents: [],
-      providers: [],
+      models: [{ id: "first-model", name: "First model" }],
+      agents: [{ id: "first-agent", name: "First agent" }],
+      providers: [{ id: "first-provider", name: "First provider" }],
     })
     createPanelSurface({ solid: stubSolid() }).setup(census.context)
 
-    census.renders[0]({ sessionID: "ses_b" })
+    const firstNode = census.renders[0]({ sessionID: "ses_b" })
+    const firstText = firstNode.children[0]
     const firstLength = census.reads.length
+    const firstCallLength = census.selectorCalls.length
     const firstRender = [...census.reads].sort()
-    census.renders[0]({ sessionID: "ses_b" })
-    const secondRender = [...census.reads.slice(firstLength)].sort()
-
+    const firstCalls = census.selectorCalls.slice(0, firstCallLength)
     expect(firstRender).toEqual(EXPECTED_HOST_READS)
+    expect(firstCalls).toEqual(
+      expectedSelectorCalls({
+        location: census.fixtures.location,
+        sessionIDs: ["ses_a", "ses_b"],
+        slotSessionID: "ses_b",
+      }),
+    )
+
+    census.fixtures.location = { directory: "/second" }
+    census.fixtures.sessions = [{ id: "ses_a" }, { id: "ses_b" }]
+    census.fixtures.titles = { ses_a: "Current other", ses_b: "Current selected" }
+    census.fixtures.statuses = { ses_b: "running" }
+    census.fixtures.models = [{ id: "second-model", name: "Second model" }]
+    census.fixtures.agents = [{ id: "second-agent", name: "Second agent" }]
+    census.fixtures.providers = [{ id: "second-provider", name: "Second provider" }]
+
+    const secondNode = census.renders[0]({ sessionID: "ses_b" })
+    const secondText = secondNode.children[0]
+    const secondRender = [...census.reads.slice(firstLength)].sort()
+    const secondCalls = census.selectorCalls.slice(firstCallLength)
+
     expect(secondRender).toEqual(firstRender)
+    expect(secondCalls).toEqual(
+      expectedSelectorCalls({
+        location: census.fixtures.location,
+        sessionIDs: ["ses_a", "ses_b"],
+        slotSessionID: "ses_b",
+      }),
+    )
+    expect(secondText).not.toBe(firstText)
+    expect(firstText).toContain("- Selected [idle]")
+    expect(firstText).toContain("- First model")
+    expect(firstText).toContain("- First agent")
+    expect(firstText).toContain("- First provider")
+    expect(secondText).toContain("- Current selected [running]")
+    expect(secondText).toContain("- Second model")
+    expect(secondText).toContain("- Second agent")
+    expect(secondText).toContain("- Second provider")
+    expect(secondText).not.toContain("Selected")
+    expect(secondText).not.toContain("First model")
   })
 
   test("#then a host without a context location still costs exactly one location read", () => {
