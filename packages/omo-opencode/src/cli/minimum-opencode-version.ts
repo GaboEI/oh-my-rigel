@@ -10,5 +10,5 @@ export function getUnsupportedOpenCodeVersionMessage(openCodeVersion: string | n
     return null
   }
 
-  return `Detected OpenCode ${openCodeVersion}, but ${MIN_OPENCODE_VERSION}+ is required. Update OpenCode, then rerun the installer.`
+  return `Detected OpenCode ${openCodeVersion}, but this build requires OpenCode ${MIN_OPENCODE_VERSION}+ (V2). Upgrade OpenCode to ${MIN_OPENCODE_VERSION} or newer, then rerun the installer.`
 }

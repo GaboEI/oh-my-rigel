@@ -95,7 +95,7 @@ describe("runTuiInstaller OmO Native hint", () => {
       hasVercelAiGateway: false,
     })
     spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true)
-    spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0")
+    spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19")
     spyOn(tuiInstallPrompts, "promptInstallConfig").mockResolvedValue(installConfig("opencode"))
     spyOn(configManager, "addPluginToOpenCodeConfig").mockResolvedValue({ success: true, configPath: "/tmp/opencode.jsonc" })
     spyOn(configManager, "writeOmoConfig").mockReturnValue({ success: true, configPath: "/tmp/omo.jsonc" })

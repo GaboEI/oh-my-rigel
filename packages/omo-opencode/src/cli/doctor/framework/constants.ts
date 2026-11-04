@@ -1,5 +1,5 @@
 import color from "picocolors"
-import { PUBLISHED_PACKAGE_NAME } from "../../../shared"
+import { MINIMUM_OPENCODE_VERSION, PUBLISHED_PACKAGE_NAME } from "../../../shared"
 import type { DoctorTarget } from "./types"
 
 export const SYMBOLS = {
@@ -46,7 +46,8 @@ export const EXIT_CODES = {
   FAILURE: 1,
 } as const
 
-export const MIN_OPENCODE_VERSION = "1.4.0"
+/** Derived, never re-declared: doctor and installer share one OpenCode floor. */
+export const MIN_OPENCODE_VERSION = MINIMUM_OPENCODE_VERSION
 
 export const PACKAGE_NAME = PUBLISHED_PACKAGE_NAME
 

@@ -7,6 +7,7 @@ import { delimiter } from "node:path"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { MINIMUM_OPENCODE_VERSION } from "./packages/omo-opencode/src/shared/opencode-version"
 
 const postinstallPath = fileURLToPath(new URL("./postinstall.mjs", import.meta.url))
 const RENAME_NOTICE =
@@ -43,6 +44,14 @@ function runPostinstallInFixtureEnv(options: { readonly pathPrefix?: string; rea
   }
 }
 
+function writeOpencodeVersionShim(version: string): string {
+  const binDir = mkdtempSync(join(tmpdir(), "omo-postinstall-opencode-version-"))
+  writeFileSync(join(binDir, "opencode"), `#!/bin/sh\necho ${version}\n`)
+  chmodSync(join(binDir, "opencode"), 0o755)
+  writeFileSync(join(binDir, "opencode.cmd"), `@echo ${version}\r\n`)
+  return binDir
+}
+
 function writeHangingOpencodeShim(): string {
   const binDir = mkdtempSync(join(tmpdir(), "omo-postinstall-hanging-opencode-"))
   const hang = `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, ${HANGING_OPENCODE_MS})"`
@@ -69,8 +78,7 @@ function countNativeNotices(output: string): number {
   return output.split("\n").filter((line) => line.trim() === NATIVE_NOTICE).length
 }
 
-describe("postinstall rename notice", () => {
-  test("names the install line of the package's own channel", async () => {
+describe("postinstall rename notice", () => {  test("names the install line of the package's own channel", async () => {
     const { nativeNotice } = await import("./postinstall.mjs")
     expect(nativeNotice("5.0.0")).toEndWith("bun add -g omo-ai")
     expect(nativeNotice("5.0.0-beta.90")).toEndWith("bun add -g omo-ai@beta")
@@ -128,5 +136,89 @@ describe("postinstall rename notice", () => {
     expect(countNoticeLines(secondRun.stdout)).toBe(1)
     expect(countNativeNotices(firstRun.stdout)).toBe(1)
     expect(countNativeNotices(secondRun.stdout)).toBe(1)
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
+})
+
+describe("postinstall OpenCode version floor", () => {
+  test("declares the same OpenCode floor as the plugin", () => {
+    // #given
+    // the installer script and the plugin's single source of truth
+
+    // #when
+    const declaredInScript = readFileSync(postinstallPath, "utf8").match(/const MIN_OPENCODE_VERSION = "([^"]+)"/)?.[1]
+
+    // #then
+    // the two copies can never drift apart
+    expect(declaredInScript).toBe(MINIMUM_OPENCODE_VERSION)
+    expect(MINIMUM_OPENCODE_VERSION).toBe("2.0.19")
+  })
+
+  test("warns that a pre-V2 host is unsupported and names the floor", () => {
+    // #given
+    // a host still on the retired V1 line
+    const binDir = writeOpencodeVersionShim("1.4.0")
+
+    try {
+      // #when
+      const run = runPostinstallInFixtureEnv({ pathPrefix: binDir })
+
+      // #then
+      expect(run.status).toBe(0)
+      expect(run.stderr).toContain(`OpenCode ${MINIMUM_OPENCODE_VERSION}+ (V2)`)
+      expect(run.stderr).toContain("Detected: 1.4.0")
+      expect(run.stderr).toContain("Pre-V2 OpenCode hosts are not supported")
+    } finally {
+      rmSync(binDir, { recursive: true, force: true })
+    }
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
+
+  test("stays silent about the floor for a V2 host", () => {
+    // #given
+    // a host at the declared V2 floor
+    const binDir = writeOpencodeVersionShim(MINIMUM_OPENCODE_VERSION)
+
+    try {
+      // #when
+      const run = runPostinstallInFixtureEnv({ pathPrefix: binDir })
+
+      // #then
+      expect(run.status).toBe(0)
+      expect(run.stderr).not.toContain("requires OpenCode")
+    } finally {
+      rmSync(binDir, { recursive: true, force: true })
+    }
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
+
+  test("reads the version out of the banner a real host prints", () => {
+    // #given
+    // `opencode --version` prints a prefixed banner, so the probe must read the semver
+    const binDir = writeOpencodeVersionShim("opencode v2.2.5")
+
+    try {
+      // #when
+      const run = runPostinstallInFixtureEnv({ pathPrefix: binDir })
+
+      // #then
+      expect(run.status).toBe(0)
+      expect(run.stderr).not.toContain("requires OpenCode")
+    } finally {
+      rmSync(binDir, { recursive: true, force: true })
+    }
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
+
+  test("still refuses a V1 host whose banner carries the prefix", () => {
+    // #given
+    const binDir = writeOpencodeVersionShim("opencode v1.4.0")
+
+    try {
+      // #when
+      const run = runPostinstallInFixtureEnv({ pathPrefix: binDir })
+
+      // #then
+      expect(run.stderr).toContain("Detected: 1.4.0")
+      expect(run.stderr).toContain(`OpenCode ${MINIMUM_OPENCODE_VERSION}+ (V2)`)
+    } finally {
+      rmSync(binDir, { recursive: true, force: true })
+    }
   }, SUBPROCESS_TEST_TIMEOUT_MS)
 })

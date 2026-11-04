@@ -133,7 +133,7 @@ describe("install CLI - binary check behavior", () => {
   test("non-TUI mode: should still succeed and complete all steps when binary exists", async () => {
     // given OpenCode binary IS installed
     isOpenCodeInstalledSpy = spyOn(configManager, "isOpenCodeInstalled").mockResolvedValue(true)
-    getOpenCodeVersionSpy = spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("1.4.0")
+    getOpenCodeVersionSpy = spyOn(configManager, "getOpenCodeVersion").mockResolvedValue("2.0.19")
 
     // given mock npm fetch
     globalThis.fetch = unsafeTestValue<typeof fetch>(mock(() =>
@@ -162,6 +162,6 @@ describe("install CLI - binary check behavior", () => {
     // then should have printed success (OK symbol)
     const allCalls = mockConsoleLog.mock.calls.flat().join("\n")
     expect(allCalls).toContain("[OK]")
-    expect(allCalls).toContain("OpenCode 1.4.0")
+    expect(allCalls).toContain("OpenCode 2.0.19")
   })
 })
