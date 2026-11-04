@@ -435,6 +435,10 @@ export function createOpenclawInbound({
       return { outcome: "halt" }
     }
     state.messagesInjected += 1
+    // The gate accepted this reply, so the injection surface works again. A refusal
+    // is the only writer of that surface, so without this the document keeps the
+    // `delivery-refused` row - and the degraded line - for the life of the install.
+    await statusDocument?.recordSuccess?.(OPENCLAW_INJECTION_STATUS_SURFACE)
     // Persisted BEFORE the ack, and it never moves the cursor: a crash between the
     // injection and the ack must not inject the same reply twice, and because the
     // cursor stays put the message stays retryable until its ack lands.
@@ -520,7 +524,15 @@ export function createOpenclawInbound({
       await statusDocument?.recordFailure?.(OPENCLAW_DISCORD_STATUS_SURFACE, { errorClass: "malformed-response" })
       return
     }
-    if (!Array.isArray(messages) || messages.length === 0) {
+    // A 200 whose body is not a message list is NOT an empty window. The body shape
+    // is the only evidence the poll read what this port speaks to, so accepting it
+    // reported a proxy that answers with something else as healthy, and a healthy
+    // report CLEARS a real Discord failure while the malformed responses continue.
+    if (!Array.isArray(messages)) {
+      await statusDocument?.recordFailure?.(OPENCLAW_DISCORD_STATUS_SURFACE, { errorClass: "malformed-response" })
+      return
+    }
+    if (messages.length === 0) {
       // §U8: an empty window is a healthy poll, but "empty" and "durable" are two
       // questions, and a cursor left unsaved by an earlier window is still unsaved.
       // The retry belongs here too: without it a domain that heals while the channel
@@ -617,6 +629,8 @@ export function createOpenclawInbound({
       return { outcome: "halt" }
     }
     state.messagesInjected += 1
+    // Same recovery rule as the Discord port.
+    await statusDocument?.recordSuccess?.(OPENCLAW_INJECTION_STATUS_SURFACE)
     if (trackId !== undefined) await cursors.markDelivered(TELEGRAM_PLATFORM, channel, trackId)
     if (!(await acknowledgeTelegram(message?.message_id))) return { outcome: "hold" }
     return { outcome: "acknowledged", trackId }
@@ -663,7 +677,15 @@ export function createOpenclawInbound({
       await statusDocument?.recordFailure?.(OPENCLAW_TELEGRAM_STATUS_SURFACE, { errorClass: "malformed-response" })
       return
     }
-    const updates = body && typeof body === "object" && Array.isArray(body.result) ? body.result : []
+    // Same rule as Discord: a 200 without an update list is a malformed body, not
+    // an empty window. `result` missing, an object, or a scalar body all mean the
+    // poll read something that is not this API, and reporting it healthy would
+    // clear a real Telegram failure.
+    if (body === null || typeof body !== "object" || !Array.isArray(body.result)) {
+      await statusDocument?.recordFailure?.(OPENCLAW_TELEGRAM_STATUS_SURFACE, { errorClass: "malformed-response" })
+      return
+    }
+    const updates = body.result
 
     let frontier = stored
     let contiguous = true

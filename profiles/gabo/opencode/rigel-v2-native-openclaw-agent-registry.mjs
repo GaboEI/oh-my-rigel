@@ -187,17 +187,38 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   async function hydrate() {
     if (!canScan) return
     try {
-      const page = await storage.scan({ prefix: OPENCLAW_AGENT_REGISTRY_PREFIX })
-      const entries = Array.isArray(page?.entries) ? page.entries : []
-      for (const entry of entries) {
-        const value = entry?.value
-        if (!isValidAgentMapping(value)) {
-          log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an unknown shape")
-          continue
+      let after
+      const seenTokens = new Set()
+      for (;;) {
+        const page = await storage.scan({
+          prefix: OPENCLAW_AGENT_REGISTRY_PREFIX,
+          ...(after === undefined ? {} : { after }),
+        })
+        if (typeof page !== "object" || page === null || Array.isArray(page) || !Array.isArray(page.entries)) {
+          log("[oh-my-rigel] Native V2 openclaw agent registry hydrate stopped on a malformed storage page")
+          return
         }
-        // Aged records stay in the index so `prune()` can report them as lost
-        // instead of dropping them the moment they are read.
-        map.set(indexKey(value.peer, value.contextId, value.taskId), { ...value })
+        for (const entry of page.entries) {
+          const value = entry?.value
+          if (!isValidAgentMapping(value)) {
+            log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an unknown shape")
+            continue
+          }
+          // Aged records stay in the index so `prune()` can report them as lost
+          // instead of dropping them the moment they are read.
+          map.set(indexKey(value.peer, value.contextId, value.taskId), { ...value })
+        }
+        if (page.next === undefined || page.next === null) return
+        if (typeof page.next !== "string" || page.next.length === 0) {
+          log("[oh-my-rigel] Native V2 openclaw agent registry hydrate stopped on an invalid pagination token")
+          return
+        }
+        if (seenTokens.has(page.next)) {
+          log("[oh-my-rigel] Native V2 openclaw agent registry hydrate stopped on a repeated pagination token")
+          return
+        }
+        seenTokens.add(page.next)
+        after = page.next
       }
     } catch (error) {
       log(`[oh-my-rigel] Native V2 openclaw agent registry hydrate failed: ${error instanceof Error ? error.message : String(error)}`)

@@ -88,6 +88,19 @@ jobs:
         run: |
           printf '%s\n' 'Artifact uploaded only. The live site is updated ONLY by a manual workflow_dispatch with publish=true on v2-mirror.'
 
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        env:
+          JOB_SUMMARY_TITLE: Web Pages artifact dry run
+          JOB_SUMMARY_STATUS: ${{ job.status }}
+          JOB_SUMMARY_DETAILS: |
+            - Builds the v2-mirror Pages scaffold and uploads the artifact without deploying.
+            - Keeps publication behind the manual workflow_dispatch publish=true boundary.
+          JOB_SUMMARY_NEXT: Inspect the first install or web:build failure; deployment remains manual.
+        run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
+
   # Manual, gated publication. Runs ONLY on a manual dispatch of ref v2-mirror with publish=true and
   # after the build/check gate passed (needs: build-checks). It holds the Pages write + OIDC
   # permissions and targets the github-pages environment; its URL is exposed as the job output.
@@ -129,3 +142,16 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        env:
+          JOB_SUMMARY_TITLE: Web Pages deployment
+          JOB_SUMMARY_STATUS: ${{ job.status }}
+          JOB_SUMMARY_DETAILS: |
+            - Builds and deploys the Pages scaffold after the manual publish=true gate.
+            - Publishes only to the github-pages environment on v2-mirror.
+          JOB_SUMMARY_NEXT: Inspect the first install, build, upload, or deployment failure.
+        run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh

@@ -584,8 +584,12 @@ describe("openclaw cursor: a failed write is retried instead of forgotten", () =
     // cursor and not a healthy poll: reporting success there is the silent
     // advancement the audit named.
     expect(delivered).toHaveLength(1)
-    expect(status.events[0]).toEqual({ kind: "failure", surface: "discord", errorClass: "cursor-persist" })
-    expect(status.events.filter((event) => event.kind === "success")).toHaveLength(1)
+    // Scoped to the polled surface: the listener also recovers `injection` after a
+    // delivery the gate accepted, which is a different surface's transition and must
+    // not be read as the polled surface's outcome.
+    expect(status.events.filter((event) => event.surface === "discord")).toEqual([
+      { kind: "failure", surface: "discord", errorClass: "cursor-persist" },
+    ])
     expect(cursorDocument(storage, "discord", "chan")).toMatchObject({ cursor: "m2", delivered: [], acked: ["m2"] })
   })
 })

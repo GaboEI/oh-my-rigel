@@ -55,7 +55,10 @@ export function openclawDispatchErrorClass(result) {
   if (typeof result.errorClass === "string" && result.errorClass.length > 0) return result.errorClass
   if (typeof result.statusCode === "number") return `http-${result.statusCode}`
   const error = typeof result.error === "string" ? result.error : ""
-  if (/timeout/i.test(error)) return "timeout"
+  // Both spellings the transports produce: the notification transports name the
+  // class themselves, but a timeout that arrives as text must not fall through to
+  // `transport-error` and share its dedup key.
+  if (/timeout|timed out/i.test(error)) return "timeout"
   if (/invalid url/i.test(error)) return "invalid-url"
   if (/^No command configured$/i.test(error)) return "no-command"
   if (/^Command exited with code /i.test(error)) return "command-exit"

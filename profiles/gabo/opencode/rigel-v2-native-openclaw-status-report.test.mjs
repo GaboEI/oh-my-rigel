@@ -2,8 +2,13 @@ import { describe, expect, test } from "bun:test"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
 import { createOpenclawInbound } from "./rigel-v2-native-openclaw-inbound.mjs"
 import { createOpenclawRegistry } from "./rigel-v2-native-openclaw-registry.mjs"
-import { OPENCLAW_DISCORD_STATUS_SURFACE, OPENCLAW_INJECTION_STATUS_SURFACE } from "./rigel-v2-native-openclaw-inbound.mjs"
+import {
+  OPENCLAW_DISCORD_STATUS_SURFACE,
+  OPENCLAW_INJECTION_STATUS_SURFACE,
+  OPENCLAW_TELEGRAM_STATUS_SURFACE,
+} from "./rigel-v2-native-openclaw-inbound.mjs"
 import { OPENCLAW_OUTBOUND_STATUS_SURFACE } from "./rigel-v2-native-openclaw-outbound.mjs"
+import { OPENCLAW_STATUS_KEY, createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
 import {
   OPENCLAW_STATUS_COMMAND_NAME,
   createOpenclawStatusCommand,
@@ -147,6 +152,82 @@ describe("openclaw status: a fatal leaves a startup banner and a fatal surface",
     expect(report.surfaces["credentials.discord"]).toMatchObject({ state: "fatal", errorClass: "missing-env-variable" })
     await native.dispose()
   })
+
+  // A `fatal` is a setup verdict, and the durable document keeps it forever unless
+  // the setup that just ran is allowed to contradict it. Reconciling is the whole
+  // point of the row: `/openclaw-status` on a repaired install must stop saying a
+  // surface is disabled.
+  test("#given a persisted setup fatal whose cause now resolves #when the report is read #then the surface recovers and the runtime surface is left alone", async () => {
+    // given
+    const lines = []
+    const storage = memoryStorage()
+    const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+    await previous.recordFailure("config", { errorClass: "OpenclawConfigValidationError", fatal: true, emitLine: false })
+    await previous.recordFailure("credentials.discord", { errorClass: "missing-env-variable", fatal: true, emitLine: false })
+    // A runtime degradation is NOT a setup verdict: only traffic can prove it healed.
+    await previous.recordFailure(OPENCLAW_OUTBOUND_STATUS_SURFACE, { errorClass: "http-500" })
+    const native = createNativeOpenclaw({
+      context: context(storage),
+      config: LEGACY_CONFIG,
+      fetchImpl: recordingFetch(() => okGateway()),
+      log: (line) => lines.push(line),
+    })
+
+    // when
+    await native.ready
+    const report = await native.report()
+
+    // then
+    expect(report.surfaces.config).toMatchObject({ state: "up", errorClass: null, consecutiveFailures: 0 })
+    expect(report.surfaces["credentials.discord"]).toMatchObject({ state: "up", errorClass: null, consecutiveFailures: 0 })
+    expect(report.surfaces[OPENCLAW_OUTBOUND_STATUS_SURFACE]).toMatchObject({ state: "degraded", errorClass: "http-500" })
+    // One line per transition: exactly the two recoveries, and none on a second read.
+    const recoveries = () => statusLines(lines).filter((line) => line.includes("surface recovered:"))
+    expect(recoveries()).toEqual([
+      "[oh-my-rigel] openclaw surface recovered: config",
+      "[oh-my-rigel] openclaw surface recovered: credentials.discord",
+    ])
+    await native.report()
+    expect(recoveries()).toHaveLength(2)
+    // Durability: the clear is persisted, so a restart cannot resurrect the fatal.
+    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces.config.state).toBe("up")
+    const restarted = createNativeOpenclaw({
+      context: context(storage),
+      config: LEGACY_CONFIG,
+      fetchImpl: recordingFetch(() => okGateway()),
+      log: () => {},
+    })
+    await restarted.ready
+    const afterRestart = await restarted.report()
+    expect(afterRestart.surfaces.config.state).toBe("up")
+    expect(afterRestart.surfaces["credentials.discord"].state).toBe("up")
+    expect(afterRestart.surfaces[OPENCLAW_OUTBOUND_STATUS_SURFACE]).toMatchObject({ state: "degraded" })
+    await restarted.dispose()
+    await native.dispose()
+  })
+
+  test("#given a persisted setup fatal whose cause is still broken #when the report is read #then the surface stays fatal", async () => {
+    // given
+    const storage = memoryStorage()
+    const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+    await previous.recordFailure("config", { errorClass: "live-config-error", fatal: true, emitLine: false })
+    const lines = []
+    const native = createNativeOpenclaw({
+      context: context(storage),
+      config: { enabled: true, gateways: { primary: { url: "https://gateway.test", stray: true } }, hooks: {} },
+      fetchImpl: recordingFetch(() => okGateway()),
+      log: (line) => lines.push(line),
+    })
+
+    // when
+    await native.ready
+    const report = await native.report()
+
+    // then
+    expect(report.surfaces.config).toMatchObject({ state: "fatal", errorClass: "OpenclawConfigValidationError" })
+    expect(statusLines(lines).filter((line) => line.includes("surface recovered:"))).toEqual([])
+    await native.dispose()
+  })
 })
 
 describe("openclaw status: one line per transition", () => {
@@ -223,6 +304,92 @@ describe("openclaw status: one line per transition", () => {
     expect(transitions.every((line) => line.includes(OPENCLAW_DISCORD_STATUS_SURFACE))).toBe(true)
     expect(report.surfaces[OPENCLAW_DISCORD_STATUS_SURFACE].consecutiveFailures).toBeGreaterThanOrEqual(1)
     await native.dispose()
+  })
+
+  // An HTTP 200 whose body is not a message list is not an empty window: the body
+  // shape is the only evidence the poll succeeded, so accepting it reports a
+  // misconfigured proxy as healthy and clears a real failure.
+  test("#given a Discord poll body that is not a message list #when the request succeeds #then the surface reports a malformed response", async () => {
+    // given
+    const document = createOpenclawStatusDocument({ log: () => {} })
+    const inbound = createOpenclawInbound({
+      replyListener: { discordBotToken: "token", discordChannelId: "chan", authorizedDiscordUserIds: ["u1"], pollIntervalMs: 3000 },
+      registry: createOpenclawRegistry({}),
+      deliverInboundReply: async () => true,
+      fetchImpl: recordingFetch(() => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ message: "the proxy answered with an object" }),
+        text: async () => "",
+      })),
+      sleep: () => new Promise((resolve) => setImmediate(resolve)),
+      log: () => {},
+      statusDocument: document,
+    })
+
+    // when
+    await inbound.start()
+    for (let index = 0; index < 5000 && document.snapshot().surfaces[OPENCLAW_DISCORD_STATUS_SURFACE] === undefined; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    await inbound.stop()
+
+    // then
+    expect(document.snapshot().surfaces[OPENCLAW_DISCORD_STATUS_SURFACE]).toMatchObject({
+      state: "degraded",
+      errorClass: "malformed-response",
+    })
+  })
+
+  test("#given a Telegram poll body without an update list #when the request succeeds #then the surface reports a malformed response", async () => {
+    // given
+    const document = createOpenclawStatusDocument({ log: () => {} })
+    const inbound = createOpenclawInbound({
+      replyListener: { telegramBotToken: "t", telegramChatId: "chat", pollIntervalMs: 3000 },
+      registry: createOpenclawRegistry({}),
+      deliverInboundReply: async () => true,
+      fetchImpl: recordingFetch(() => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ok: true }), text: async () => "" })),
+      sleep: () => new Promise((resolve) => setImmediate(resolve)),
+      log: () => {},
+      statusDocument: document,
+    })
+
+    // when
+    await inbound.start()
+    for (let index = 0; index < 5000 && document.snapshot().surfaces[OPENCLAW_TELEGRAM_STATUS_SURFACE] === undefined; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    await inbound.stop()
+
+    // then
+    expect(document.snapshot().surfaces[OPENCLAW_TELEGRAM_STATUS_SURFACE]).toMatchObject({
+      state: "degraded",
+      errorClass: "malformed-response",
+    })
+  })
+
+  test("#given an empty message list #when the poll succeeds #then nothing is recorded: that window is healthy, not malformed", async () => {
+    // given
+    const document = createOpenclawStatusDocument({ log: () => {} })
+    const fetchImpl = recordingFetch(() => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => [], text: async () => "" }))
+    const inbound = createOpenclawInbound({
+      replyListener: { discordBotToken: "token", discordChannelId: "chan", authorizedDiscordUserIds: ["u1"], pollIntervalMs: 3000 },
+      registry: createOpenclawRegistry({}),
+      deliverInboundReply: async () => true,
+      fetchImpl,
+      sleep: () => new Promise((resolve) => setImmediate(resolve)),
+      log: () => {},
+      statusDocument: document,
+    })
+
+    // when
+    await inbound.start()
+    for (let index = 0; index < 5000 && fetchImpl.calls.length < 2; index += 1) await new Promise((resolve) => setImmediate(resolve))
+    await inbound.stop()
+
+    // then
+    expect(document.snapshot().surfaces).toEqual({})
   })
 
   test("#given a healthy legacy dispatch #when it succeeds #then no status line and no status surface is produced", async () => {
@@ -374,6 +541,53 @@ describe("openclaw status: §9.3 keeps the channel readable", () => {
     })
     expect(lines.filter((line) => /rate limit|discord|author/i.test(line))).toEqual([])
     expect(inbound.status().errors).toBeGreaterThanOrEqual(1)
+  })
+
+  test("#given a refused injection a later poll accepts #when the reply lands #then the injection surface recovers", async () => {
+    // given
+    const lines = []
+    const document = createOpenclawStatusDocument({ log: (line) => lines.push(line) })
+    const registry = createOpenclawRegistry({})
+    registry.register({ sessionID: "ses_1", projectPath: "/p", platform: "discord-bot", messageId: "botmsg", createdAt: new Date().toISOString() })
+    let refusals = 1
+    const fetchImpl = recordingFetch((url) => {
+      if (url.includes("/reactions/")) return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}), text: async () => "" }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => [{ id: "m2", content: "hello", author: { id: "u1" }, message_reference: { message_id: "botmsg" } }], text: async () => "" }
+    })
+    const inbound = createOpenclawInbound({
+      replyListener: { discordBotToken: "token", discordChannelId: "chan", authorizedDiscordUserIds: ["u1"], pollIntervalMs: 3000 },
+      registry,
+      // The first attempt is refused, the retry of the same message is accepted:
+      // that is what "the gate works again" looks like from the poller.
+      deliverInboundReply: async () => {
+        if (refusals > 0) {
+          refusals -= 1
+          return false
+        }
+        return true
+      },
+      fetchImpl,
+      sleep: () => new Promise((resolve) => setImmediate(resolve)),
+      log: (line) => lines.push(line),
+      statusDocument: document,
+    })
+
+    // when
+    await inbound.start()
+    for (let index = 0; index < 5000 && inbound.status().messagesInjected === 0; index += 1) await new Promise((resolve) => setImmediate(resolve))
+    await inbound.stop()
+
+    // then
+    // Without the recovery the surface stays `degraded` for the life of the
+    // document: the poller's own success never reaches it.
+    expect(document.snapshot().surfaces[OPENCLAW_INJECTION_STATUS_SURFACE]).toMatchObject({
+      state: "up",
+      errorClass: null,
+      consecutiveFailures: 0,
+    })
+    const injectionLines = lines.filter((line) => line.startsWith(STATUS_PREFIX) && line.includes(OPENCLAW_INJECTION_STATUS_SURFACE))
+    expect(injectionLines.filter((line) => line.includes("degraded"))).toHaveLength(1)
+    expect(injectionLines.filter((line) => line.includes("recovered"))).toHaveLength(1)
   })
 })
 

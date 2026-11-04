@@ -46,6 +46,29 @@ function memoryStorage(seed = []) {
   }
 }
 
+function deferredCandidateStorage() {
+  const storage = memoryStorage()
+  let releaseFirstRead
+  let firstReadStartedResolve
+  const firstReadStarted = new Promise((resolve) => { firstReadStartedResolve = resolve })
+  let deferFirstRead = true
+  return {
+    storage: {
+      ...storage,
+      get: async (key) => {
+        if (deferFirstRead) {
+          deferFirstRead = false
+          firstReadStartedResolve()
+          await new Promise((resolve) => { releaseFirstRead = resolve })
+        }
+        return storage.map.get(key)
+      },
+    },
+    firstReadStarted,
+    releaseFirstRead: () => releaseFirstRead(),
+  }
+}
+
 function mapping(overrides = {}) {
   return {
     sessionID: SESSION_A,
@@ -198,6 +221,36 @@ describe("openclaw registry chat-scoped and chat-less coexistence", () => {
     expect(registry.size()).toBe(1)
     expect(storage.map.size).toBe(1)
     expect(lines.length).toBeGreaterThan(0)
+
+  })
+
+  test("#given candidate allocation is awaiting storage #when its session is removed #then the stale registration cannot resurrect it or block independent registrations", async () => {
+    const deferred = deferredCandidateStorage()
+    const registry = createOpenclawRegistry({ storage: deferred.storage })
+    const deleted = mapping({ sessionID: "ses_deleted_during_allocation", messageId: "race-deleted" })
+    const unrelated = mapping({ sessionID: "ses_unrelated", messageId: "race-unrelated", channelId: CHAT_B })
+    const reregistered = mapping({ sessionID: "ses_deleted_during_allocation", messageId: "race-reregistered" })
+
+    const staleRegistration = registry.register(deleted)
+    await deferred.firstReadStarted
+    const unrelatedRegistration = await registry.register(unrelated)
+    expect(unrelatedRegistration).toBe(true)
+    expect(await registry.removeSession(deleted.sessionID)).toBe(0)
+
+    deferred.releaseFirstRead()
+    expect(await staleRegistration).toBe(false)
+    expect(registry.lookup("telegram", deleted.messageId, CHAT_A)).toBeNull()
+    expect(registry.list().map((entry) => entry.sessionID)).toEqual([unrelated.sessionID])
+    expect(storedSessions(deferred.storage)).toEqual([unrelated.sessionID])
+
+    expect(await registry.register(reregistered)).toBe(true)
+    expect(registry.lookup("telegram", reregistered.messageId, CHAT_A)?.sessionID).toBe(reregistered.sessionID)
+
+    const restarted = createOpenclawRegistry({ storage: deferred.storage })
+    await restarted.hydrate()
+    expect(restarted.lookup("telegram", deleted.messageId, CHAT_A)).toBeNull()
+    expect(restarted.lookup("telegram", unrelated.messageId, CHAT_B)?.sessionID).toBe(unrelated.sessionID)
+    expect(restarted.lookup("telegram", reregistered.messageId, CHAT_A)?.sessionID).toBe(reregistered.sessionID)
   })
 })
 
