@@ -9,7 +9,7 @@
  */
 import { describe, expect, test } from "bun:test"
 
-import { LABEL_MAX, PANEL_ID, PANEL_STATE, buildPanelModel, formatPanel, truncate } from "./rigel-v2-panel-model.mjs"
+import { HIERARCHY_BLOCKED, LABEL_MAX, PANEL_ID, PANEL_STATE, buildPanelModel, formatPanel, truncate } from "./rigel-v2-panel-model.mjs"
 
 function section(model, id) {
   return model.sections.find((entry) => entry.id === id)
@@ -100,6 +100,52 @@ describe("#given the read-only panel core", () => {
       const model = buildPanelModel({ sessions: [{ id: "ses_only" }], titleOf: () => undefined, statusOf: () => undefined })
       expect(section(model, "sessions").rows).toEqual([{ id: "ses_only", title: "ses_only", status: null }])
       expect(formatPanel(model)).toContain("- ses_only\n")
+    })
+  })
+
+  describe("#given active V2 sessions", () => {
+    test("#then every sourced agent stays visible with its effective model or a dash", () => {
+      const model = buildPanelModel({
+        sessions: [
+          { id: "ses_model", agent: "sisyphus", status: "running", model: { providerID: "openai", modelID: "gpt-6" } },
+          { id: "ses_missing", agent: "atlas", status: "idle" },
+        ],
+        models: [{ id: "catalog-only", name: "Catalog-only" }],
+      })
+      expect(model.agentRows).toEqual({
+        state: PANEL_STATE.AVAILABLE,
+        hierarchy: { parentID: HIERARCHY_BLOCKED, depth: HIERARCHY_BLOCKED, enumeration: HIERARCHY_BLOCKED },
+        rows: [
+          { sessionID: "ses_model", agent: "sisyphus", model: "openai/gpt-6", status: "running" },
+          { sessionID: "ses_missing", agent: "atlas", model: "-", status: "idle" },
+        ],
+      })
+    })
+
+    test("#then explicitly terminated sessions and category entries do not become agent rows", () => {
+      const model = buildPanelModel({
+        sessions: [
+          { id: "ses_active", agent: "sisyphus", status: "idle" },
+          { id: "ses_terminated", agent: "atlas", status: "terminated" },
+          { id: "ses_category", agent: "category", status: "running", category: true },
+          { id: "ses_kind", agent: "category", status: "running", kind: "category" },
+        ],
+      })
+      expect(model.agentRows).toMatchObject({
+        state: PANEL_STATE.AVAILABLE,
+        rows: [{ sessionID: "ses_active", agent: "sisyphus", model: "-", status: "idle" }],
+      })
+    })
+  })
+
+  describe("#given an unavailable V2 session source", () => {
+    test("#then it emits no agent rows while preserving the explicit hierarchy block", () => {
+      const model = buildPanelModel({ sessions: undefined })
+      expect(model.agentRows).toEqual({
+        state: PANEL_STATE.UNAVAILABLE,
+        hierarchy: { parentID: HIERARCHY_BLOCKED, depth: HIERARCHY_BLOCKED, enumeration: HIERARCHY_BLOCKED },
+        rows: [],
+      })
     })
   })
 

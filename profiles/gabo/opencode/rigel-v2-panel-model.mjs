@@ -31,6 +31,15 @@ export const PANEL_STATE = Object.freeze({
 /** Longest label rendered before a purely visual ellipsis is applied. */
 export const LABEL_MAX = 40
 
+/** V2 hierarchy fields are unavailable until the authorized F4 runtime gate. */
+export const HIERARCHY_BLOCKED = "BLOQUEADO"
+
+const BLOCKED_HIERARCHY = Object.freeze({
+  parentID: HIERARCHY_BLOCKED,
+  depth: HIERARCHY_BLOCKED,
+  enumeration: HIERARCHY_BLOCKED,
+})
+
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
@@ -78,6 +87,44 @@ function resolveStatus(statusOf, id) {
   return null
 }
 
+const ACTIVE_SESSION_STATUSES = new Set(["idle", "running"])
+
+function sessionStatus(session, statusOf, id) {
+  if (isRecord(session) && typeof session.status === "string" && session.status.length > 0) return session.status
+  return resolveStatus(statusOf, id)
+}
+
+function isCategoryEntry(session) {
+  return isRecord(session) && (session.category === true || session.kind === "category" || session.type === "category")
+}
+
+function agentName(session) {
+  return isRecord(session) && typeof session.agent === "string" && session.agent.length > 0 ? session.agent : null
+}
+
+function effectiveModel(session) {
+  if (!isRecord(session)) return "-"
+  if (typeof session.model === "string" && session.model.length > 0) return session.model
+  if (!isRecord(session.model)) return "-"
+  const providerID = typeof session.model.providerID === "string" && session.model.providerID.length > 0 ? session.model.providerID : null
+  const modelID = typeof session.model.modelID === "string" && session.model.modelID.length > 0 ? session.model.modelID : null
+  if (providerID && modelID) return `${providerID}/${modelID}`
+  return modelID ?? "-"
+}
+
+function activeAgentRows(sessionEntries, sessionsAvailable, sessionsError) {
+  if (sessionsError) return { state: PANEL_STATE.ERROR, rows: [] }
+  if (!sessionsAvailable) return { state: PANEL_STATE.UNAVAILABLE, rows: [] }
+
+  const rows = []
+  for (const { session, sessionID, status } of sessionEntries) {
+    const agent = agentName(session)
+    if (isCategoryEntry(session) || !ACTIVE_SESSION_STATUSES.has(status) || !agent) continue
+    rows.push({ sessionID, agent, model: effectiveModel(session), status })
+  }
+  return { state: sectionState(false, true, rows.length), rows }
+}
+
 function extractDirectory(location) {
   if (typeof location === "string" && location.length > 0) return location
   if (isRecord(location)) {
@@ -109,14 +156,15 @@ function resolveLabel(entry, fallback) {
  * @param {unknown} [reads.sessions]       raw session.list() result
  * @param {(id:string)=>unknown} [reads.titleOf]   session.get(id) title accessor
  * @param {(id:string)=>unknown} [reads.statusOf]  session.status(id) accessor
- * @param {unknown} [reads.models]         raw location.model.list(location) result
- * @param {unknown} [reads.agents]         raw location.agent.list(location) result
- * @param {unknown} [reads.providers]      raw location.provider.list(location) result
+ * @param {unknown} [reads.models]         retained catalog read for the legacy F3 surface
+ * @param {unknown} [reads.agents]         retained catalog read for the legacy F3 surface
+ * @param {unknown} [reads.providers]      retained catalog read for the legacy F3 surface
  * @param {boolean} [reads.locationError]
  * @param {boolean} [reads.sessionsError]
  * @param {boolean} [reads.modelsError]
  * @param {boolean} [reads.agentsError]
  * @param {boolean} [reads.providersError]
+ * @returns {{ id: string, location: string | null, agentRows: { state: string, hierarchy: object, rows: Array<{ sessionID: string, agent: string, model: string, status: string }> }, sections: Array<object> }}
  */
 export function buildPanelModel(reads = {}) {
   const location = reads.locationError ? null : extractDirectory(reads.location)
@@ -124,15 +172,20 @@ export function buildPanelModel(reads = {}) {
   const models = normalizeList(reads.models)
   const agents = normalizeList(reads.agents)
   const providers = normalizeList(reads.providers)
-
-  const sessionRows = sessions.items.map((session, index) => {
+  const sessionEntries = sessions.items.map((session, index) => {
     const id = asId(session, index)
-    return {
-      id,
-      title: truncate(resolveTitle(reads.titleOf, id, id)),
-      status: resolveStatus(reads.statusOf, id),
-    }
+    return { session, id, status: sessionStatus(session, reads.statusOf, id) }
   })
+  const activeAgents = activeAgentRows(
+    sessionEntries.map(({ session, id, status }) => ({ session, sessionID: id, status })),
+    sessions.available,
+    reads.sessionsError,
+  )
+  const sessionRows = sessionEntries.map(({ id, status }) => ({
+    id,
+    title: truncate(resolveTitle(reads.titleOf, id, id)),
+    status,
+  }))
 
   const labelRows = (items) =>
     items.map((entry, index) => {
@@ -147,6 +200,11 @@ export function buildPanelModel(reads = {}) {
   return {
     id: PANEL_ID,
     location,
+    agentRows: {
+      state: activeAgents.state,
+      hierarchy: BLOCKED_HIERARCHY,
+      rows: activeAgents.rows,
+    },
     sections: [
       {
         id: "sessions",
