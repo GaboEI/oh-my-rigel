@@ -111,12 +111,13 @@ describe("#given the panel surface at the host boundary", () => {
   })
 
   describe("#given a slot input naming the selected session", () => {
-    test("#then the sole status read targets that identity and its state picks the header", () => {
+    test("#then I-3's single read targets that identity and the other sessions stay unread", () => {
       const fake = fakeContext({
         sessions: [
           { id: "ses_a", agent: "sisyphus" },
           { id: "ses_b", agent: "atlas" },
         ],
+        titles: { ses_a: "Other", ses_b: "Selected" },
         statuses: { ses_a: "idle", ses_b: "running" },
         models: [],
         agents: [],
@@ -127,15 +128,37 @@ describe("#given the panel surface at the host boundary", () => {
       const text = renderedText(fake, { sessionID: "ses_b" })
 
       expect(firstLine(text)).toBe(PANEL_HEADER_WORKING)
-      expect(fake.statusCalls).toContain("ses_b")
-      // One read per session id: the header and the rows share the same read.
-      expect(fake.statusCalls.filter((id) => id === "ses_b")).toHaveLength(1)
-      expect(fake.statusCalls.filter((id) => id === "ses_a")).toHaveLength(1)
+      // Exactly one status read, for the slot-provided identity. The roster is
+      // never widened: the other listed session is not read at all.
+      expect(fake.statusCalls).toEqual(["ses_b"])
+      expect(text).toContain("- Selected [running]")
+      // An unread session keeps no state: the row is rendered without a status
+      // claim instead of inventing one or borrowing the selected session's.
+      expect(text).toContain("- Other")
+      expect(text).not.toContain("[idle]")
+    })
+
+    test("#then a status the host would answer for another session is never requested or claimed", () => {
+      const fake = fakeContext({
+        sessions: [
+          { id: "ses_a", agent: "sisyphus" },
+          { id: "ses_b", agent: "atlas" },
+        ],
+        titles: { ses_a: "Other", ses_b: "Selected" },
+        statuses: { ses_a: "running", ses_b: "idle" },
+      })
+      createPanelSurface({ solid: stubSolid() }).setup(fake.context)
+
+      const text = renderedText(fake, { sessionID: "ses_b" })
+
+      expect(firstLine(text)).toBe(PANEL_HEADER_REST)
+      expect(fake.statusCalls).toEqual(["ses_b"])
+      expect(text).not.toContain("[running]")
     })
   })
 
   describe("#given a host that provides no slot input", () => {
-    test("#then no identity is invented and the header stays at rest", () => {
+    test("#then no identity is invented, no status is read and the header stays at rest", () => {
       const fake = fakeContext({
         sessions: [{ id: "ses_a", agent: "sisyphus" }],
         statuses: { ses_a: "running" },
@@ -145,8 +168,8 @@ describe("#given the panel surface at the host boundary", () => {
       const text = renderedText(fake)
 
       expect(firstLine(text)).toBe(PANEL_HEADER_REST)
-      // Only the listed session is read; no blank or synthetic identity appears.
-      expect(fake.statusCalls).toEqual(["ses_a"])
+      // I-3 admits no read without the slot-provided identity.
+      expect(fake.statusCalls).toEqual([])
     })
   })
 

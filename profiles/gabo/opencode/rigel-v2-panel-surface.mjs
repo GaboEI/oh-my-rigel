@@ -11,8 +11,11 @@
  *
  * The slot callback receives the selected session, exactly as the two host-native
  * consumers of this slot do (`render: (input) => ... input.sessionID`). This
- * surface consumes that input instead of assuming an identity: the header state
- * comes from `session.status(input.sessionID)` and nothing else.
+ * surface consumes that input instead of assuming an identity, and I-3's single
+ * admissible read is taken literally: `session.status(sessionID)` for the
+ * slot-provided session, read once inside `render` (the reactive owner seam).
+ * Every other listed session keeps an UNREAD status, so the block omits its state
+ * instead of reading a wider roster or inventing an activity value.
  *
  * Header contract (G2): exactly two visible headers, `oh-my-rigel · models` at
  * rest and `oh-my-rigel · working` while the selected session is active. G1's
@@ -66,18 +69,16 @@ function slotSessionID(input) {
 }
 
 /**
- * One read per session id for a whole render: the header and the model rows share
- * the same accessor result, so one render never re-reads a session. The map lives
- * inside a single render call and is never retained across renders.
+ * I-3 at the host boundary: `session.status(sessionID)` is read exactly once, for
+ * the identity the slot handed us, inside this render. The model receives an
+ * accessor that answers only for that identity, so no other session is ever read
+ * from the host and no status is invented for one. Without a slot identity there
+ * is no admissible read at all.
  */
-function statusReader(readStatus) {
-  const seen = new Map()
-  return (id) => {
-    if (seen.has(id)) return seen.get(id)
-    const value = readStatus(id)
-    seen.set(id, value)
-    return value
-  }
+function selectedStatusReader(readStatus, sessionID) {
+  if (sessionID === null) return () => undefined
+  const status = readResult(() => readStatus(sessionID)).value
+  return (id) => (id === sessionID ? status : undefined)
 }
 
 /** Read only the authorized, demonstrated selectors; never await, never cache. */
@@ -89,10 +90,10 @@ function readPanelInputs(context, input) {
   const models = readResult(() => data?.location?.model?.list?.(location.value))
   const agents = readResult(() => data?.location?.agent?.list?.(location.value))
   const providers = readResult(() => data?.location?.provider?.list?.(location.value))
-  const statusOf = statusReader((id) => readResult(() => data?.session?.status?.(id)).value)
+  const statusOf = selectedStatusReader((id) => data?.session?.status?.(id), sessionID)
   return {
     sessionID,
-    selectedStatus: sessionID === null ? null : statusOf(sessionID),
+    selectedStatus: statusOf(sessionID) ?? null,
     location: location.value,
     locationError: !location.ok,
     sessions: sessions.value,
