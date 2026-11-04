@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { PANEL_HEADER_REST, PANEL_HEADER_WORKING, PANEL_SLOT_APPEND, createPanelSurface } from "./rigel-v2-panel-surface.mjs"
+import { PANEL_CONTENT_WIDTH, PANEL_TEXT_WIDTH, displayWidth } from "./rigel-v2-panel-model.mjs"
 
 function stubSolid() {
   const nodes = []
@@ -299,6 +300,40 @@ describe("#given the panel surface at the host boundary", () => {
       createPanelSurface({ solid: throwing }).setup(fake.context)
       expect(() => fake.renders[0]()).not.toThrow()
       expect(fake.renders[0]()).toBeNull()
+    })
+  })
+
+  describe("#given a host whose session titles render in wide cells", () => {
+    test("#then no rendered line reaches the observed content column edge", () => {
+      const fake = fakeContext({
+        location: { directory: `/${"deep/".repeat(20)}` },
+        sessions: [{ id: "ses_wide" }],
+        titles: { ses_wide: "\u5f00\u59cb Atlas \u8ba1\u5212\u6267\u884c\u4f1a\u8bdd\u6807\u9898\u5f88\u957f\u5f88\u957f\u975e\u5e38\u957f" },
+        statuses: { ses_wide: "running" },
+        models: [{ id: "gpt", name: "g".repeat(120) }],
+        agents: [{ id: "sisyphus", name: "Sisyphus" }],
+        providers: [{ id: "anthropic", name: "a".repeat(120) }],
+      })
+      createPanelSurface({ solid: stubSolid() }).setup(fake.context)
+
+      const lines = renderedText(fake, { sessionID: "ses_wide" }).split("\n")
+
+      expect(lines.length).toBeGreaterThan(6)
+      for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(PANEL_TEXT_WIDTH)
+      for (const line of lines) expect(displayWidth(line)).toBeLessThan(PANEL_CONTENT_WIDTH)
+    })
+  })
+
+  describe("#given a block that cannot fit even in its compact form", () => {
+    test("#then render returns null instead of a node, and never a bare string", () => {
+      const sessions = Array.from({ length: 120 }, (_, index) => ({ id: `ses_${index}`, status: "idle", agent: "atlas" }))
+      const solid = stubSolid()
+      const fake = fakeContext({ sessions })
+      createPanelSurface({ solid }).setup(fake.context)
+
+      expect(fake.renders[0]({ sessionID: "ses_0" })).toBeNull()
+      // Nothing was mounted for the omitted block.
+      expect(solid.nodes).toHaveLength(0)
     })
   })
 

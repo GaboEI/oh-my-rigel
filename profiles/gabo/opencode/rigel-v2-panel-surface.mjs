@@ -35,13 +35,22 @@
  * that is the F4 runtime gate. This module only proves the input is consumed and
  * the read is the single authorized accessor.
  *
+ * Layout (F5): the surface contributes no width and no height of its own. Every
+ * line it renders is fitted by the pure core to the 41 usable text cells the F4
+ * capture observed inside the 43-cell sidebar content column, so no row can wrap
+ * and split its meaning. Growth is vertical only. When the whole block cannot fit
+ * the observed 80-row terminal the core degrades it to the header plus the
+ * active-session information, and when not even that fits `render` returns `null`
+ * instead of a node: the block is omitted, never scrolled, clipped or hidden. No
+ * terminal size is polled, cached or measured, and no width is invented here.
+ *
  * The OpenTUI Solid peer is resolved by a STATIC bare import; the V2 host injects
  * it at load time, so the module stays buildless with no node_modules.
  * `overrides.solid` is a unit-test seam only.
  */
 
 import { createElement, insert } from "@opentui/solid"
-import { PANEL_ID, buildPanelModel, formatPanel } from "./rigel-v2-panel-model.mjs"
+import { PANEL_ID, PANEL_LAYOUT, buildPanelModel, layoutPanelLines } from "./rigel-v2-panel-model.mjs"
 
 /** The V2 sidebar content slot this surface appends to. */
 export const PANEL_SLOT_APPEND = "sidebar.content"
@@ -115,18 +124,14 @@ function headerFor(status) {
 }
 
 /**
- * The model's first line is its own standalone title. This surface owns the
- * visible header (G2), so the body starts below that title and the block never
- * renders two competing titles.
+ * Compose what this block renders: the model's layout decision, taken against the
+ * observed sidebar budget, with the G2 header the surface owns as the first line.
+ * The model's own first line is a standalone title, so it never reaches the block:
+ * `layoutPanelLines` builds the header plus the body below that title. No layout
+ * value is measured here, so the surface stays passive.
  */
-function bodyOf(formatted) {
-  const index = formatted.indexOf("\n")
-  return index === -1 ? "" : formatted.slice(index + 1)
-}
-
-/** Compose the single multiline text this block renders: header + model body. */
-function panelText(inputs) {
-  return `${headerFor(inputs.selectedStatus)}\n${bodyOf(formatPanel(buildPanelModel(inputs)))}`
+function panelLayout(inputs) {
+  return layoutPanelLines(buildPanelModel(inputs), headerFor(inputs.selectedStatus))
 }
 
 /** Build the single multiline OpenTUI <text> node the host mounts. */
@@ -152,7 +157,9 @@ export function createPanelSurface(overrides = {}) {
 
       const render = (input) => {
         try {
-          return buildTextNode(solid, panelText(readPanelInputs(context, input)))
+          const layout = panelLayout(readPanelInputs(context, input))
+          if (layout.mode === PANEL_LAYOUT.NONE) return null
+          return buildTextNode(solid, layout.lines.join("\n"))
         } catch {
           return null
         }

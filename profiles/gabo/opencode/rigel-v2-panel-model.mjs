@@ -16,6 +16,25 @@
  * Representations: R2 "Sessions" plus R3 "Models"/"Agents"/"Providers" (the
  * catalog representation), each with its own isolated state, all inside the one
  * <text> node the adapter renders.
+ *
+ * Layout (F5): every boundary below comes from the one live layout the F4 capture
+ * produced, never from a measurement this module or the surface would have to take.
+ * At the 200x80 terminal of `.omo/evidence/20261104-rigel-v2-sidebar-implementation/
+ * f4/live-20261104/probe-A.txt` the host paints its border cell at 0-based column
+ * 155 of the 199 captured columns, so the sidebar content column is 199 - 156 = 43
+ * cells wide. Two of those cells keep the main-pane background as a gutter, leaving
+ * 41 usable text cells, and the same capture pins that boundary from both sides: a
+ * 41-cell sidebar row (`    • context7                  Connected`, capture row 11)
+ * rendered on one row, while the 42nd cell of the probe box bottom row
+ * (`    └────────────────────────────────────`, capture row 32) was pushed onto the
+ * next row as its own `┘` (capture row 33).
+ * Every emitted line is therefore fitted to 41 cells, so no line of this block can
+ * wrap into a second row and split a row's meaning.
+ *
+ * Growth is vertical only: no scroll, no clipping, no hiding. A block longer than
+ * the observed 80-row terminal height can never be fully visible, so it degrades to
+ * the header plus the active-session information, and when not even that fits it
+ * emits no line at all for the adapter to render.
  */
 
 export const PANEL_ID = "oh-my-rigel.panel"
@@ -31,6 +50,35 @@ export const PANEL_STATE = Object.freeze({
 /** Longest label rendered before a purely visual ellipsis is applied. */
 export const LABEL_MAX = 40
 
+/**
+ * Sidebar content column observed in the F4 live capture at 200x80: the host
+ * border cell sits at 0-based column 155 of the 199 captured columns, so the
+ * column right of it holds 43 cells.
+ */
+export const PANEL_CONTENT_WIDTH = 43
+
+/** Cells of that column the host keeps on the main-pane background, never text. */
+export const PANEL_GUTTER_WIDTH = 2
+
+/**
+ * Usable text cells: 43 - 2 = 41. The capture fits 41 cells on one row and wraps
+ * the 42nd, so a line at or below this width cannot split into a second row.
+ */
+export const PANEL_TEXT_WIDTH = PANEL_CONTENT_WIDTH - PANEL_GUTTER_WIDTH
+
+/**
+ * Observed terminal height of the same capture. The sidebar column cannot be
+ * taller than the terminal, so a longer block can never be fully visible.
+ */
+export const PANEL_MAX_LINES = 80
+
+/** Layout outcomes: the whole block, header plus active session, or no line. */
+export const PANEL_LAYOUT = Object.freeze({
+  FULL: "completo",
+  COMPACT: "compacto",
+  NONE: "omitido",
+})
+
 /** V2 hierarchy fields are unavailable until the authorized F4 runtime gate. */
 export const HIERARCHY_BLOCKED = "BLOQUEADO"
 
@@ -44,11 +92,67 @@ function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
-/** Pure visual truncation: depends only on the string itself, never on data. */
+/**
+ * East Asian wide/fullwidth cells occupy two terminal columns. The captured host
+ * renders wide session titles in its own tab bar (`开始 Atlas 计划执行会`), so counting
+ * characters instead of cells would overflow the observed 41-cell budget.
+ */
+const WIDE_RANGES = Object.freeze([
+  Object.freeze([0x1100, 0x115f]),
+  Object.freeze([0x2e80, 0x303e]),
+  Object.freeze([0x3041, 0x33ff]),
+  Object.freeze([0x3400, 0x4dbf]),
+  Object.freeze([0x4e00, 0x9fff]),
+  Object.freeze([0xa000, 0xa4cf]),
+  Object.freeze([0xac00, 0xd7a3]),
+  Object.freeze([0xf900, 0xfaff]),
+  Object.freeze([0xfe30, 0xfe6f]),
+  Object.freeze([0xff00, 0xff60]),
+  Object.freeze([0xffe0, 0xffe6]),
+  Object.freeze([0x1f300, 0x1f64f]),
+  Object.freeze([0x1f900, 0x1f9ff]),
+  Object.freeze([0x20000, 0x3fffd]),
+])
+
+/** Width of one code point in terminal cells. A combining mark occupies none. */
+function cellWidth(codePoint) {
+  if (codePoint === 0x200d || (codePoint >= 0x0300 && codePoint <= 0x036f)) return 0
+  for (const [start, end] of WIDE_RANGES) {
+    if (codePoint >= start && codePoint <= end) return 2
+  }
+  return 1
+}
+
+/** Display width of a string in terminal cells, never in code points. */
+export function displayWidth(text) {
+  const value = typeof text === "string" ? text : ""
+  let width = 0
+  for (const char of value) width += cellWidth(char.codePointAt(0))
+  return width
+}
+
+/**
+ * Pure visual truncation in cells: depends only on the string itself, never on
+ * data or on a measurement. The ellipsis is part of the budget, so a truncated
+ * value never exceeds `max` cells.
+ */
 export function truncate(text, max = LABEL_MAX) {
   const value = typeof text === "string" ? text : ""
-  if (value.length <= max) return value
-  return `${value.slice(0, max - 1)}\u2026`
+  if (displayWidth(value) <= max) return value
+  let fitted = ""
+  let used = 0
+  for (const char of value) {
+    const width = cellWidth(char.codePointAt(0))
+    if (used + width + 1 > max) break
+    fitted += char
+    used += width
+  }
+  return `${fitted}\u2026`
+}
+
+/** Fit one emitted line to the usable text budget observed in the sidebar. */
+export function fitLine(line) {
+  return truncate(line, PANEL_TEXT_WIDTH)
 }
 
 /** Normalize a demonstrated list-or-absent read into { available, items }. */
@@ -265,9 +369,10 @@ function sectionLines(section) {
 }
 
 /**
- * Format the model as ONE plain multiline string. This is the only textual
- * contract; the adapter renders it into a single OpenTUI <text> node. The
- * function never throws: a malformed model degrades to a safe header.
+ * Format the model as ONE plain multiline string, with every line fitted to the
+ * observed sidebar text budget. This is the only textual contract; the adapter
+ * renders it into a single OpenTUI <text> node. The function never throws: a
+ * malformed model degrades to a safe header.
  */
 export function formatPanel(model) {
   try {
@@ -278,8 +383,49 @@ export function formatPanel(model) {
     for (const section of sections) {
       if (isRecord(section) && typeof section.id === "string") lines.push(...sectionLines(section))
     }
-    return lines.join("\n")
+    return lines.map(fitLine).join("\n")
   } catch {
     return "Oh My Rigel\n  no disponible"
   }
+}
+
+/** The formatted block below its own standalone title line, one entry per line. */
+function bodyLines(model) {
+  const formatted = formatPanel(model)
+  const index = formatted.indexOf("\n")
+  return index === -1 ? [] : formatted.slice(index + 1).split("\n")
+}
+
+/**
+ * The active-session information a compact block may keep: a session row is
+ * rendered only when its status was actually read. A session whose status was
+ * never read keeps no state claim, so it contributes no line and no invented
+ * value. `status` is the model's already-derived field, never a fresh read.
+ */
+function activeSessionLines(model) {
+  const sections = isRecord(model) && Array.isArray(model.sections) ? model.sections : []
+  const sessions = sections.find((section) => isRecord(section) && section.id === "sessions")
+  if (!isRecord(sessions) || !Array.isArray(sessions.rows)) return []
+  const lines = []
+  for (const row of sessions.rows) {
+    if (!isRecord(row) || typeof row.status !== "string" || row.status.length === 0) continue
+    lines.push(fitLine(rowLine("sessions", row)))
+  }
+  return lines
+}
+
+/**
+ * Decide what the block renders without measuring anything: the whole block while
+ * it fits the observed height, otherwise the header plus the active-session
+ * information, otherwise no line at all. The returned lines are final and fitted;
+ * the mode says which of the three outcomes produced them, so the adapter never
+ * has to infer a degradation.
+ */
+export function layoutPanelLines(model, headerLine) {
+  const header = fitLine(typeof headerLine === "string" ? headerLine : "")
+  const full = [header, ...bodyLines(model)]
+  if (full.length <= PANEL_MAX_LINES) return { mode: PANEL_LAYOUT.FULL, lines: full }
+  const compact = [header, ...activeSessionLines(model)]
+  if (compact.length <= PANEL_MAX_LINES) return { mode: PANEL_LAYOUT.COMPACT, lines: compact }
+  return { mode: PANEL_LAYOUT.NONE, lines: [] }
 }

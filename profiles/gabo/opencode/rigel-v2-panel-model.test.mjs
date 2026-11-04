@@ -9,7 +9,7 @@
  */
 import { describe, expect, test } from "bun:test"
 
-import { HIERARCHY_BLOCKED, LABEL_MAX, PANEL_ID, PANEL_STATE, buildPanelModel, formatPanel, truncate } from "./rigel-v2-panel-model.mjs"
+import { HIERARCHY_BLOCKED, LABEL_MAX, PANEL_CONTENT_WIDTH, PANEL_ID, PANEL_LAYOUT, PANEL_MAX_LINES, PANEL_STATE, PANEL_TEXT_WIDTH, buildPanelModel, displayWidth, fitLine, formatPanel, layoutPanelLines, truncate } from "./rigel-v2-panel-model.mjs"
 
 function section(model, id) {
   return model.sections.find((entry) => entry.id === id)
@@ -161,5 +161,93 @@ describe("#given the read-only panel core", () => {
     expect(() => formatPanel(undefined)).not.toThrow()
     expect(() => formatPanel({ sections: "nope" })).not.toThrow()
     expect(typeof formatPanel({})).toBe("string")
+  })
+
+  describe("#given a session title the host renders in wide cells", () => {
+    test("#then truncation is a single visual ellipsis counted in cells, not characters", () => {
+      // Two independent literals: 40 single-cell columns, and 20 double-cell
+      // columns, each followed by the ellipsis that closes the 41-cell budget.
+      expect(fitLine("x".repeat(60))).toBe(`${"x".repeat(PANEL_TEXT_WIDTH - 1)}\u2026`)
+      expect(fitLine("\u754c".repeat(30))).toBe(`${"\u754c".repeat(20)}\u2026`)
+      expect(displayWidth(fitLine("\u754c".repeat(30)))).toBe(PANEL_TEXT_WIDTH)
+      expect(fitLine("short")).toBe("short")
+    })
+  })
+
+  describe("#given a block with wide titles and long paths", () => {
+    test("#then every emitted line fits the observed text budget so no row wraps", () => {
+      const model = buildPanelModel({
+        location: { directory: `/${"deep/".repeat(20)}` },
+        sessions: [{ id: "ses_wide", status: "running" }],
+        titleOf: () => "\u5f00\u59cb Atlas \u8ba1\u5212\u6267\u884c\u4f1a\u8bdd\u6807\u9898\u5f88\u957f\u5f88\u957f\u975e\u5e38\u957f",
+        models: [{ id: "m", name: "m".repeat(120) }],
+        agents: [{ id: "sisyphus", name: "Sisyphus" }],
+        providers: [{ id: "p", name: "p".repeat(120) }],
+      })
+      const lines = formatPanel(model).split("\n")
+      expect(lines.length).toBeGreaterThan(6)
+      for (const line of lines) {
+        expect(displayWidth(line)).toBeLessThanOrEqual(PANEL_TEXT_WIDTH)
+        // The text budget must stay strictly inside the observed content column.
+        expect(displayWidth(line)).toBeLessThan(PANEL_CONTENT_WIDTH)
+      }
+    })
+  })
+
+  describe("#given a block longer than the observed terminal height", () => {
+    const manySessions = (count, idOf = (index) => `ses_${index}`) =>
+      Array.from({ length: count }, (_, index) => ({ id: idOf(index), status: "idle" }))
+
+    test("#then it keeps the header and the active-session row and omits the rest", () => {
+      const model = buildPanelModel({
+        sessions: manySessions(PANEL_MAX_LINES - 5),
+        titleOf: (id) => `Title ${id}`,
+        models: [{ id: "m" }],
+        agents: [{ id: "a" }],
+        providers: [{ id: "p" }],
+      })
+      expect(formatPanel(model).split("\n").length).toBeGreaterThan(PANEL_MAX_LINES)
+
+      const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+
+      expect(layout.mode).toBe(PANEL_LAYOUT.COMPACT)
+      expect(layout.lines[0]).toBe("oh-my-rigel \u00b7 models")
+      expect(layout.lines[1]).toBe("  - Title ses_0 [idle]")
+      expect(layout.lines.length).toBeLessThanOrEqual(PANEL_MAX_LINES)
+      // Compact keeps the active information and drops the catalog sections.
+      expect(layout.lines.join("\n")).not.toContain("Models")
+      expect(layout.lines.join("\n")).not.toContain("no disponible")
+    })
+
+    test("#then a session whose status was never read keeps no state claim in compact", () => {
+      const read = manySessions(PANEL_MAX_LINES - 10, (index) => `ses_read_${index}`)
+      const unread = manySessions(25, (index) => `ses_unread_${index}`).map(({ id }) => ({ id }))
+      const model = buildPanelModel({
+        sessions: [...read, ...unread],
+        titleOf: (id) => (id.startsWith("ses_read") ? "Read row" : "Unread row"),
+        models: [{ id: "m" }],
+        agents: [{ id: "a" }],
+        providers: [{ id: "p" }],
+      })
+      expect(formatPanel(model).split("\n").length).toBeGreaterThan(PANEL_MAX_LINES)
+
+      const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+
+      expect(layout.mode).toBe(PANEL_LAYOUT.COMPACT)
+      expect(layout.lines.some((line) => line.includes("Read row"))).toBe(true)
+      expect(layout.lines.some((line) => line.includes("Unread row"))).toBe(false)
+      // Only the rows whose status was read carry a bracket.
+      expect(layout.lines.filter((line) => line.includes("[")).every((line) => line.includes("Read row"))).toBe(true)
+    })
+
+    test("#then a compact block that also cannot fit emits no line at all", () => {
+      const model = buildPanelModel({
+        sessions: manySessions(PANEL_MAX_LINES + 10),
+        titleOf: (id) => `Title ${id}`,
+      })
+      const layout = layoutPanelLines(model, "oh-my-rigel \u00b7 models")
+      expect(layout.mode).toBe(PANEL_LAYOUT.NONE)
+      expect(layout.lines).toEqual([])
+    })
   })
 })
