@@ -73,12 +73,16 @@ function renderedLines(root) {
 function fakeContext({ sessions = [], statuses = {}, renderer = { isDestroyed: false } } = {}) {
   const slotCalls = []
   const statusSubscriptions = []
+  const statusReads = []
   const context = {
     renderer,
     data: {
       session: {
         list: () => sessions,
-        status: (id) => statuses[id],
+        status: (id) => {
+          statusReads.push(id)
+          return statuses[id]
+        },
       },
       on: (event, callback) => {
         statusSubscriptions.push({ event, callback, removed: false })
@@ -93,7 +97,35 @@ function fakeContext({ sessions = [], statuses = {}, renderer = { isDestroyed: f
       },
     },
   }
-  return { context, slotCalls, statusSubscriptions }
+  return { context, slotCalls, statusSubscriptions, statusReads }
+}
+
+// The selected session's own tree must render; a second tree in the same host
+// belongs to another tab or project and must never leak into this slot.
+function twoTreeHost() {
+  return {
+    sessions: [
+      { id: "ses_root", agent: "Sisyphus", time: { created: 1 } },
+      { id: "ses_child", agent: "explore", parentID: "ses_root", time: { created: 2 } },
+      { id: "ses_grandchild", agent: "librarian", parentID: "ses_child", time: { created: 3 } },
+      { id: "ses_other_root", agent: "Prometheus", time: { created: 4 } },
+      { id: "ses_other_child", agent: "Oracle", parentID: "ses_other_root", time: { created: 5 } },
+    ],
+    statuses: {
+      ses_root: "running",
+      ses_child: "running",
+      ses_grandchild: "running",
+      ses_other_root: "running",
+      ses_other_child: "running",
+    },
+  }
+}
+
+function workingRows(node) {
+  return node.children
+    .filter((child) => child.tag === "box" && textValue(child).trim().length > 0)
+    .slice(1)
+    .map((row) => ({ name: textValue(row.children[0]).trim(), status: textValue(row.children[1] ?? "") }))
 }
 
 function textValue(node) {
@@ -223,5 +255,80 @@ describe("Rigel sidebar OpenTUI surface", () => {
     createPanelSurface({ solid: throwing, roster: fakeRoster() }).setup(fake.context)
     expect(() => fake.slotCalls[0].render({ sessionID: "ses_root" })).not.toThrow()
     expect(fake.slotCalls[0].render({ sessionID: "ses_root" })).toBeNull()
+  })
+
+  test("#given two unrelated running sessions #then only the selected one renders", () => {
+    const solid = stubSolid()
+    const fake = fakeContext({
+      sessions: [
+        { id: "ses_mine", agent: "Sisyphus", time: { created: 1 } },
+        { id: "ses_theirs", agent: "Prometheus", time: { created: 2 } },
+      ],
+      statuses: { ses_mine: "running", ses_theirs: "running" },
+    })
+    createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
+    const root = fake.slotCalls[0].render({ sessionID: "ses_mine" })
+
+    expect(textValue(root.children[0])).toContain("oh-my-rigel · working")
+    expect(workingRows(root)).toEqual([{ name: "* Sisyphus", status: "running" }])
+    expect(fake.statusReads).toEqual(["ses_mine"])
+  })
+
+  test("#given a running child under the selected parent #then both rows render", () => {
+    const solid = stubSolid()
+    const fake = fakeContext({
+      sessions: [
+        { id: "ses_root", agent: "Sisyphus", time: { created: 1 } },
+        { id: "ses_child", agent: "explore", parentID: "ses_root", time: { created: 2 } },
+      ],
+      statuses: { ses_root: "running", ses_child: "running" },
+    })
+    createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
+    const root = fake.slotCalls[0].render({ sessionID: "ses_root" })
+
+    expect(workingRows(root).map((row) => row.name)).toEqual(["* Sisyphus", "explore"])
+    expect(fake.statusReads).toEqual(["ses_root", "ses_child"])
+  })
+
+  test("#given a running grandchild #then the recursive walk still includes it", () => {
+    const solid = stubSolid()
+    const fake = fakeContext({
+      sessions: [
+        { id: "ses_root", agent: "Sisyphus", time: { created: 1 } },
+        { id: "ses_child", agent: "explore", parentID: "ses_root", time: { created: 2 } },
+        { id: "ses_grandchild", agent: "librarian", parentID: "ses_child", time: { created: 3 } },
+      ],
+      statuses: { ses_root: "running", ses_child: "running", ses_grandchild: "running" },
+    })
+    createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
+    const root = fake.slotCalls[0].render({ sessionID: "ses_root" })
+
+    expect(workingRows(root).map((row) => row.name)).toEqual(["* Sisyphus", "explore", "librarian"])
+  })
+
+  test("#given a five-session host #then another tree never renders and is never read", () => {
+    const solid = stubSolid()
+    const fake = fakeContext(twoTreeHost())
+    createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
+    const root = fake.slotCalls[0].render({ sessionID: "ses_root" })
+    const names = workingRows(root).map((row) => row.name)
+
+    expect(names).toEqual(["* Sisyphus", "explore", "librarian"])
+    // The second tree, including a child whose parentID points outside the scope.
+    expect(names).not.toContain("Prometheus")
+    expect(names).not.toContain("Oracle")
+    expect(fake.statusReads).toEqual(["ses_root", "ses_child", "ses_grandchild"])
+  })
+
+  test("#given no selected session #then the roster renders and zero statuses are read", () => {
+    const solid = stubSolid()
+    const fake = fakeContext(twoTreeHost())
+    createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
+    const root = fake.slotCalls[0].render()
+
+    expect(textValue(root.children[0])).toContain("oh-my-rigel · models")
+    expect(fake.statusReads).toEqual([])
+    const rows = root.children.filter((child) => child.tag === "box" && textValue(child).trim().length > 0)
+    expect(rows.length - 1).toBe(21)
   })
 })

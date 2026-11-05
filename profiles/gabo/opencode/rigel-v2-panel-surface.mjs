@@ -119,24 +119,67 @@ function panelNode(solid, model) {
   return root
 }
 
+function sessionKey(session) {
+  const id = typeof session?.id === "string" ? session.id : session?.sessionID
+  return typeof id === "string" && id.length > 0 ? id : undefined
+}
+
+function parentKey(session) {
+  const value = session?.parentID
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+/**
+ * The panel is scoped to the selected session's own orchestration tree: agents
+ * running in another tab or project must never leak into this slot. A session
+ * is in scope when it is the selected root or reachable from it through
+ * `parentID`, walking children recursively so grandchildren count. Without a
+ * selected session there is no scope to invent, so the roster renders instead.
+ */
+function sessionScope(entries, sessionID) {
+  if (!sessionID) return []
+  const byID = new Map()
+  const childrenByParent = new Map()
+  for (const session of entries) {
+    const id = sessionKey(session)
+    if (!id) continue
+    if (!byID.has(id)) byID.set(id, session)
+    const parent = parentKey(session)
+    if (!parent) continue
+    const bucket = childrenByParent.get(parent)
+    if (bucket) bucket.push(id)
+    else childrenByParent.set(parent, [id])
+  }
+  if (!byID.has(sessionID)) return []
+  // Breadth-first with a visited set, so a cyclic parentID chain terminates.
+  const scope = new Set([sessionID])
+  const queue = [sessionID]
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const childID of childrenByParent.get(queue[index]) ?? []) {
+      if (scope.has(childID)) continue
+      scope.add(childID)
+      queue.push(childID)
+    }
+  }
+  return entries.filter((session) => scope.has(sessionKey(session)))
+}
+
 function readPanelInputs(context, props, roster) {
   const data = context?.data
   const sessions = readResult(() => data?.session?.list?.())
   const sessionID = slotSessionID(props)
-  const statuses = new Map()
   const entries = Array.isArray(sessions.value) ? sessions.value : sessions.value?.data
-  if (Array.isArray(entries)) {
-    for (const session of entries) {
-      const id = typeof session?.id === "string" ? session.id : session?.sessionID
-      if (typeof id !== "string" || id.length === 0) continue
-      statuses.set(id, readResult(() => data?.session?.status?.(id)).value)
-    }
+  const scoped = sessionScope(Array.isArray(entries) ? entries : [], sessionID)
+  const statuses = new Map()
+  for (const session of scoped) {
+    const id = sessionKey(session)
+    if (!id) continue
+    statuses.set(id, readResult(() => data?.session?.status?.(id)).value)
   }
-  if (sessionID && !statuses.has(sessionID)) statuses.set(sessionID, readResult(() => data?.session?.status?.(sessionID)).value)
   return {
     roster,
     sessionID,
-    sessions: sessions.value,
+    sessions: scoped,
     sessionsError: !sessions.ok,
     statusOf: (id) => statuses.get(id),
   }
