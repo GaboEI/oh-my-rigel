@@ -301,9 +301,21 @@ export function buildPanelModel(reads = {}) {
   }
 }
 
+/**
+ * The name column always keeps at least one separator before the model or
+ * status. The column is the roster's longest name plus that separator, so a
+ * label that already fills the column would otherwise render glued; padding to
+ * `label.length + 1` when the label is that wide keeps the invariant instead of
+ * relying on the caller to pick a wider column.
+ */
+export function padNameColumn(label, width) {
+  const text = String(label ?? "")
+  const column = Number.isInteger(width) && width > 0 ? width : 0
+  return text.padEnd(Math.max(column, text.length + 1))
+}
+
 function paddedName(row, width) {
-  const label = `${row.prefix ?? ""}${row.name ?? ""}`
-  return label.padEnd(width)
+  return padNameColumn(`${row.prefix ?? ""}${row.name ?? ""}`, width)
 }
 
 /**

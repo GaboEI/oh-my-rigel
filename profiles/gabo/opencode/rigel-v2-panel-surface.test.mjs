@@ -163,6 +163,13 @@ describe("Rigel sidebar OpenTUI surface", () => {
 
     expect(renderedLines(root)).toEqual(expected)
     expect(renderedLines(root).filter((line) => line === "")).toHaveLength(3)
+
+    // The longest label is the one that lost its separator in the live panel: it
+    // keeps exactly one space and its column cannot be squeezed by a narrow sidebar.
+    const longestRow = root.children.find((child) => child.tag === "box" && textValue(child).startsWith("Prometheus"))
+    expect(textValue(longestRow.children[0])).toBe(`${"Prometheus".padEnd(ROSTER_NAME_WIDTH)}`)
+    expect(textValue(longestRow.children[0])).not.toBe("Prometheus")
+    expect(longestRow.children[0].flexShrink).toBe(0)
   })
 
   test("#when an agent is running #then it renders only running rows without task text", () => {

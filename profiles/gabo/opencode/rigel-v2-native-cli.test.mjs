@@ -7,8 +7,11 @@
  * disposer, and a headless host degrades to a safe no-op instead of failing.
  */
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { CLI_PLUGIN_ID, createCompanionCliPlugin } from "./rigel-v2-native-cli.mjs"
+import { CLI_PLUGIN_ID, createCompanionCliPlugin, readDefaultModel } from "./rigel-v2-native-cli.mjs"
 
 function fakeContext({ renderer = { isDestroyed: false } } = {}) {
   const handlers = new Map()
@@ -57,5 +60,27 @@ describe("#given the composed companion CLI plugin", () => {
     expect(typeof dispose).toBe("function")
     expect(fake.toasts).toHaveLength(0)
     expect(() => dispose()).not.toThrow()
+  })
+
+  test("#given an opencode.json whose $schema URL contains // plus a // comment line #then the inherited default model resolves", () => {
+    const home = mkdtempSync(join(tmpdir(), "rigel-default-model-"))
+    try {
+      mkdirSync(join(home, ".config", "opencode"), { recursive: true })
+      writeFileSync(
+        join(home, ".config", "opencode", "opencode.json"),
+        [
+          "{",
+          '  "$schema": "https://opencode.ai/config.json",',
+          "  // the model Judge inherits because it is not an omo.jsonc agent",
+          '  "model": "opencode-go/deepseek-v4.1-flash"',
+          "}",
+          "",
+        ].join("\n"),
+      )
+
+      expect(readDefaultModel({ home })).toBe("opencode-go/deepseek-v4.1-flash")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })

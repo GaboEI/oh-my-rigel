@@ -215,7 +215,22 @@ function stripComments(text) {
 }
 
 function readJsonc(text) {
-  return JSON.parse(removeTrailingCommas(stripComments(text)))
+  return parseJsoncText(text)
+}
+
+/**
+ * Parse a user config file that may carry JSONC comments. Strict JSON is tried
+ * first so a well-formed file is never rewritten; only a strict failure falls
+ * back to the comment-stripping pass, which is string-aware so a `//` inside a
+ * quoted value (a `$schema` URL, a gateway URL) is never read as a comment.
+ */
+export function parseJsoncText(text) {
+  const source = String(text ?? "")
+  try {
+    return JSON.parse(source)
+  } catch {
+    return JSON.parse(removeTrailingCommas(stripComments(source)))
+  }
 }
 
 // Filesystem failures carry a libuv errno code, which names the class of the

@@ -12,6 +12,7 @@ import {
   PANEL_ID,
   buildPanelModel,
   filterPanelColor,
+  padNameColumn,
 } from "./rigel-v2-panel-model.mjs"
 
 export const PANEL_SLOT_APPEND = "sidebar.content"
@@ -71,15 +72,18 @@ function headerNode(solid, model) {
 }
 
 // Row/flex alignment was not proven available in this slot, so the computed roster column is used.
+// The column is fixed: `flexShrink: 0` keeps a narrow sidebar from squeezing the
+// separator out of the longest label, which was the only row that lost it while
+// every shorter label still started its model at the same column.
 function modelRowNode(solid, row, nameColumnWidth) {
-  const name = textNode(solid, row.name.padEnd(nameColumnWidth), row.nameColor ?? PANEL_COLORS.base)
+  const name = textNode(solid, padNameColumn(row.name, nameColumnWidth), row.nameColor ?? PANEL_COLORS.base, { flexShrink: 0 })
   const model = textNode(solid, row.model, row.modelColor ?? PANEL_COLORS.dim)
   return rowNode(solid, [name, model])
 }
 
 function workingRowNode(solid, row, nameColumnWidth) {
   const label = `${row.prefix ?? ""}${row.name}`
-  const name = textNode(solid, label.padEnd(nameColumnWidth), row.nameColor ?? PANEL_COLORS.base)
+  const name = textNode(solid, padNameColumn(label, nameColumnWidth), row.nameColor ?? PANEL_COLORS.base, { flexShrink: 0 })
   const status = textNode(solid, row.status ?? "", row.statusColor ?? PANEL_COLORS.working)
   return rowNode(solid, [name, status])
 }

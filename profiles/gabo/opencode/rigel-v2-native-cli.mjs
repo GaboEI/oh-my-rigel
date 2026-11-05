@@ -26,7 +26,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 import { buildRoster } from "./rigel-v2-panel-model.mjs"
-import { readLiveAgentOverridesSource } from "./rigel-v2-native-config.mjs"
+import { parseJsoncText, readLiveAgentOverridesSource } from "./rigel-v2-native-config.mjs"
 import { createLegacyNoticeCliSurface } from "./rigel-v2-native-cli-legacy-notice.mjs"
 import { createNudgeCliSurface } from "./rigel-v2-native-cli-nudge.mjs"
 import { createTaskToastCliSurface } from "./rigel-v2-native-cli-task-toast.mjs"
@@ -35,14 +35,18 @@ import { createPanelSurface } from "./rigel-v2-panel-surface.mjs"
 
 export const CLI_PLUGIN_ID = "oh-my-rigel.cli"
 
-function parseJsonc(text) {
-  return JSON.parse(text.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, ""))
-}
-
-function readDefaultModel() {
-  for (const path of [join(homedir(), ".config", "opencode", "opencode.json"), join(homedir(), ".config", "opencode", "opencode.jsonc")]) {
+/**
+ * Judge is not an `omo.jsonc` agent entry; it inherits OpenCode's default model.
+ * `opencode.json` starts with a `$schema` URL, so the reader must parse strict
+ * JSON first and only strip comments when strict parsing fails: a naive `//`
+ * strip corrupts every URL in the file and the whole read degrades to
+ * `undefined`, which rendered Judge as `-`.
+ */
+export function readDefaultModel(options = {}) {
+  const home = options.home ?? homedir()
+  for (const path of [join(home, ".config", "opencode", "opencode.json"), join(home, ".config", "opencode", "opencode.jsonc")]) {
     try {
-      const value = parseJsonc(readFileSync(path, "utf8"))
+      const value = parseJsoncText(readFileSync(path, "utf8"))
       if (typeof value?.model === "string" && value.model.length > 0) return value.model
     } catch {
       // The next canonical V2 config filename is the only fallback.

@@ -111,6 +111,38 @@ describe("Rigel sidebar pure panel model", () => {
     expect(filterPanelColor("theme.text.muted")).toBe(PANEL_COLORS.dim)
   })
 
+  test("#given a name exactly as wide as the roster column #then the model keeps at least one separator and is never glued", () => {
+    const built = roster()
+    const longest = built.principals.concat(built.subagents, built.categories)
+      .map((row) => row.name)
+      .reduce((widest, name) => (name.length > widest.length ? name : widest), "")
+    const model = buildPanelModel({ roster: built, sessions: [{ id: "ses_root" }], statusOf: () => "idle" })
+    const lines = formatPanel(model).split("\n")
+    const longestRow = model.rows.find((row) => row.name === longest)
+
+    expect(model.nameColumnWidth).toBe(longest.length + 1)
+    expect(lines).toContain(`${longest} ${longestRow.model}`)
+    expect(lines.some((line) => line.startsWith(`${longest}${longestRow.model}`))).toBe(false)
+
+    const wideLabel = "a-running-label-wider-than-the-roster-column"
+    const working = buildPanelModel({
+      roster: built,
+      sessions: [{ id: "ses_wide", agent: wideLabel }],
+      statusOf: () => "running",
+    })
+    const workingLine = formatPanel(working).split("\n").find((line) => line.includes("running"))
+
+    expect(working.mode).toBe("working")
+    expect(workingLine).toBe(`${wideLabel} running`)
+  })
+
+  test("#given the inherited OpenCode default model #then Judge renders the abbreviated family.variant", () => {
+    const model = buildPanelModel({ roster: buildRoster({ judgeModel: "opencode-go/deepseek-v4.1-flash" }) })
+    const judgeLine = formatPanel(model).split("\n").find((line) => line.startsWith("Judge"))
+
+    expect(judgeLine).toBe(`${"Judge".padEnd(model.nameColumnWidth)}deepseek-v4.1`)
+  })
+
   test("#given malformed input #then the model still has one of the two safe states", () => {
     expect(() => buildPanelModel(undefined)).not.toThrow()
     expect(["models", "working"]).toContain(buildPanelModel(undefined).mode)
