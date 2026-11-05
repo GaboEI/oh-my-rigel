@@ -28,7 +28,7 @@ function roster() {
 }
 
 describe("Rigel sidebar pure panel model", () => {
-  test("#given an idle session #then it renders the complete three-group roster without labels", () => {
+  test("#given an idle session #then it renders the complete three-group roster with aligned model columns", () => {
     const model = buildPanelModel({ roster: roster(), sessions: [{ id: "ses_root" }], statusOf: () => "idle" })
 
     expect(model.mode).toBe("models")
@@ -39,50 +39,55 @@ describe("Rigel sidebar pure panel model", () => {
 
     const text = formatPanel(model)
     expect(text).toContain("oh-my-rigel · models")
-    expect(text).toContain("Sisyphus sisyphus")
-    expect(text).toContain("multimodal-looker multimodal-looker")
-    expect(text).toContain("visual-engineering visual-engineering")
+    expect(text).toContain(`${"Sisyphus".padEnd(model.nameColumnWidth)}sisyphus`)
+    expect(text).toContain(`${"multimodal-looker".padEnd(model.nameColumnWidth)}multimodal-looker`)
+    expect(text).toContain(`${"visual-engineering".padEnd(model.nameColumnWidth)}visual-engineering`)
     expect(text).not.toContain("PRINCIPALES")
     expect(text).not.toContain("SUBAGENTES")
     expect(text).not.toContain("CATEGORÍAS")
   })
 
-  test("#given no busy session #then model and provider suffixes are abbreviated", () => {
+  test("#given no running session #then model and provider suffixes are abbreviated", () => {
     expect(abbreviateModel("deepseek-v4.1-flash")).toBe("deepseek-v4.1")
     expect(abbreviateModel("google/gemini-3.7-flash")).toBe("gemini-3.7")
     expect(abbreviateModel("openai/gpt-5.6-luna#high")).toBe("gpt-5.6-luna")
   })
 
-  test("#given a busy roster #then it projects only busy agents in creation order", () => {
+  test("#given a running roster #then it projects only running agents in creation order without task text", () => {
     const sessions = [
-      { id: "ses_idle", agent: "explore", time: { created: 1 }, title: "forbidden title" },
-      { id: "ses_j2", agent: "Sisyphus-Junior", task: "second task", time: { created: 2 }, tokens: 99 },
-      { id: "ses_j1", agent: "Sisyphus-Junior", task: "first task", time: { created: 1 }, cost: 100 },
-      { id: "ses_judge", agent: "judge", task: "judge task", time: { created: 3 }, branch: "forbidden branch" },
+      { id: "ses_sisyphus", agent: "Sisyphus", task: "orchestrate", time: { created: 1 } },
+      { id: "ses_judge", agent: "judge", task: "judge task", time: { created: 2 } },
+      { id: "ses_oracle", agent: "oracle", task: "oracle task", time: { created: 3 } },
+      { id: "ses_junior", agent: "Sisyphus-Junior", task: "junior task", time: { created: 4 } },
+      { id: "ses_idle", agent: "explore", time: { created: 5 }, title: "forbidden title" },
     ]
     const status = new Map([
+      ["ses_sisyphus", "running"],
+      ["ses_judge", "running"],
+      ["ses_oracle", "running"],
+      ["ses_junior", { status: "running" }],
       ["ses_idle", "idle"],
-      ["ses_j2", "busy"],
-      ["ses_j1", "busy"],
-      ["ses_judge", { status: "busy" }],
     ])
-    const model = buildPanelModel({ roster: roster(), sessionID: "ses_j1", sessions, statusOf: (id) => status.get(id) })
+    const model = buildPanelModel({ roster: roster(), sessionID: "ses_junior", sessions, statusOf: (id) => status.get(id) })
+    const text = formatPanel(model)
 
     expect(model.mode).toBe("working")
     expect(model.header).toBe(PANEL_HEADER_WORKING)
     expect(model.groups).toEqual([])
-    expect(model.rows.map((row) => row.name)).toEqual(["Sisyphus-Junior 1", "Sisyphus-Junior 2", "Judge"])
-    expect(model.rows.map((row) => row.prefix)).toEqual(["* ", "* ", "* "])
-
-    const text = formatPanel(model)
-    expect(text).toContain("Sisyphus-Junior 1 busy first task")
-    expect(text).toContain("Sisyphus-Junior 2 busy second task")
-    expect(text).toContain("* Judge busy judge task")
+    expect(model.rows.map((row) => row.name)).toEqual(["Sisyphus", "Judge", "Oracle", "Sisyphus-Junior 1"])
+    expect(model.rows.map((row) => row.prefix)).toEqual(["* ", "* ", "", ""])
+    expect(model.rows.map((row) => row.status)).toEqual(["running", "running", "running", "running"])
+    expect(text).toContain(`${"* Sisyphus".padEnd(model.nameColumnWidth)}running`)
+    expect(text).toContain(`${"* Judge".padEnd(model.nameColumnWidth)}running`)
+    expect(text).toContain(`${"Oracle".padEnd(model.nameColumnWidth)}running`)
+    expect(text).toContain(`${"Sisyphus-Junior 1".padEnd(model.nameColumnWidth)}running`)
+    expect(text).not.toContain("busy")
+    expect(text).not.toContain("orchestrate")
+    expect(text).not.toContain("judge task")
+    expect(text).not.toContain("oracle task")
+    expect(text).not.toContain("junior task")
     expect(text).not.toContain("ses_")
     expect(text).not.toContain("forbidden title")
-    expect(text).not.toContain("forbidden branch")
-    expect(text).not.toContain("tokens")
-    expect(text).not.toContain("cost")
   })
 
   test("#given only completed or idle sessions #then it returns to the full roster", () => {

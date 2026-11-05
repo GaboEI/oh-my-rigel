@@ -84,36 +84,45 @@ describe("Rigel sidebar OpenTUI surface", () => {
     expect(root.tag).toBe("box")
     expect(root.borderStyle).toBe("single")
     expect(root.borderColor).toBe(PANEL_COLORS.border)
+    expect(root.paddingLeft).toBe(2)
+    expect(root.paddingRight).toBe(2)
     expect(root.children[0].tag).toBe("box")
     expect(textValue(root.children[0])).toContain("oh-my-rigel · models")
+    expect(root.children[0].children[0].fg).toBe(PANEL_COLORS.brand)
+    expect(root.children[0].children[1].fg).toBe(PANEL_COLORS.dim)
+    expect(root.children[0].children[2].fg).toBe(PANEL_COLORS.dim)
 
     const rows = root.children.filter((child) => child.tag === "box").slice(1)
-    const sisyphusRow = rows.find((row) => textValue(row.children[0]) === "Sisyphus")
+    const sisyphusRow = rows.find((row) => textValue(row.children[0]).startsWith("Sisyphus"))
     const model = sisyphusRow.children.find((child) => textValue(child).startsWith("gpt-5.6"))
     expect(sisyphusRow.children[0].fg).toBe("#00CED1")
     expect(model.fg).toBe(PANEL_COLORS.dim)
     expect(rows.length).toBe(21)
   })
 
-  test("#when an agent is busy #then it renders only busy rows and dims the task", () => {
+  test("#when an agent is running #then it renders only running rows without task text", () => {
     const solid = stubSolid()
     const fake = fakeContext({
       sessions: [
         { id: "ses_idle", agent: "explore", time: { created: 1 }, title: "not rendered" },
-        { id: "ses_busy", agent: "oracle", task: "investigate the bounded task", time: { created: 2 } },
+        { id: "ses_running", agent: "oracle", task: "investigate the bounded task", time: { created: 2 } },
       ],
-      statuses: { ses_idle: "idle", ses_busy: "busy" },
+      statuses: { ses_idle: "idle", ses_running: "running" },
     })
     createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
-    const root = fake.slotCalls[0].render({ sessionID: "ses_busy" })
+    const root = fake.slotCalls[0].render({ sessionID: "ses_running" })
     const rows = root.children.filter((child) => child.tag === "box").slice(1)
     const rowText = rows.map((row) => row.children.map(textValue).join(""))
 
     expect(textValue(root.children[0])).toContain("oh-my-rigel · working")
-    expect(rowText).toEqual(["oracle investigate the bounded taskbusy"])
-    const taskNode = rows[0].children.find((child) => textValue(child).startsWith(" "))
-    expect(taskNode.fg).toBe(PANEL_COLORS.dim)
-    expect(taskNode.overflow).toBe("hidden")
+    expect(root.children[0].children[0].fg).toBe(PANEL_COLORS.brand)
+    expect(root.children[0].children[1].fg).toBe(PANEL_COLORS.dim)
+    expect(root.children[0].children[2].fg).toBe(PANEL_COLORS.working)
+    expect(rowText).toEqual([`${"Oracle".padEnd("visual-engineering".length + 1)}running`])
+    expect(rows[0].children).toHaveLength(2)
+    expect(rows[0].children[1].fg).toBe(PANEL_COLORS.working)
+    expect(rowText.join(" ")).not.toContain("busy")
+    expect(rowText.join(" ")).not.toContain("investigate the bounded task")
     expect(rowText.join(" ")).not.toContain("not rendered")
     expect(rowText.join(" ")).not.toContain("ses_")
   })

@@ -37,13 +37,15 @@ export const PRINCIPAL_NAMES = Object.freeze([
   "Judge",
 ])
 
+const STARRED_PRINCIPAL_NAMES = new Set(["Sisyphus", "Hephaestus", "Prometheus", "Atlas", "Judge"])
+
 export const SUBAGENT_NAMES = Object.freeze([
   "explore",
   "librarian",
   "Metis",
   "Momus",
   "multimodal-looker",
-  "oracle",
+  "Oracle",
 ])
 
 export const CATEGORY_NAMES = Object.freeze([
@@ -228,53 +230,57 @@ function sessionAgent(session) {
   return displayName(session?.agent ?? session?.agentID)
 }
 
-function taskText(session) {
-  const metadata = isRecord(session?.metadata) ? session.metadata : undefined
-  return stringValue(session?.task ?? session?.description ?? metadata?.task ?? metadata?.description)
-}
 
 function isPrincipal(name) {
-  return PRINCIPAL_NAMES.includes(name)
+  return STARRED_PRINCIPAL_NAMES.has(name)
 }
 
-function busyRows(sessions, statusOf) {
+function buildWorkingRows(sessions, statusOf) {
   const entries = sessions.items
     .map((session, index) => {
       const id = sessionId(session, index)
       const status = normalizeStatus(typeof statusOf === "function" ? statusOf(id) : undefined)
       return { session, id, status, order: creationTime(session, index), index }
     })
-    .filter(({ status }) => status === "busy")
+    .filter(({ status }) => status === "running")
     .sort((left, right) => left.order - right.order || left.index - right.index)
 
   let juniorNumber = 0
-  return entries.map(({ session, id }) => {
+  return entries.map(({ session, id, status }) => {
     const name = sessionAgent(session)
     const junior = name === "Sisyphus-Junior"
-    // decision 28: compact numbering is recalculated over the creation-ordered busy list.
+    // decision 28: compact numbering is recalculated over the creation-ordered running list.
     if (junior) juniorNumber += 1
     return {
       name: junior ? `${name} ${juniorNumber}` : name,
       rawName: name,
-      // decision 27: principal rows carry the approved orchestration marker.
+      // decision 27: only orchestration principals carry the approved marker.
       prefix: isPrincipal(name) ? "* " : "",
-      task: taskText(session),
+      status,
       sessionID: id,
       nameColor: isPrincipal(name) ? undefined : PANEL_COLORS.base,
       statusColor: PANEL_COLORS.working,
-      taskColor: PANEL_COLORS.dim,
     }
   })
 }
 
+function rosterNameColumnWidth(roster) {
+  const rows = [
+    ...(roster?.principals ?? []),
+    ...(roster?.subagents ?? []),
+    ...(roster?.categories ?? []),
+  ]
+  return rows.reduce((width, row) => Math.max(width, String(row?.name ?? "").length), 0) + 1
+}
+
 /**
  * Decision 9: the panel has exactly two projections. Decision 14/24: the
- * working projection is only the current busy set, never history.
+ * working projection is only the current running set, never history.
  */
 export function buildPanelModel(reads = {}) {
   const roster = reads.roster ?? buildRoster()
   const sessions = normalizeList(reads.sessions)
-  const workingRows = busyRows(sessions, reads.statusOf)
+  const workingRows = buildWorkingRows(sessions, reads.statusOf)
   const working = workingRows.length > 0
   const groups = working
     ? []
@@ -290,35 +296,32 @@ export function buildPanelModel(reads = {}) {
     header: working ? PANEL_HEADER_WORKING : PANEL_HEADER_REST,
     groups,
     rows: working ? workingRows : groups.flatMap((group) => group.rows),
+    nameColumnWidth: rosterNameColumnWidth(roster),
     currentSessionID: stringValue(reads.sessionID),
   }
 }
 
-/** Pure visual truncation used by tests and by the host's task text seam. */
-export function truncate(text, max = 80) {
-  const value = typeof text === "string" ? text : ""
-  if (value.length <= max) return value
-  return `${value.slice(0, Math.max(0, max - 1))}…`
+function paddedName(row, width) {
+  const label = `${row.prefix ?? ""}${row.name ?? ""}`
+  return label.padEnd(width)
 }
 
 /**
- * Plain rendered-text evidence. The live surface uses row layout instead of
- * this string to let the host own the available width (decision 22).
+ * Plain rendered-text evidence. The live surface uses a computed name column
+ * because row/flex layout was not proven available in this slot; the column is
+ * the roster's longest name plus its one separator, with no invented width.
  */
 export function formatPanel(model) {
   try {
     const source = isRecord(model) ? model : buildPanelModel()
+    const width = Number.isInteger(source.nameColumnWidth) ? source.nameColumnWidth : 0
     const lines = [source.header ?? PANEL_HEADER_REST, ""]
     if (source.mode === "working") {
-      for (const row of source.rows ?? []) {
-        const prefix = row.prefix ?? ""
-        const task = row.task ? ` ${truncate(row.task)}` : ""
-        lines.push(`${prefix}${row.name} busy${task}`)
-      }
+      for (const row of source.rows ?? []) lines.push(`${paddedName(row, width)}${row.status ?? ""}`)
       return lines.join("\n")
     }
     for (const [index, group] of (source.groups ?? []).entries()) {
-      for (const row of group.rows ?? []) lines.push(`${row.name} ${row.model}`)
+      for (const row of group.rows ?? []) lines.push(`${paddedName(row, width)}${row.model ?? ""}`)
       if (index < (source.groups?.length ?? 0) - 1) lines.push("")
     }
     return lines.join("\n")

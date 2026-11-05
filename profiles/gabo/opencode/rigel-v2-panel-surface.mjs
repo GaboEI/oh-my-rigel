@@ -59,27 +59,24 @@ function headerNode(solid, model) {
   const suffixColor = model.mode === "working" ? PANEL_COLORS.working : PANEL_COLORS.dim
   const suffix = model.mode === "working" ? "working" : "models"
   return rowNode(solid, [
-    textNode(solid, "oh-my-rigel · ", PANEL_COLORS.brand),
+    textNode(solid, "oh-my-rigel", PANEL_COLORS.brand),
+    textNode(solid, " · ", PANEL_COLORS.dim),
     textNode(solid, suffix, suffixColor),
   ])
 }
 
-function modelRowNode(solid, row) {
-  const name = textNode(solid, row.name, row.nameColor ?? PANEL_COLORS.base, { flexShrink: 1 })
-  const model = textNode(solid, row.model, row.modelColor ?? PANEL_COLORS.dim, { marginLeft: "auto" })
+// Row/flex alignment was not proven available in this slot, so the computed roster column is used.
+function modelRowNode(solid, row, nameColumnWidth) {
+  const name = textNode(solid, row.name.padEnd(nameColumnWidth), row.nameColor ?? PANEL_COLORS.base)
+  const model = textNode(solid, row.model, row.modelColor ?? PANEL_COLORS.dim)
   return rowNode(solid, [name, model])
 }
 
-function workingRowNode(solid, row) {
-  const name = textNode(solid, `${row.prefix ?? ""}${row.name}`, row.nameColor ?? PANEL_COLORS.base, { flexShrink: 1 })
-  const children = [name]
-  if (row.task) {
-    // decision 15: the host truncates the task in the flexible row, never a fixed panel cell budget.
-    children.push(textNode(solid, ` ${row.task}`, row.taskColor ?? PANEL_COLORS.dim, { flexShrink: 1, overflow: "hidden" }))
-  }
-  const status = textNode(solid, "busy", row.statusColor ?? PANEL_COLORS.working, { marginLeft: "auto" })
-  children.push(status)
-  return rowNode(solid, children)
+function workingRowNode(solid, row, nameColumnWidth) {
+  const label = `${row.prefix ?? ""}${row.name}`
+  const name = textNode(solid, label.padEnd(nameColumnWidth), row.nameColor ?? PANEL_COLORS.base)
+  const status = textNode(solid, row.status ?? "", row.statusColor ?? PANEL_COLORS.working)
+  return rowNode(solid, [name, status])
 }
 
 function blankNode(solid) {
@@ -87,22 +84,23 @@ function blankNode(solid) {
 }
 
 function panelNode(solid, model) {
-  // decision 22: the host owns width; the panel declares no fixed cell budget.
   const root = makeNode(solid, "box", {
     flexDirection: "column",
     borderStyle: "single",
     borderColor: filterPanelColor(PANEL_COLORS.border),
+    paddingLeft: 2,
+    paddingRight: 2,
   })
   solid.insert(root, headerNode(solid, model))
   solid.insert(root, blankNode(solid))
 
   if (model.mode === "working") {
-    for (const row of model.rows) solid.insert(root, workingRowNode(solid, row))
+    for (const row of model.rows) solid.insert(root, workingRowNode(solid, row, model.nameColumnWidth))
     return root
   }
 
   for (const [index, group] of model.groups.entries()) {
-    for (const row of group.rows) solid.insert(root, modelRowNode(solid, row))
+    for (const row of group.rows) solid.insert(root, modelRowNode(solid, row, model.nameColumnWidth))
     if (index < model.groups.length - 1) solid.insert(root, blankNode(solid))
   }
   return root
