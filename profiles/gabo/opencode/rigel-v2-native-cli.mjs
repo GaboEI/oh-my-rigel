@@ -21,6 +21,12 @@
  * still side-effect-free there.
  */
 
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
+
+import { buildRoster } from "./rigel-v2-panel-model.mjs"
+import { readLiveAgentOverridesSource } from "./rigel-v2-native-config.mjs"
 import { createLegacyNoticeCliSurface } from "./rigel-v2-native-cli-legacy-notice.mjs"
 import { createNudgeCliSurface } from "./rigel-v2-native-cli-nudge.mjs"
 import { createTaskToastCliSurface } from "./rigel-v2-native-cli-task-toast.mjs"
@@ -28,6 +34,58 @@ import { createBtwCliSurface } from "./rigel-v2-native-cli-btw.mjs"
 import { createPanelSurface } from "./rigel-v2-panel-surface.mjs"
 
 export const CLI_PLUGIN_ID = "oh-my-rigel.cli"
+
+function parseJsonc(text) {
+  return JSON.parse(text.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, ""))
+}
+
+function readDefaultModel() {
+  for (const path of [join(homedir(), ".config", "opencode", "opencode.json"), join(homedir(), ".config", "opencode", "opencode.jsonc")]) {
+    try {
+      const value = parseJsonc(readFileSync(path, "utf8"))
+      if (typeof value?.model === "string" && value.model.length > 0) return value.model
+    } catch {
+      // The next canonical V2 config filename is the only fallback.
+    }
+  }
+  return undefined
+}
+
+function readPrincipalColors(context) {
+  try {
+    const location = context?.location ?? context?.data?.location?.default?.()
+    const raw = context?.data?.location?.agent?.list?.(location)
+    const entries = Array.isArray(raw) ? raw : raw?.data
+    if (!Array.isArray(entries)) return undefined
+    return Object.fromEntries(
+      entries
+        .filter((entry) => typeof entry?.color === "string")
+        .map((entry) => [entry.name ?? entry.id, entry.color]),
+    )
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Decision 12: read the live user roster once during setup, not during render.
+ * Decision 13: Judge is filled from OpenCode's default model because it is not
+ * an `omo.jsonc` agent entry. The install manifest is intentionally not read.
+ */
+function readPanelRoster(context, override) {
+  if (override) return override
+  try {
+    const source = readLiveAgentOverridesSource({ home: homedir() })
+    return buildRoster({
+      agents: source.state === "loaded" ? source.overrides : undefined,
+      categories: source.state === "loaded" ? source.categories : undefined,
+      judgeModel: readDefaultModel(),
+      principalColors: readPrincipalColors(context),
+    })
+  } catch {
+    return buildRoster({ judgeModel: readDefaultModel() })
+  }
+}
 
 function describeError(error) {
   return error instanceof Error ? error.message : String(error)
@@ -42,12 +100,13 @@ export function createCompanionCliPlugin(overrides = {}) {
   return {
     id: CLI_PLUGIN_ID,
     setup(context) {
+      const roster = readPanelRoster(context, overrides.panel?.roster)
       const surfaces = [
         createLegacyNoticeCliSurface(overrides.legacyPluginNotice ?? {}),
         createNudgeCliSurface(overrides.nativeEditionNudge ?? {}),
         createTaskToastCliSurface(overrides.taskToast ?? {}),
         createBtwCliSurface(overrides.btw ?? {}),
-        createPanelSurface(overrides.panel ?? {}),
+        createPanelSurface({ ...overrides.panel, roster }),
       ]
       const disposers = []
       for (const surface of surfaces) {

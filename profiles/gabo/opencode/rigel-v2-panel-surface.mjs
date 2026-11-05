@@ -1,31 +1,21 @@
 /**
- * Oh My Rigel read-only panel, V2 companion CLI surface.
+ * Passive OpenCode V2 sidebar adapter for the pure Rigel panel model.
  *
- * The panel is a strictly visual, read-only consumer: it reads an authorized,
- * demonstrated subset of the host's public read selectors, formats them with the
- * pure core (`rigel-v2-panel-model.mjs`), and renders ONE OpenTUI <text> node
- * into the host sidebar through the single documented slot API:
- *
- *     context.ui.slot({ append: "sidebar.content", render })
- *
- * It never writes, never subscribes, never starts a timer, never emits events or
- * commands, and never touches functional logic. The host owns the render cycle;
- * the slot registration returns the disposer. `render` never throws and never
- * returns a bare string: it returns a valid <text> node, or `null` as the only
- * safe degradation (the host rejects a bare string and aborts the TUI).
- *
- * The OpenTUI Solid peer is resolved by a STATIC bare import; the V2 host injects
- * it at load time (demonstrated on NLS1 by the S1 probe), so the module stays
- * buildless with no node_modules. `overrides.solid` is a unit-test seam only.
+ * The compositor injects the roster. This adapter reads only the current
+ * session projection and creates OpenTUI nodes; it never reads disk, catalogs,
+ * models, providers, storage, or Goal state.
  */
 
-import { createElement, insert } from "@opentui/solid"
-import { PANEL_ID, buildPanelModel, formatPanel } from "./rigel-v2-panel-model.mjs"
+import { createElement, insert, setProp } from "@opentui/solid"
+import {
+  PANEL_COLORS,
+  PANEL_ID,
+  buildPanelModel,
+  filterPanelColor,
+} from "./rigel-v2-panel-model.mjs"
 
-/** The V2 sidebar content slot this surface appends to. */
 export const PANEL_SLOT_APPEND = "sidebar.content"
 
-/** Run one read in isolation so a single failure degrades one section only. */
 function readResult(read) {
   try {
     return { ok: true, value: read() }
@@ -34,67 +24,158 @@ function readResult(read) {
   }
 }
 
-/** Read only the authorized, demonstrated selectors; never await, never cache. */
-function readPanelInputs(context) {
-  const data = context?.data
-  const location = readResult(() => context?.location ?? data?.location?.default?.())
-  const sessions = readResult(() => data?.session?.list?.())
-  const models = readResult(() => data?.location?.model?.list?.(location.value))
-  const agents = readResult(() => data?.location?.agent?.list?.(location.value))
-  const providers = readResult(() => data?.location?.provider?.list?.(location.value))
-  return {
-    location: location.value,
-    locationError: !location.ok,
-    sessions: sessions.value,
-    sessionsError: !sessions.ok,
-    titleOf: (id) => readResult(() => data?.session?.get?.(id)?.title).value,
-    statusOf: (id) => readResult(() => data?.session?.status?.(id)).value,
-    models: models.value,
-    modelsError: !models.ok,
-    agents: agents.value,
-    agentsError: !agents.ok,
-    providers: providers.value,
-    providersError: !providers.ok,
-  }
+function slotSessionID(props) {
+  const value = props?.sessionID
+  return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
-/** Build the single multiline OpenTUI <text> node the host mounts. */
-function buildTextNode(solid, text) {
-  const node = solid.createElement("text")
+function setNodeProp(solid, node, name, value) {
+  if (typeof solid.setProp === "function") solid.setProp(node, name, value)
+  else node[name] = value
+}
+
+function makeNode(solid, tag, props = {}) {
+  const node = solid.createElement(tag)
+  for (const [name, value] of Object.entries(props)) setNodeProp(solid, node, name, value)
+  return node
+}
+
+function textNode(solid, text, color, props = {}) {
+  const node = makeNode(solid, "text", { ...props, fg: filterPanelColor(color) })
   solid.insert(node, text)
   return node
 }
 
+function rowNode(solid, children) {
+  const row = makeNode(solid, "box", {
+    flexDirection: "row",
+    width: "100%",
+  })
+  for (const child of children) solid.insert(row, child)
+  return row
+}
+
+function headerNode(solid, model) {
+  const suffixColor = model.mode === "working" ? PANEL_COLORS.working : PANEL_COLORS.dim
+  const suffix = model.mode === "working" ? "working" : "models"
+  return rowNode(solid, [
+    textNode(solid, "oh-my-rigel · ", PANEL_COLORS.brand),
+    textNode(solid, suffix, suffixColor),
+  ])
+}
+
+function modelRowNode(solid, row) {
+  const name = textNode(solid, row.name, row.nameColor ?? PANEL_COLORS.base, { flexShrink: 1 })
+  const model = textNode(solid, row.model, row.modelColor ?? PANEL_COLORS.dim, { marginLeft: "auto" })
+  return rowNode(solid, [name, model])
+}
+
+function workingRowNode(solid, row) {
+  const name = textNode(solid, `${row.prefix ?? ""}${row.name}`, row.nameColor ?? PANEL_COLORS.base, { flexShrink: 1 })
+  const children = [name]
+  if (row.task) {
+    // decision 15: the host truncates the task in the flexible row, never a fixed panel cell budget.
+    children.push(textNode(solid, ` ${row.task}`, row.taskColor ?? PANEL_COLORS.dim, { flexShrink: 1, overflow: "hidden" }))
+  }
+  const status = textNode(solid, "busy", row.statusColor ?? PANEL_COLORS.working, { marginLeft: "auto" })
+  children.push(status)
+  return rowNode(solid, children)
+}
+
+function blankNode(solid) {
+  return textNode(solid, "", PANEL_COLORS.base)
+}
+
+function panelNode(solid, model) {
+  // decision 22: the host owns width; the panel declares no fixed cell budget.
+  const root = makeNode(solid, "box", {
+    flexDirection: "column",
+    borderStyle: "single",
+    borderColor: filterPanelColor(PANEL_COLORS.border),
+  })
+  solid.insert(root, headerNode(solid, model))
+  solid.insert(root, blankNode(solid))
+
+  if (model.mode === "working") {
+    for (const row of model.rows) solid.insert(root, workingRowNode(solid, row))
+    return root
+  }
+
+  for (const [index, group] of model.groups.entries()) {
+    for (const row of group.rows) solid.insert(root, modelRowNode(solid, row))
+    if (index < model.groups.length - 1) solid.insert(root, blankNode(solid))
+  }
+  return root
+}
+
+function readPanelInputs(context, props, roster) {
+  const data = context?.data
+  const sessions = readResult(() => data?.session?.list?.())
+  const sessionID = slotSessionID(props)
+  const statuses = new Map()
+  const entries = Array.isArray(sessions.value) ? sessions.value : sessions.value?.data
+  if (Array.isArray(entries)) {
+    for (const session of entries) {
+      const id = typeof session?.id === "string" ? session.id : session?.sessionID
+      if (typeof id !== "string" || id.length === 0) continue
+      statuses.set(id, readResult(() => data?.session?.status?.(id)).value)
+    }
+  }
+  if (sessionID && !statuses.has(sessionID)) statuses.set(sessionID, readResult(() => data?.session?.status?.(sessionID)).value)
+  return {
+    roster,
+    sessionID,
+    sessions: sessions.value,
+    sessionsError: !sessions.ok,
+    statusOf: (id) => statuses.get(id),
+  }
+}
+
 /**
- * Build the panel surface. `overrides` carries the test seam (`solid`); the live
- * renderer is taken from the host. A surface without a renderer or a `ui.slot`
- * self-skips and returns undefined, so a headless host is exactly zero effects.
+ * Decision 23: one bounded, read-only status event subscription keeps silent
+ * long-running children from leaving a stale projection. It is owned by the
+ * slot setup and removed by the same returned disposer; no polling or timer is
+ * introduced.
  */
+function subscribeToSessionStatus(context) {
+  const on = context?.data?.on
+  if (typeof on !== "function") return undefined
+  try {
+    return on.call(context.data, "session.status", () => {})
+  } catch {
+    return undefined
+  }
+}
+
 export function createPanelSurface(overrides = {}) {
-  const solid = overrides.solid ?? { createElement, insert }
+  const solid = overrides.solid ?? { createElement, insert, setProp }
+  const roster = overrides.roster
   return {
     id: PANEL_ID,
     setup(context) {
-      const renderer = context?.renderer
-      if (!renderer || renderer.isDestroyed === true) return undefined
+      if (!context?.renderer || context.renderer.isDestroyed === true) return undefined
       if (typeof context?.ui?.slot !== "function") return undefined
 
-      const render = () => {
+      const render = (props) => {
         try {
-          const text = formatPanel(buildPanelModel(readPanelInputs(context)))
-          return buildTextNode(solid, text)
+          const model = buildPanelModel(readPanelInputs(context, props, roster))
+          return panelNode(solid, model)
         } catch {
           return null
         }
       }
 
-      let dispose
+      let removeSlot
       try {
-        dispose = context.ui.slot({ append: PANEL_SLOT_APPEND, render })
+        removeSlot = context.ui.slot({ append: PANEL_SLOT_APPEND, render })
       } catch {
         return undefined
       }
-      return typeof dispose === "function" ? dispose : undefined
+      const removeStatus = subscribeToSessionStatus(context)
+      return () => {
+        if (typeof removeStatus === "function") removeStatus()
+        if (typeof removeSlot === "function") removeSlot()
+      }
     },
   }
 }

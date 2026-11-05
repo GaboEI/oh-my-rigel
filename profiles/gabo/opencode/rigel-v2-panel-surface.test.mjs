@@ -1,23 +1,12 @@
-/**
- * Behaviour tests for the read-only panel adapter.
- *
- * The adapter owns the host boundary: the single slot registration, the render
- * value (a <text> node or null, never a bare string), isolated reads for every
- * representation, and the headless self-skip. A stub OpenTUI Solid runtime is
- * injected so the assertions observe the node contract without a live renderer.
- */
 import { describe, expect, test } from "bun:test"
 
+import { PANEL_COLORS, buildRoster } from "./rigel-v2-panel-model.mjs"
 import { PANEL_SLOT_APPEND, createPanelSurface } from "./rigel-v2-panel-surface.mjs"
 
 function stubSolid() {
-  const nodes = []
   return {
-    nodes,
     createElement(tag) {
-      const node = { tag, children: [] }
-      nodes.push(node)
-      return node
+      return { tag, children: [] }
     },
     insert(parent, child) {
       parent.children.push(child)
@@ -28,153 +17,126 @@ function stubSolid() {
   }
 }
 
-function fakeContext({
-  renderer = { isDestroyed: false },
-  sessions,
-  titles = {},
-  statuses = {},
-  models,
-  agents,
-  providers,
-  agentsThrows = false,
-  location = { directory: "/w" },
-} = {}) {
-  const renders = []
+function fakeRoster() {
+  return buildRoster({
+    agents: {
+      Sisyphus: { models: ["openai/gpt-5.6-luna"] },
+      explore: { models: ["opencode-go/deepseek-v4.1-flash"] },
+    },
+    categories: { artistry: { models: ["openai/gpt-5.6-terra"] } },
+    judgeModel: "opencode-go/deepseek-v4.1-flash",
+    principalColors: { Sisyphus: "#00CED1" },
+  })
+}
+
+function fakeContext({ sessions = [], statuses = {}, renderer = { isDestroyed: false } } = {}) {
   const slotCalls = []
+  const statusSubscriptions = []
   const context = {
     renderer,
-    location,
     data: {
       session: {
-        list: sessions === undefined ? undefined : () => sessions,
-        get: (id) => ({ title: titles[id] }),
+        list: () => sessions,
         status: (id) => statuses[id],
       },
-      location: {
-        model: { list: () => models },
-        agent: {
-          list: () => {
-            if (agentsThrows) throw new Error("agent read failed")
-            return agents
-          },
-        },
-        provider: { list: () => providers },
+      on: (event, callback) => {
+        statusSubscriptions.push({ event, callback, removed: false })
+        const record = statusSubscriptions.at(-1)
+        return () => { record.removed = true }
       },
     },
     ui: {
       slot: (options) => {
         slotCalls.push(options)
-        renders.push(options.render)
-        return () => {}
+        return () => { options.removed = true }
       },
     },
   }
-  return { context, renders, slotCalls }
+  return { context, slotCalls, statusSubscriptions }
 }
 
-function renderedText(fake) {
-  const node = fake.renders[0]()
-  return node.children[0]
+function textValue(node) {
+  if (typeof node === "string") return node
+  return node?.children?.map(textValue).join("") ?? ""
 }
 
-describe("#given the panel surface at the host boundary", () => {
-  test("#then setup registers exactly the sidebar.content slot with a render", () => {
+describe("Rigel sidebar OpenTUI surface", () => {
+  test("#given a live renderer #then it registers one sidebar slot and one bounded status subscription", () => {
     const fake = fakeContext()
-    const dispose = createPanelSurface({ solid: stubSolid() }).setup(fake.context)
+    const dispose = createPanelSurface({ solid: stubSolid(), roster: fakeRoster() }).setup(fake.context)
+
     expect(typeof dispose).toBe("function")
     expect(fake.slotCalls).toHaveLength(1)
     expect(fake.slotCalls[0].append).toBe(PANEL_SLOT_APPEND)
-    expect(typeof fake.slotCalls[0].render).toBe("function")
+    expect(fake.statusSubscriptions.map((entry) => entry.event)).toEqual(["session.status"])
+
+    dispose()
+    expect(fake.slotCalls[0].removed).toBe(true)
+    expect(fake.statusSubscriptions[0].removed).toBe(true)
   })
 
-  describe("#when render runs with available data for every representation", () => {
-    test("#then it returns a single <text> node carrying the sessions and catalog rows", () => {
-      const solid = stubSolid()
-      const fake = fakeContext({
-        sessions: [{ id: "ses_1" }],
-        titles: { ses_1: "First" },
-        statuses: { ses_1: "idle" },
-        models: [{ id: "gpt", name: "GPT" }],
-        agents: [{ id: "sisyphus", name: "Sisyphus" }],
-        providers: [{ id: "anthropic", name: "Anthropic" }],
-      })
-      createPanelSurface({ solid }).setup(fake.context)
-      const node = fake.renders[0]()
-      expect(node).not.toBeNull()
-      expect(node.tag).toBe("text")
-      expect(node.children).toHaveLength(1)
-      const text = node.children[0]
-      expect(typeof text).toBe("string")
-      expect(text).toContain("- First [idle]")
-      expect(text).toContain("- GPT")
-      expect(text).toContain("- Sisyphus")
-      expect(text).toContain("- Anthropic")
-    })
+  test("#when the roster is idle #then it renders a bordered box with colored row nodes", () => {
+    const solid = stubSolid()
+    const fake = fakeContext({ sessions: [{ id: "ses_root", agent: "Sisyphus" }], statuses: { ses_root: "idle" } })
+    createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
+    const root = fake.slotCalls[0].render({ sessionID: "ses_root" })
+
+    expect(root.tag).toBe("box")
+    expect(root.borderStyle).toBe("single")
+    expect(root.borderColor).toBe(PANEL_COLORS.border)
+    expect(root.children[0].tag).toBe("box")
+    expect(textValue(root.children[0])).toContain("oh-my-rigel · models")
+
+    const rows = root.children.filter((child) => child.tag === "box").slice(1)
+    const sisyphusRow = rows.find((row) => textValue(row.children[0]) === "Sisyphus")
+    const model = sisyphusRow.children.find((child) => textValue(child).startsWith("gpt-5.6"))
+    expect(sisyphusRow.children[0].fg).toBe("#00CED1")
+    expect(model.fg).toBe(PANEL_COLORS.dim)
+    expect(rows.length).toBe(21)
   })
 
-  describe("#when a catalog read is absent", () => {
-    test("#then render still returns a node (no throw) and never a bare string", () => {
-      const solid = stubSolid()
-      const fake = fakeContext({ sessions: undefined, models: undefined, agents: undefined, providers: undefined })
-      createPanelSurface({ solid }).setup(fake.context)
-      const node = fake.renders[0]()
-      expect(typeof node).toBe("object")
-      expect(node.tag).toBe("text")
-      expect(typeof node.children[0]).toBe("string")
+  test("#when an agent is busy #then it renders only busy rows and dims the task", () => {
+    const solid = stubSolid()
+    const fake = fakeContext({
+      sessions: [
+        { id: "ses_idle", agent: "explore", time: { created: 1 }, title: "not rendered" },
+        { id: "ses_busy", agent: "oracle", task: "investigate the bounded task", time: { created: 2 } },
+      ],
+      statuses: { ses_idle: "idle", ses_busy: "busy" },
     })
+    createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
+    const root = fake.slotCalls[0].render({ sessionID: "ses_busy" })
+    const rows = root.children.filter((child) => child.tag === "box").slice(1)
+    const rowText = rows.map((row) => row.children.map(textValue).join(""))
+
+    expect(textValue(root.children[0])).toContain("oh-my-rigel · working")
+    expect(rowText).toEqual(["oracle investigate the bounded taskbusy"])
+    const taskNode = rows[0].children.find((child) => textValue(child).startsWith(" "))
+    expect(taskNode.fg).toBe(PANEL_COLORS.dim)
+    expect(taskNode.overflow).toBe("hidden")
+    expect(rowText.join(" ")).not.toContain("not rendered")
+    expect(rowText.join(" ")).not.toContain("ses_")
   })
 
-  describe("#when only the agents read fails", () => {
-    test("#then the agent section degrades to error while the others stay readable", () => {
-      const solid = stubSolid()
-      const fake = fakeContext({
-        sessions: [{ id: "ses_1" }],
-        titles: { ses_1: "First" },
-        models: [{ id: "gpt", name: "GPT" }],
-        agentsThrows: true,
-        providers: [{ id: "anthropic", name: "Anthropic" }],
-      })
-      createPanelSurface({ solid }).setup(fake.context)
-      const text = renderedText(fake)
-      expect(text).toContain("Agents")
-      expect(text).toContain("error")
-      expect(text).toContain("- First")
-      expect(text).toContain("- GPT")
-      expect(text).toContain("- Anthropic")
-    })
+  test("#when the host omits the renderer or slot #then setup self-skips", () => {
+    const destroyed = fakeContext({ renderer: { isDestroyed: true } })
+    expect(createPanelSurface({ solid: stubSolid(), roster: fakeRoster() }).setup(destroyed.context)).toBeUndefined()
+    expect(destroyed.slotCalls).toHaveLength(0)
+
+    const noSlot = fakeContext()
+    delete noSlot.context.ui.slot
+    expect(createPanelSurface({ solid: stubSolid(), roster: fakeRoster() }).setup(noSlot.context)).toBeUndefined()
   })
 
-  describe("#when the renderer itself throws on the render primitive", () => {
-    test("#then render degrades to null and never propagates", () => {
-      const throwing = {
-        createElement() {
-          throw new Error("no renderer")
-        },
-        insert() {},
-      }
-      const fake = fakeContext()
-      createPanelSurface({ solid: throwing }).setup(fake.context)
-      expect(() => fake.renders[0]()).not.toThrow()
-      expect(fake.renders[0]()).toBeNull()
-    })
-  })
-
-  describe("#given a headless host", () => {
-    test("#then a destroyed renderer self-skips and registers nothing", () => {
-      const fake = fakeContext({ renderer: { isDestroyed: true } })
-      const dispose = createPanelSurface({ solid: stubSolid() }).setup(fake.context)
-      expect(dispose).toBeUndefined()
-      expect(fake.slotCalls).toHaveLength(0)
-    })
-  })
-
-  describe("#given a host without the ui.slot API", () => {
-    test("#then setup self-skips and registers nothing", () => {
-      const fake = fakeContext()
-      delete fake.context.ui.slot
-      const dispose = createPanelSurface({ solid: stubSolid() }).setup(fake.context)
-      expect(dispose).toBeUndefined()
-      expect(fake.slotCalls).toHaveLength(0)
-    })
+  test("#when the renderer primitive throws #then render returns a safe bordered box", () => {
+    const fake = fakeContext()
+    const throwing = {
+      createElement() { throw new Error("renderer") },
+      insert() {},
+      setProp() {},
+    }
+    createPanelSurface({ solid: throwing, roster: fakeRoster() }).setup(fake.context)
+    expect(() => fake.slotCalls[0].render({ sessionID: "ses_root" })).not.toThrow()
+    expect(fake.slotCalls[0].render({ sessionID: "ses_root" })).toBeNull()
   })
 })
