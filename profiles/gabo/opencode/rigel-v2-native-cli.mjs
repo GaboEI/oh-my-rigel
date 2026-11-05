@@ -41,12 +41,21 @@ export const CLI_PLUGIN_ID = "oh-my-rigel.cli"
  * JSON first and only strip comments when strict parsing fails: a naive `//`
  * strip corrupts every URL in the file and the whole read degrades to
  * `undefined`, which rendered Judge as `-`.
+ *
+ * The config directory follows the host, not this profile: OpenCode resolves its
+ * own config under `$XDG_CONFIG_HOME/opencode` when that variable names a
+ * directory, so a hardcoded `~/.config/opencode` read the wrong file in every
+ * isolated run and rendered Judge as `-`. The environment is an injected
+ * parameter so a test never has to mutate `process.env`.
  */
 export function readDefaultModel(options = {}) {
   const home = options.home ?? homedir()
-  for (const path of [join(home, ".config", "opencode", "opencode.json"), join(home, ".config", "opencode", "opencode.jsonc")]) {
+  const env = options.env ?? process.env
+  const xdgConfigHome = typeof env?.XDG_CONFIG_HOME === "string" ? env.XDG_CONFIG_HOME.trim() : ""
+  const directory = xdgConfigHome.length > 0 ? join(xdgConfigHome, "opencode") : join(home, ".config", "opencode")
+  for (const name of ["opencode.json", "opencode.jsonc"]) {
     try {
-      const value = parseJsoncText(readFileSync(path, "utf8"))
+      const value = parseJsoncText(readFileSync(join(directory, name), "utf8"))
       if (typeof value?.model === "string" && value.model.length > 0) return value.model
     } catch {
       // The next canonical V2 config filename is the only fallback.

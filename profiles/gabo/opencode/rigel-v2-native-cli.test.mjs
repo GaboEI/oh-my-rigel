@@ -78,7 +78,38 @@ describe("#given the composed companion CLI plugin", () => {
         ].join("\n"),
       )
 
-      expect(readDefaultModel({ home })).toBe("opencode-go/deepseek-v4.1-flash")
+      expect(readDefaultModel({ home, env: {} })).toBe("opencode-go/deepseek-v4.1-flash")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  test("#given XDG_CONFIG_HOME #when the default model is read #then it resolves from $XDG_CONFIG_HOME/opencode", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "rigel-xdg-default-model-"))
+    try {
+      const configHome = join(sandbox, "config")
+      mkdirSync(join(configHome, "opencode"), { recursive: true })
+      writeFileSync(join(configHome, "opencode", "opencode.json"), JSON.stringify({ model: "opencode-go/xdg-default" }, null, 2))
+
+      expect(readDefaultModel({ home: join(sandbox, "home"), env: { XDG_CONFIG_HOME: configHome } })).toBe(
+        "opencode-go/xdg-default",
+      )
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+
+  test("#given no XDG_CONFIG_HOME #when the default model is read #then the home config directory still resolves", () => {
+    const home = mkdtempSync(join(tmpdir(), "rigel-home-default-model-"))
+    try {
+      mkdirSync(join(home, ".config", "opencode"), { recursive: true })
+      writeFileSync(
+        join(home, ".config", "opencode", "opencode.jsonc"),
+        JSON.stringify({ model: "opencode-go/home-default" }, null, 2),
+      )
+
+      expect(readDefaultModel({ home, env: {} })).toBe("opencode-go/home-default")
+      expect(readDefaultModel({ home, env: { XDG_CONFIG_HOME: "  " } })).toBe("opencode-go/home-default")
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
