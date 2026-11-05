@@ -28,6 +28,47 @@ function fakeRoster() {
     principalColors: { Sisyphus: "#00CED1" },
   })
 }
+function threeGroupRoster() {
+  const row = (name, model) => ({ name, model, nameColor: PANEL_COLORS.base, modelColor: PANEL_COLORS.dim })
+  return Object.freeze({
+    principals: Object.freeze([
+      row("Sisyphus", "deepseek-v4.1"),
+      row("Hephaestus", "gpt-6-luna"),
+      row("Prometheus", "deepseek-v4.1"),
+    ]),
+    subagents: Object.freeze([row("explore", "deepseek-v4.1"), row("librarian", "gpt-6-luna")]),
+    categories: Object.freeze([row("artistry", "gpt-6-terra")]),
+  })
+}
+
+// 200x80 terminal with the sidebar at 41 columns: 41 - 2 border - 4 padding.
+const PANEL_INNER_WIDTH = 35
+// Longest roster name ("Hephaestus"/"Prometheus") plus its one separator.
+const ROSTER_NAME_WIDTH = 11
+
+function rowBoxText(node) {
+  return node.children.map(textValue).join("")
+}
+
+// A row box that does not pin its own height expands into the column's free
+// space and spends a blank line after its text, which is the reported defect.
+function isSingleLineRow(node) {
+  return node?.tag === "box" && node.flexDirection === "row" && node.height === 1 && node.flexShrink === 0
+}
+
+function renderedLines(root) {
+  const lines = []
+  for (const child of root.children) {
+    if (child.tag !== "box") {
+      lines.push(...textValue(child).split("\n"))
+      continue
+    }
+    lines.push(rowBoxText(child).slice(0, PANEL_INNER_WIDTH))
+    if (!isSingleLineRow(child)) lines.push("")
+  }
+  return lines
+}
+
 
 function fakeContext({ sessions = [], statuses = {}, renderer = { isDestroyed: false } } = {}) {
   const slotCalls = []
@@ -92,12 +133,36 @@ describe("Rigel sidebar OpenTUI surface", () => {
     expect(root.children[0].children[1].fg).toBe(PANEL_COLORS.dim)
     expect(root.children[0].children[2].fg).toBe(PANEL_COLORS.dim)
 
-    const rows = root.children.filter((child) => child.tag === "box").slice(1)
+    const rows = root.children
+      .filter((child) => child.tag === "box" && textValue(child).trim().length > 0)
+      .slice(1)
     const sisyphusRow = rows.find((row) => textValue(row.children[0]).startsWith("Sisyphus"))
     const model = sisyphusRow.children.find((child) => textValue(child).startsWith("gpt-5.6"))
     expect(sisyphusRow.children[0].fg).toBe("#00CED1")
     expect(model.fg).toBe(PANEL_COLORS.dim)
     expect(rows.length).toBe(21)
+  })
+
+  test("#given a three-group idle model #then every row is one line and only group separators are blank", () => {
+    const solid = stubSolid()
+    const fake = fakeContext()
+    const roster = threeGroupRoster()
+    createPanelSurface({ solid, roster }).setup(fake.context)
+    const root = fake.slotCalls[0].render({ sessionID: "ses_root" })
+
+    const rowLine = (row) => `${row.name.padEnd(ROSTER_NAME_WIDTH)}${row.model}`
+    const expected = [
+      "oh-my-rigel · models",
+      "",
+      ...roster.principals.map(rowLine),
+      "",
+      ...roster.subagents.map(rowLine),
+      "",
+      ...roster.categories.map(rowLine),
+    ]
+
+    expect(renderedLines(root)).toEqual(expected)
+    expect(renderedLines(root).filter((line) => line === "")).toHaveLength(3)
   })
 
   test("#when an agent is running #then it renders only running rows without task text", () => {
@@ -111,7 +176,9 @@ describe("Rigel sidebar OpenTUI surface", () => {
     })
     createPanelSurface({ solid, roster: fakeRoster() }).setup(fake.context)
     const root = fake.slotCalls[0].render({ sessionID: "ses_running" })
-    const rows = root.children.filter((child) => child.tag === "box").slice(1)
+    const rows = root.children
+      .filter((child) => child.tag === "box" && textValue(child).trim().length > 0)
+      .slice(1)
     const rowText = rows.map((row) => row.children.map(textValue).join(""))
 
     expect(textValue(root.children[0])).toContain("oh-my-rigel · working")

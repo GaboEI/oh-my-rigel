@@ -46,10 +46,15 @@ function textNode(solid, text, color, props = {}) {
   return node
 }
 
+// Every row is a fixed single-line box: no flex growth or shrink, so the
+// renderer cannot spread free space into blank lines between siblings.
 function rowNode(solid, children) {
   const row = makeNode(solid, "box", {
     flexDirection: "row",
     width: "100%",
+    height: 1,
+    flexGrow: 0,
+    flexShrink: 0,
   })
   for (const child of children) solid.insert(row, child)
   return row
@@ -79,8 +84,9 @@ function workingRowNode(solid, row, nameColumnWidth) {
   return rowNode(solid, [name, status])
 }
 
+// The group separator is the only blank line: a one-line row holding "".
 function blankNode(solid) {
-  return textNode(solid, "", PANEL_COLORS.base)
+  return rowNode(solid, [textNode(solid, "", PANEL_COLORS.base)])
 }
 
 function panelNode(solid, model) {
