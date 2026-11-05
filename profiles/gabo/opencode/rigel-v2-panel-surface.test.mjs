@@ -126,7 +126,9 @@ describe("Rigel sidebar OpenTUI surface", () => {
     expect(root.borderStyle).toBe("single")
     expect(root.borderColor).toBe(PANEL_COLORS.border)
     expect(root.paddingLeft).toBe(2)
-    expect(root.paddingRight).toBe(2)
+    // The approved 37-cell box is left padding + name column + separator + model;
+    // a right padding pushed the model past the border and clipped it live.
+    expect(root.paddingRight).toBe(0)
     expect(root.children[0].tag).toBe("box")
     expect(textValue(root.children[0])).toContain("oh-my-rigel · models")
     expect(root.children[0].children[0].fg).toBe(PANEL_COLORS.brand)
