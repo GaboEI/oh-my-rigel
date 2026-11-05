@@ -98,8 +98,11 @@ function panelNode(solid, model) {
     flexDirection: "column",
     borderStyle: "single",
     borderColor: filterPanelColor(PANEL_COLORS.border),
+    // The vault box is 37 cells wide: 2 of left padding, a 19-cell name column
+    // plus its separator, and a 13-cell model. A right padding would push the
+    // model past the border and clip it, so the right edge is the border itself.
     paddingLeft: 2,
-    paddingRight: 2,
+    paddingRight: 0,
   })
   solid.insert(root, headerNode(solid, model))
   solid.insert(root, blankNode(solid))
