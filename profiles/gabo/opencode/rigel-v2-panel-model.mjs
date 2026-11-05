@@ -235,7 +235,23 @@ function isPrincipal(name) {
   return STARRED_PRINCIPAL_NAMES.has(name)
 }
 
-function buildWorkingRows(sessions, statusOf) {
+/**
+ * A working row is the same agent the rest state renders, so it keeps the colour
+ * that state already resolved for it. The roster is the only source: the working
+ * row is looked up by its canonical agent name, never by its numbered label, and
+ * a principal the roster does not carry still keeps its own fallback colour
+ * instead of collapsing to the base colour the model column uses.
+ */
+function workingNameColor(rawName, roster) {
+  const principals = Array.isArray(roster?.principals) ? roster.principals : []
+  const principal = principals.find((row) => canonicalKey(row?.name) === canonicalKey(rawName))
+  if (principal) return filterPanelColor(principal.nameColor, PANEL_COLORS.base)
+  if (!isPrincipal(rawName)) return PANEL_COLORS.base
+  const index = PRINCIPAL_NAMES.indexOf(displayName(rawName))
+  return filterPanelColor(undefined, PRINCIPAL_FALLBACK_COLORS[(index >= 0 ? index : 0) % PRINCIPAL_FALLBACK_COLORS.length])
+}
+
+function buildWorkingRows(sessions, statusOf, roster) {
   const entries = sessions.items
     .map((session, index) => {
       const id = sessionId(session, index)
@@ -258,7 +274,7 @@ function buildWorkingRows(sessions, statusOf) {
       prefix: isPrincipal(name) ? "* " : "",
       status,
       sessionID: id,
-      nameColor: isPrincipal(name) ? undefined : PANEL_COLORS.base,
+      nameColor: workingNameColor(name, roster),
       statusColor: PANEL_COLORS.working,
     }
   })
@@ -280,7 +296,7 @@ function rosterNameColumnWidth(roster) {
 export function buildPanelModel(reads = {}) {
   const roster = reads.roster ?? buildRoster()
   const sessions = normalizeList(reads.sessions)
-  const workingRows = buildWorkingRows(sessions, reads.statusOf)
+  const workingRows = buildWorkingRows(sessions, reads.statusOf, roster)
   const working = workingRows.length > 0
   const groups = working
     ? []

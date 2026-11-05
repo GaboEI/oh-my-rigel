@@ -5,6 +5,7 @@ import {
   PANEL_COLORS,
   PANEL_HEADER_REST,
   PANEL_HEADER_WORKING,
+  PRINCIPAL_FALLBACK_COLORS,
   PRINCIPAL_NAMES,
   SUBAGENT_NAMES,
   abbreviateModel,
@@ -88,6 +89,39 @@ describe("Rigel sidebar pure panel model", () => {
     expect(text).not.toContain("junior task")
     expect(text).not.toContain("ses_")
     expect(text).not.toContain("forbidden title")
+  })
+
+  test("#given a running principal #then the working row keeps its own roster colour instead of the base colour", () => {
+    const built = roster()
+    const sisyphus = built.principals.find((row) => row.name === "Sisyphus")
+    const hephaestus = built.principals.find((row) => row.name === "Hephaestus")
+    const model = buildPanelModel({
+      roster: built,
+      sessions: [
+        { id: "ses_sisyphus", agent: "Sisyphus", time: { created: 1 } },
+        { id: "ses_hephaestus", agent: "hephaestus", time: { created: 2 } },
+        { id: "ses_oracle", agent: "Oracle", time: { created: 3 } },
+      ],
+      statusOf: () => "running",
+    })
+    const colors = Object.fromEntries(model.rows.map((row) => [row.rawName, row.nameColor]))
+
+    expect(model.mode).toBe("working")
+    expect(sisyphus.nameColor).not.toBe(PANEL_COLORS.base)
+    expect(colors.Sisyphus).toBe(sisyphus.nameColor)
+    expect(colors.Hephaestus).toBe(hephaestus.nameColor)
+    expect(colors.Oracle).toBe(PANEL_COLORS.base)
+  })
+
+  test("#given a running principal the roster does not carry #then the working row keeps its own fallback colour", () => {
+    const model = buildPanelModel({
+      roster: { principals: [], subagents: [], categories: [] },
+      sessions: [{ id: "ses_sisyphus", agent: "Sisyphus", time: { created: 1 } }],
+      statusOf: () => "running",
+    })
+
+    expect(model.rows[0].nameColor).toBe(PRINCIPAL_FALLBACK_COLORS[0])
+    expect(model.rows[0].nameColor).not.toBe(PANEL_COLORS.base)
   })
 
   test("#given only completed or idle sessions #then it returns to the full roster", () => {
