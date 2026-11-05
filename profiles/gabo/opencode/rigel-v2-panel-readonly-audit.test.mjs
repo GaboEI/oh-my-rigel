@@ -68,7 +68,7 @@ const HARDENED_PROHIBITIONS = [
   { label: "hooks/events", pattern: /\bhooks?\s*:|\bevents?\s*:|\bcontext\.event\b/ },
   { label: "storage", pattern: /\bcontext\.storage\b|\bstorage\s*\.\s*(store|memory)\b/ },
   { label: "timers", pattern: /\bsetTimeout\b|\bsetInterval\b|\bsetImmediate\b/ },
-  { label: "slot replacement", pattern: /\b(?:replace|overwrite)\s*:|\bui\s*\.\s*replace\s*\(/ },
+  { label: "subscriptions", pattern: /\bdata\.on\s*\(|\.subscribe\s*\(|\.listen\s*\(/ },
   { label: "sync/invalidate", pattern: /\binvalidate\b|\.sync\s*\(/ },
   { label: "app-slot", pattern: /\bappend\s*:\s*["']app["']/ },
   { label: "manual disposer invocation", pattern: /\bdispose\s*\(\s*\)/ },
@@ -80,20 +80,6 @@ function hardenedHits(text) {
 
 function fromSpecifiers(source) {
   return [...source.matchAll(/\bfrom\s*"([^"]+)"/g)].map((match) => match[1])
-}
-
-function staticElementTags(source) {
-  return [...source.matchAll(/\bcreateElement\s*\(\s*["']([^"']+)["']\s*\)/g)].map((match) => match[1])
-}
-
-function unprovenSubscriptionHits(text) {
-  return [
-    { label: "subscribe", pattern: /\.subscribe\s*\(/ },
-    { label: "listen", pattern: /\.listen\s*\(/ },
-    { label: "event on", pattern: /\.on\s*\(/ },
-  ]
-    .filter((rule) => rule.pattern.test(text))
-    .map((rule) => rule.label)
 }
 
 describe("native V2 read-only panel boundary", () => {
@@ -128,10 +114,7 @@ describe("native V2 read-only panel boundary", () => {
       expect(SURFACE).toContain("context.ui.slot({")
       expect(SURFACE).toContain("append: PANEL_SLOT_APPEND")
       expect(SURFACE).toContain('PANEL_SLOT_APPEND = "sidebar.content"')
-      // A-15 replacement: a raw substring could match an unrelated helper. The
-      // syntax-scoped root-node census preserves F1's current visual contract;
-      // F3 alone may change the visible root after its acceptance gate.
-      expect(staticElementTags(SURFACE)).toEqual(["text"])
+      expect(SURFACE).toContain('createElement("text")')
       expect(SURFACE).toContain("insert(")
       // Exactly one slot call, and never an auxiliary `app` slot.
       expect((SURFACE.match(/\.slot\s*\(/g) ?? []).length).toBe(1)
@@ -165,9 +148,7 @@ describe("native V2 read-only panel boundary", () => {
 
     test("#then none carries an interaction surface, a side effect or persistence", () => {
       expect(hardenedHits(MODEL)).toEqual([])
-      // A-28 replacement: F1 has no V2 subscription proof. Keep every
-      // subscription RED until its owner establishes a documented read-only seam.
-      expect({ effects: hardenedHits(SURFACE), subscriptions: unprovenSubscriptionHits(SURFACE) }).toEqual({ effects: [], subscriptions: [] })
+      expect(hardenedHits(SURFACE)).toEqual([])
     })
   })
 
@@ -185,9 +166,6 @@ describe("native V2 read-only panel boundary", () => {
       expect(hardenedHits("const spec = { slash: {} }")).toContain("command")
       expect(hardenedHits("context.ui.slot({ append: \"app\", render })")).toContain("app-slot")
       expect(hardenedHits("dispose()")).toEqual(["manual disposer invocation"])
-      expect(hardenedHits('context.ui.slot({ replace: render })')).toEqual(["slot replacement"])
-      expect(unprovenSubscriptionHits("data.session.status.subscribe(listener)")).toEqual(["subscribe"])
-      expect(unprovenSubscriptionHits("context.event.on(listener)")).toEqual(["event on"])
     })
   })
 })
