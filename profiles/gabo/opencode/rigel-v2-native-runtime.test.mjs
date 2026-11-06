@@ -3107,3 +3107,39 @@ test("#given a retired unevaluated channel row #when the process restarts and re
   expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces["channels.alerts"].state).toBe("unevaluated")
   await restarted.dispose()
 })
+
+// PR #106 review finding 1: an install with `[opencode].openclaw.enabled =
+// false` evaluates ZERO notification channels, which is not the same state as a
+// run that does not track channels at all. Passing `undefined` for the evaluated
+// set conflated the two: `reconcileFatals` saw `null` and skipped its retire
+// branch, so a persisted `channels.<name>` fatal was promoted to `up` by a run
+// that never looked at that channel. Gate 5 (row 29) applies here too - nothing
+// established the surface, so it stays `unevaluated`, never reported up.
+test("#given openclaw disabled #when a persisted channel fatal exists #then it is retired as unevaluated and never reported up", async () => {
+  // given: a durable channel fatal an earlier enabled run recorded
+  const storage = openclawStorage()
+  const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+  await previous.recordFailure("channels.alerts", { errorClass: "missing-env-variable", fatal: true, emitLine: false })
+
+  // and: this run composes with the whole surface disabled, so it evaluates no channel
+  const disabled = createNativeOpenclaw({
+    context: { storage, session: { prompt: async () => ({ data: {} }) } },
+    config: { enabled: false },
+    fetchImpl: OPENCLAW_OK_FETCH,
+    env: {},
+    log: () => {},
+  })
+  await disabled.ready
+
+  // when
+  const afterReport = await disabled.report()
+
+  // then: retired as unevaluated - never promoted to up by a run that judged
+  // nothing, and never re-fatalized either
+  const row = afterReport.surfaces["channels.alerts"]
+  expect(row).toBeDefined()
+  expect(row.state).not.toBe("up")
+  expect(row.state).toBe("unevaluated")
+  expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces["channels.alerts"].state).toBe("unevaluated")
+  await disabled.dispose()
+})

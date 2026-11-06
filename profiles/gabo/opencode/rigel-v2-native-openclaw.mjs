@@ -537,6 +537,11 @@ export function createNativeOpenclaw({
     // Gate 5 (row 29): pass the notification channels this run evaluated so a
     // persisted `channels.<name>` fatal for a channel no longer present in the
     // configuration is retired as unevaluated instead of promoted to `up`.
+    //
+    // A disabled surface evaluates ZERO channels, and that is an EMPTY set, never
+    // an absent one: `undefined` tells `reconcileFatals` the caller does not track
+    // channels, which skips its retire branch and lets a persisted `channels.<name>`
+    // fatal reach `up` from a run that never looked at it.
     const evaluatedChannelNames = enabled
       ? new Set([
         ...notifications.channels.map((channel) => channel.name),
@@ -544,7 +549,7 @@ export function createNativeOpenclaw({
           .map((diagnostic) => (typeof diagnostic.path === "string" ? diagnostic.path.split(".")[2] : null))
           .filter((name) => typeof name === "string" && name.length > 0),
       ])
-      : undefined
+      : new Set()
     await statusDocument.reconcileFatals(setupFatals.map((fatal) => fatal.surface), { evaluatedChannelNames })
     const document = statusDocument.snapshot()
     return {
