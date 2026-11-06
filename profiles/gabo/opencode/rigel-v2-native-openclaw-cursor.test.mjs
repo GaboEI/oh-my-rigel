@@ -100,7 +100,6 @@ function discordListener({ storage, fetchImpl, registry, deliverInboundReply, lo
       discordChannelId: "chan",
       authorizedDiscordUserIds: ["u1"],
       pollIntervalMs: 500,
-      includePrefix: true,
       ...replyListener,
     },
     registry: registry ?? registryWith("discord-bot", BOT_MESSAGE_ID, "ses_1"),
@@ -155,6 +154,74 @@ function statusRecorder() {
     recordRateLimit: async (surface) => { events.push({ kind: "rate-limit", surface }) },
   }
 }
+
+describe("openclaw inbound: delivered prefix stubs are terminal at the default", () => {
+  test("#given an attachment-only Discord reply at the default prefix #when text follows it #then the prefix-only stub spends no budget and the text is delivered", async () => {
+    const storage = memoryStorage()
+    const status = statusRecorder()
+    const fetchImpl = discordPort({
+      messages: [discordMessage({ id: "m3", content: "hello" }), discordMessage({ id: "m2", content: "" })],
+      pollLimit: 1,
+    })
+    const { inbound, delivered } = discordListener({
+      storage,
+      fetchImpl,
+      statusDocument: status,
+      replyListener: { rateLimitPerMinute: 1 },
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length >= 1, "reply behind the prefix-only stub")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_1", text: "[reply:discord] hello" }])
+    expect(fetchImpl.ackCalls()).toHaveLength(1)
+    expect(status.events.filter((event) => event.kind === "rate-limit")).toHaveLength(0)
+    expect(cursorDocument(storage, "discord", "chan")).toMatchObject({ cursor: "m3" })
+  })
+
+  test("#given an attachment-only Discord reply truncated into a prefix stub #when the window is processed #then it injects nothing and advances the cursor", async () => {
+    const storage = memoryStorage()
+    const status = statusRecorder()
+    const lines = []
+    const fetchImpl = discordPort({ messages: [discordMessage({ content: "" })], pollLimit: 1 })
+    const { inbound, delivered } = discordListener({
+      storage,
+      fetchImpl,
+      statusDocument: status,
+      replyListener: { maxMessageLength: 5, rateLimitPerMinute: 1 },
+      log: (line) => lines.push(line),
+    })
+
+    await inbound.start()
+    await waitFor(() => cursorDocument(storage, "discord", "chan")?.cursor === "m2", "terminal prefix stub cursor")
+    await inbound.stop()
+
+    expect(delivered).toEqual([])
+    expect(fetchImpl.ackCalls()).toHaveLength(0)
+    expect(status.events.filter((event) => event.kind === "rate-limit")).toHaveLength(0)
+    expect(cursorDocument(storage, "discord", "chan")).toMatchObject({ cursor: "m2" })
+    expect(lines).toContain("WARN: openclaw.replyListener.maxMessageLength=5 leaves no reply body after the discord prefix; prefix stubs are terminal")
+  })
+
+  test("#given text that survives truncation at the default prefix #when the window is processed #then the pinned Discord prefix and Telegram acknowledgement contract stay unchanged", async () => {
+    const storage = memoryStorage()
+    const fetchImpl = discordPort({ messages: [discordMessage({ content: "hello world" })], pollLimit: 1 })
+    const { inbound, delivered } = discordListener({
+      storage,
+      fetchImpl,
+      replyListener: { maxMessageLength: 20 },
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length >= 1, "truncated real-text delivery")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_1", text: "[reply:discord] hell" }])
+    expect(fetchImpl.ackCalls()).toHaveLength(1)
+    expect(cursorDocument(storage, "discord", "chan")).toMatchObject({ cursor: "m2" })
+  })
+})
 
 describe("openclaw poll cursor document", () => {
   test("#given two platforms and two channels #when a cursor is stored #then each names its own versioned record", async () => {

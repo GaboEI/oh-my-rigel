@@ -305,10 +305,25 @@ export function createOpenclawInbound({
    * inject owes nothing, and spending a token on it is what turned one attachment
    * into a window the poller could never get past.
    */
+  function replyPrefix(platform) {
+    return includePrefix ? `[reply:${platform}] ` : ""
+  }
+
   function prepareReplyText(content, platform) {
-    const prefix = includePrefix ? `[reply:${platform}] ` : ""
+    const prefix = replyPrefix(platform)
     const sanitized = sanitizeReplyInput(prefix + (typeof content === "string" ? content : ""))
     return sanitized.slice(0, maxMessageLength)
+  }
+
+  function hasInjectableReplyText(delivered, platform) {
+    const prefix = replyPrefix(platform)
+    return delivered.length > 0 && (prefix.length === 0 || (delivered !== prefix && !prefix.startsWith(delivered)))
+  }
+
+  for (const [platform, isEnabled] of [[DISCORD_PLATFORM, discordEnabled], [TELEGRAM_PLATFORM, telegramEnabled]]) {
+    if (isEnabled && includePrefix && maxMessageLength <= replyPrefix(platform).length) {
+      log(`WARN: openclaw.replyListener.maxMessageLength=${maxMessageLength} leaves no reply body after the ${platform} prefix; prefix stubs are terminal`)
+    }
   }
 
   /**
@@ -414,12 +429,10 @@ export function createOpenclawInbound({
     const mapping = registry?.lookup?.("discord-bot", replyToMessageId)
     if (!mapping) return { outcome: "advance" }
     const text = prepareReplyText(message.content, "discord")
-    // An attachment with no text and no prefix has nothing to inject. It is not a
-    // refusal: refusing it halted the window, and because the frontier never moved
-    // the same message came back every poll until the rate-limit budget was gone,
-    // after which the frontier passed replies that had never been injected. Nothing
-    // is owed, so it is terminal and it does not spend a token.
-    if (text.length === 0) return { outcome: "advance" }
+    // The delivered body is measured after prefixing, sanitizing and truncation.
+    // A prefix-only or prefix-stub body is terminal: it owes no delivery,
+    // acknowledgement or rate-limit token, so the cursor may pass it.
+    if (!hasInjectableReplyText(text, DISCORD_PLATFORM)) return { outcome: "advance" }
     if (!rateLimiter.canProceed()) {
       // §9.3: an individual rate-limit drop is never reported. It only moves the
       // aggregate counter, so the channel stays readable. The drop is terminal for
@@ -611,7 +624,7 @@ export function createOpenclawInbound({
     if (!message?.text) return { outcome: "advance" }
     const text = prepareReplyText(message.text, "telegram")
     // Same rule as the Discord port: nothing injectable is terminal, not a refusal.
-    if (text.length === 0) return { outcome: "advance" }
+    if (!hasInjectableReplyText(text, TELEGRAM_PLATFORM)) return { outcome: "advance" }
     // The correlation identity of a Telegram message is `(chat, message_id)`: the
     // platform sequences ids per chat, so `77` in another chat is another message.
     // `channel` is the chat this update was read from (already compared above), and

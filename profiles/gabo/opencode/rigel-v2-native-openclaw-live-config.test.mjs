@@ -156,6 +156,49 @@ describe("openclaw resolution under the three-state contract", () => {
     expect(resolution.diagnostics[0]).toContain("enabled true -> false")
   })
 
+  test("#given the live file adds reply-policy allowed-authors #when resolved #then exactly one value-free policy identity difference is reported", () => {
+    const manifest = {
+      ...LEGACY_BLOCK,
+      replyPolicy: { telegram: {} },
+    }
+    const live = {
+      ...manifest,
+      replyPolicy: { telegram: { allowedAuthors: ["author-value-not-to-log"] } },
+    }
+    const resolution = resolveOpenclaw(manifestWith(manifest), liveOpenclaw(live))
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("replyPolicy.telegram.allowedAuthors")
+    expect(resolution.diagnostics[0]).not.toContain("author-value-not-to-log")
+  })
+
+  test("#given only reply-policy author values change #when resolved #then no identity difference is reported", () => {
+    const manifest = {
+      ...LEGACY_BLOCK,
+      replyPolicy: { telegram: { allowedAuthors: ["manifest-author-value"] } },
+    }
+    const live = {
+      ...LEGACY_BLOCK,
+      replyPolicy: { telegram: { allowedAuthors: ["live-author-value"] } },
+    }
+    const resolution = resolveOpenclaw(manifestWith(manifest), liveOpenclaw(live))
+    expect(resolution.diagnostics).toEqual([])
+  })
+
+  test("#given reply-listener field names change #when resolved #then the field-name identity difference is reported without a value", () => {
+    const manifest = {
+      ...LEGACY_BLOCK,
+      replyListener: { discordBotToken: "listener-value-not-to-log" },
+    }
+    const live = {
+      ...LEGACY_BLOCK,
+      replyListener: { telegramBotToken: "listener-value-not-to-log" },
+    }
+    const resolution = resolveOpenclaw(manifestWith(manifest), liveOpenclaw(live))
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("replyListener +[telegramBotToken]")
+    expect(resolution.diagnostics[0]).toContain("replyListener -[discordBotToken]")
+    expect(resolution.diagnostics[0]).not.toContain("listener-value-not-to-log")
+  })
   test("#given the live chain is unreadable #when resolved #then openclaw fails closed instead of using the baked manifest", () => {
     const unreadable = {
       existsSync: () => true,

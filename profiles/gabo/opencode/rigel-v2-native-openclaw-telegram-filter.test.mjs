@@ -164,6 +164,7 @@ function harmonyComposition(config, { storage = memoryStorage(), fetchImpl = tel
 
 /** A Telegram notification channel: it is what makes `channels` declared. */
 const TELEGRAM_CHANNEL = { transport: "telegram", token: SECRET, chatId: "chat", instruction: "done", events: ["session.idle"] }
+const DISCORD_CHANNEL = { transport: "discord", token: SECRET, channelId: "discord-channel", instruction: "done", events: ["session.idle"] }
 
 describe("openclaw reply policy: telegram is a served identity with its own list", () => {
   test("#given a policy naming telegram #when resolved #then exactly those users are authorized once", () => {
@@ -365,27 +366,67 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
     await native.dispose()
   })
 
-  test("#given a replyPolicy that names only Discord #when a telegram reply port exists #then Telegram is reported closed while Discord keeps its policy", async () => {
-    const { native, lines, storage } = harmonyComposition({
+  test("#given a legacy telegram replyListener plus replyPolicy without channels #when the list is absent then restored #then polling stays closed then resumes", async () => {
+    const replyListener = {
+      ...telegramReplyListener(),
+      discordBotToken: SECRET,
+      discordChannelId: "discord",
+      authorizedDiscordUserIds: [AUTHORIZED_USER],
+    }
+    const closedFetch = telegramPort([])
+    const { native: closed, fetchImpl: closedFetchImpl } = harmonyComposition({
+      enabled: true,
+      replyPolicy: { telegram: {} },
+      replyListener,
+    }, { fetchImpl: closedFetch })
+
+    // Row 28: an empty-namespace policy reports the Discord diagnostic and starts nothing,
+    // so the closed Telegram route is asserted through the absent poller, not a started listener.
+    expect(await closed.ready).toEqual({ started: false, reason: "no-credentials" })
+    expect(closed.inbound.status().platforms.telegram).toBe(false)
+    expect(closedFetchImpl.calls.filter((call) => call.url.includes("/getUpdates"))).toEqual([])
+    await closed.dispose()
+
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const resumedFetch = telegramPort([{
+      update_id: 10,
+      message: telegramMessage({ messageId: 34, userId: AUTHORIZED_USER, text: "authorized" }),
+    }])
+    const { native: resumed, fetchImpl: resumedFetchImpl, prompts } = harmonyComposition({
+      enabled: true,
+      replyPolicy: { telegram: { allowedAuthors: [AUTHORIZED_USER] } },
+      replyListener,
+    }, { storage, fetchImpl: resumedFetch })
+
+    expect(await resumed.ready).toEqual({ started: true })
+    await waitFor(() => prompts.length > 0, "authorized Telegram reply after list declaration")
+    expect(resumed.inbound.status().platforms).toMatchObject({ discord: true, telegram: true })
+    expect(resumedFetchImpl.calls.some((call) => call.url.includes("/getUpdates"))).toBe(true)
+    expect(prompts).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] authorized", delivery: "queue" }])
+    await resumed.dispose()
+  })
+
+  test("#given a legacy telegram listener and a replyPolicy naming only Discord #when composed #then Telegram stays closed and the intruder is never injected", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, fetchImpl, prompts } = harmonyComposition({
       enabled: true,
       replyPolicy: { "discord-bot": { allowedAuthors: [AUTHORIZED_USER] } },
-      replyListener: {
-        ...telegramReplyListener(),
-        discordBotToken: SECRET,
-        discordChannelId: "chan",
-      },
-    }, { fetchImpl: telegramPort([]) })
+      replyListener: telegramReplyListener(),
+    }, {
+      storage,
+      fetchImpl: telegramPort([{ update_id: 11, message: telegramMessage({ messageId: 35, userId: INTRUDER, text: "legacy" }) }]),
+    })
 
-    const ready = await native.ready
-
-    expect(lines.filter((line) => line.includes("openclaw.replyPolicy.telegram.allowedAuthors"))).toHaveLength(1)
+    expect(await native.ready).toEqual({ started: false, reason: "no-credentials" })
     expect(native.inbound.status().platforms.telegram).toBe(false)
-    expect(native.inbound.status().platforms.discord).toBe(true)
+    expect(fetchImpl.calls.filter((call) => call.url.includes("/getUpdates"))).toEqual([])
+    expect(prompts).toEqual([])
     expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces.telegram).toMatchObject({
       state: "fatal",
       errorClass: "missing-authorized-authors",
     })
-    expect(ready.started).toBe(true)
     await native.dispose()
   })
 
@@ -410,5 +451,154 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
     expect(lines.filter((line) => !line.includes("reply listener"))).toEqual([])
     expect(storage.map.has(OPENCLAW_STATUS_KEY)).toBe(false)
     expect(native.status().authorization).toBeUndefined()
+  })
+
+  test("#given a malformed named Telegram channel #when composed #then only Telegram is closed and named", async () => {
+    const { native, lines, storage, fetchImpl } = harmonyComposition({
+      enabled: true,
+      channels: { telegram: "not-an-object" },
+      replyListener: telegramReplyListener(),
+    })
+
+    const ready = await native.ready
+
+    expect(ready).toEqual({ started: false, reason: "no-credentials" })
+    expect(fetchImpl.calls).toEqual([])
+    expect(lines.some((line) => line.includes("openclaw.channels.telegram"))).toBe(true)
+    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces).toMatchObject({
+      telegram: { state: "fatal", errorClass: "missing-authorized-authors" },
+      "channels.telegram": { state: "fatal", errorClass: "not-an-object" },
+    })
+    await native.dispose()
+  })
+
+  test("#given an A2A-only channel block #when a legacy Telegram listener runs #then chat stays on the legacy route", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, lines, prompts } = harmonyComposition(
+      {
+        enabled: true,
+        channels: { a2a: { enabled: true, peers: { alpha: { token: SECRET, url: "https://peer.test" } } } },
+        replyListener: telegramReplyListener(),
+      },
+      {
+        storage,
+        fetchImpl: telegramPort([{ update_id: 7, message: telegramMessage({ messageId: 31, userId: "someone-else", text: "a2a" }) }]),
+      },
+    )
+
+    const ready = await native.ready
+    await waitFor(() => prompts.length > 0, "A2A-only legacy Telegram injection")
+    await native.dispose()
+
+    expect(ready).toEqual({ started: true })
+    expect(prompts[0]).toEqual({ sessionID: "ses_tg", text: "[reply:telegram] a2a", delivery: "queue" })
+    expect(native.status().authorization).toBeUndefined()
+    expect(lines.filter((line) => /reply policy|stay off/.test(line))).toEqual([])
+  })
+
+  test("#given a Discord channel declaration #when a legacy Telegram listener runs #then Telegram stays on the legacy route", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, lines, prompts } = harmonyComposition(
+      { enabled: true, channels: { discord: DISCORD_CHANNEL }, replyListener: telegramReplyListener() },
+      {
+        storage,
+        fetchImpl: telegramPort([{ update_id: 8, message: telegramMessage({ messageId: 32, userId: "someone-else", text: "discord" }) }]),
+      },
+    )
+
+    const ready = await native.ready
+    await waitFor(() => prompts.length > 0, "Discord-only legacy Telegram injection")
+    await native.dispose()
+
+    expect(ready).toEqual({ started: true })
+    expect(prompts[0]).toEqual({ sessionID: "ses_tg", text: "[reply:telegram] discord", delivery: "queue" })
+    expect(native.status().authorization).toBeUndefined()
+    expect(lines.filter((line) => /reply policy|stay off/.test(line))).toEqual([])
+  })
+
+  test("#given an empty channel namespace #when a legacy Telegram listener runs #then chat stays indistinguishable from no namespace", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, lines, prompts } = harmonyComposition(
+      { enabled: true, channels: {}, replyListener: telegramReplyListener() },
+      {
+        storage,
+        fetchImpl: telegramPort([{ update_id: 9, message: telegramMessage({ messageId: 33, userId: "someone-else", text: "empty" }) }]),
+      },
+    )
+
+    const ready = await native.ready
+    await waitFor(() => prompts.length > 0, "empty namespace legacy Telegram injection")
+    await native.dispose()
+
+    expect(ready).toEqual({ started: true })
+    expect(prompts[0]).toEqual({ sessionID: "ses_tg", text: "[reply:telegram] empty", delivery: "queue" })
+    expect(native.status().authorization).toBeUndefined()
+    expect(lines.filter((line) => /reply policy|stay off/.test(line))).toEqual([])
+  })
+})
+
+describe("openclaw inbound: a Telegram stub reply is terminal like Discord", () => {
+  test("#given a whitespace-only Telegram reply #when it arrives before a real reply #then the stub owes nothing and the real reply is injected", async () => {
+    const { inbound, delivered } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1 }), {
+      fetchImpl: telegramPort([
+        { update_id: 1, message: telegramMessage({ messageId: 40, text: "   " }) },
+        { update_id: 2, message: telegramMessage({ messageId: 41, text: "tg hello" }) },
+      ]),
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length > 0, "real reply after whitespace stub")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] tg hello" }])
+    expect(inbound.status().errors).toBe(0)
+  })
+
+  test("#given an empty Telegram reply #when it arrives before a real reply #then the stub owes nothing and the real reply is injected", async () => {
+    const { inbound, delivered } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1 }), {
+      fetchImpl: telegramPort([
+        { update_id: 1, message: telegramMessage({ messageId: 42, text: "" }) },
+        { update_id: 2, message: telegramMessage({ messageId: 43, text: "tg hello" }) },
+      ]),
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length > 0, "real reply after empty stub")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] tg hello" }])
+    expect(inbound.status().errors).toBe(0)
+  })
+
+  test("#given a maxMessageLength shorter than the prefix #when Telegram replies arrive #then every reply is a terminal stub and the cursor passes them", async () => {
+    const { inbound, delivered, calls } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1, maxMessageLength: 16 }), {
+      fetchImpl: telegramPort([
+        { update_id: 1, message: telegramMessage({ messageId: 44, text: "fragment" }) },
+        { update_id: 2, message: telegramMessage({ messageId: 45, text: "tg hello" }) },
+      ]),
+    })
+
+    await inbound.start()
+    await waitFor(() => calls.some((call) => call.url.includes("offset=3")), "cursor past both stubs")
+    await inbound.stop()
+
+    expect(delivered).toEqual([])
+    expect(inbound.status().errors).toBe(0)
+  })
+
+  test("#given real Telegram text #when injected with the default prefix #then the prefix stays byte-identical and one token is spent", async () => {
+    const { inbound, delivered } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1 }), {
+      fetchImpl: telegramPort([{ update_id: 1, message: telegramMessage({ messageId: 46, text: "tg hello" }) }]),
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length > 0, "mirror telegram injection")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] tg hello" }])
+    expect(inbound.status().errors).toBe(0)
   })
 })

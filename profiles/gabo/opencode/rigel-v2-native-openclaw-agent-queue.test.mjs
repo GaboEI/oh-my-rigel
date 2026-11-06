@@ -139,6 +139,25 @@ describe("openclaw agent queue contracts", () => {
     expect(await queue.claimNext("peer-alpha", CONTEXT)).toMatchObject({ taskId: "task-2" })
   })
 
+  test("#given a task already completed #when markLost is called #then it reports changed false and no loss is counted", async () => {
+    // given
+    const { queue, registry } = harness()
+    await queue.enqueue(message({ taskId: "task-1" }))
+    await queue.claimNext("peer-alpha", CONTEXT)
+    await queue.settle({ peer: "peer-alpha", contextId: CONTEXT, taskId: "task-1", state: "completed" })
+
+    // when
+    const duplicate = await registry.markLost("peer-alpha", CONTEXT, "task-1")
+    const counted = await queue.markLost({ peer: "peer-alpha", contextId: CONTEXT, taskId: "task-1" })
+
+    // then
+    // The completed record keeps its first outcome, and the value the responder
+    // keys its loss counter on says nothing happened.
+    expect(duplicate.changed).toBe(false)
+    expect(counted).toBe(false)
+    expect(registry.lookup("peer-alpha", CONTEXT, "task-1")).toMatchObject({ state: "completed" })
+  })
+
   test("#given a released claim #when reading the queue #then the task is still pending and the send is not retried blindly", async () => {
     const { queue } = harness()
     await queue.enqueue(message())

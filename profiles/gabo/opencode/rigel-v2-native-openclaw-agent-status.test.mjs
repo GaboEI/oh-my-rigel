@@ -21,7 +21,7 @@ describe("openclaw status document shape", () => {
   test("#given a fresh document #when read #then it holds no surfaces and the pinned storage key", () => {
     const document = createOpenclawStatusDocument({ now: at("2026-01-01T00:00:00.000Z") })
     expect(OPENCLAW_STATUS_KEY).toBe("rigel-v2/openclaw/status")
-    expect(OPENCLAW_STATUS_STATES).toEqual(["up", "degraded", "fatal"])
+    expect(OPENCLAW_STATUS_STATES).toEqual(["up", "degraded", "fatal", "unevaluated"])
     expect(document.snapshot()).toEqual({ surfaces: {}, updatedAt: "2026-01-01T00:00:00.000Z" })
   })
 

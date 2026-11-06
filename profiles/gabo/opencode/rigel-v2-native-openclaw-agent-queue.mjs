@@ -94,6 +94,7 @@ export function createOpenclawAgentQueue({
   const peerWindows = new Map()
   /** Full agent identity currently awaiting durable registration. */
   const registering = new Set()
+  let accepting = true
 
   function conversationKey(peer, contextId) {
     return `${peer}\u0000${contextId}`
@@ -134,6 +135,7 @@ export function createOpenclawAgentQueue({
    */
   async function enqueue({ peer, contextId, taskId, sessionID, agentId, text } = {}) {
     if (!registry || typeof registry.register !== "function") return { accepted: false, reason: "no-registry" }
+    if (!accepting) return { accepted: false, reason: "shutting-down" }
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) {
       return { accepted: false, reason: "invalid-identity" }
     }
@@ -204,8 +206,12 @@ export function createOpenclawAgentQueue({
       const entries = entriesFor(peer, contextId)
       const index = entries.findIndex((entry) => entry.taskId === next.taskId)
       if (index < 0) {
-        await registry.markLost?.(peer, contextId, next.taskId)
-        log(`[oh-my-rigel] openclaw agent task lost before send: peer=${peer} task=${next.taskId}`)
+        // Only a real transition is a loss: a record that settled between the
+        // snapshot and this call keeps its terminal outcome and is not reported.
+        const reported = await registry.markLost?.(peer, contextId, next.taskId)
+        if (reported?.changed === true) {
+          log(`[oh-my-rigel] openclaw agent task lost before send: peer=${peer} task=${next.taskId}`)
+        }
         continue
       }
       const claimed = await registry.claim(peer, contextId, next.taskId)
@@ -228,13 +234,19 @@ export function createOpenclawAgentQueue({
     return Boolean(claim) && now() >= claim.deadlineAt
   }
 
-  /** Settle a claimed task in a terminal state and drop its payload. */
+  /**
+   * Settle a claimed task in a terminal state and drop its payload.
+   *
+   * Returns whether the record actually changed. A record that is already
+   * terminal keeps its first outcome, so this answers `false` there instead of
+   * reporting a settlement that never happened.
+   */
   async function settle({ peer, contextId, taskId, state } = {}) {
     if (!OPENCLAW_AGENT_TERMINAL_STATES.includes(state)) return false
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return false
     dropEntry(peer, contextId, taskId)
     const settled = await registry.settle?.(peer, contextId, taskId, state)
-    return Boolean(settled)
+    return settled?.changed === true
   }
 
   /** Free the slot without settling: the task is still pending, the send is not retried. */
@@ -244,12 +256,24 @@ export function createOpenclawAgentQueue({
     return Boolean(released)
   }
 
-  /** Report an unobservable task and drop its payload. */
+  /** Report an unobservable task and drop its payload. `true` only on a real transition. */
   async function markLost({ peer, contextId, taskId } = {}) {
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return false
     dropEntry(peer, contextId, taskId)
     const lost = await registry.markLost?.(peer, contextId, taskId)
-    return Boolean(lost)
+    return lost?.changed === true
+  }
+
+  /** Record the distinct terminal outcome for work a graceful shutdown could not drain. */
+  async function markShutdownLost({ peer, contextId, taskId } = {}) {
+    if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return false
+    dropEntry(peer, contextId, taskId)
+    const lost = await registry.markShutdownLost?.(peer, contextId, taskId)
+    return lost?.changed === true
+  }
+
+  function closeAdmissions() {
+    accepting = false
   }
 
   function dropEntry(peer, contextId, taskId) {
@@ -286,9 +310,12 @@ export function createOpenclawAgentQueue({
     settle,
     release,
     markLost,
+    markShutdownLost,
     hasPayload,
     pendingFor: (peer, contextId) => entriesFor(peer, contextId).length,
     pendingTotal,
+    replyTimeoutMs: () => replyTimeoutMs,
+    closeAdmissions,
     clearAll,
   }
 }

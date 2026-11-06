@@ -37,10 +37,12 @@
 
 /** Storage key of the document. */
 export const OPENCLAW_STATUS_KEY = "rigel-v2/openclaw/status"
-/** `up` = working, `degraded` = up with consecutive failures, `fatal` = disabled. */
-export const OPENCLAW_STATUS_STATES = Object.freeze(["up", "degraded", "fatal"])
+/** `up` = working, `degraded` = up with consecutive failures, `fatal` = disabled, `unevaluated` = persisted row not established by this run (Gate 5 / row 29). */
+export const OPENCLAW_STATUS_STATES = Object.freeze(["up", "degraded", "fatal", "unevaluated"])
 /** Severities the document distinguishes. `info` is used for transitions only. */
 export const OPENCLAW_STATUS_SEVERITIES = Object.freeze(["fatal", "degraded", "info"])
+/** The pre-split bare legacy row. Row 30 / U-P16: no producer writes it, so a persisted copy is retired. */
+export const OPENCLAW_RETIRED_OUTBOUND_SURFACE = "outbound"
 
 const LOG_PREFIX = "[oh-my-rigel]"
 
@@ -121,8 +123,22 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
    */
   function hydrate() {
     if (!canRead) return Promise.resolve()
-    if (hydration === undefined) hydration = readPersisted()
+    if (hydration === undefined) hydration = readPersisted().then(retireLegacyOutboundRow)
     return hydration
+  }
+
+  /**
+   * Row 30 / U-P16: the bare `outbound` row belonged to the single pre-split legacy
+   * route. Gateway deliveries now own `outbound:<gatewayName>`, so nothing writes the
+   * bare row again. A persisted copy is retired deterministically as `unevaluated`
+   * (never `up`), announced once, and persisted so the stored and rendered rows agree.
+   */
+  async function retireLegacyOutboundRow() {
+    const legacy = surfaces.get(OPENCLAW_RETIRED_OUTBOUND_SURFACE)
+    if (legacy === undefined || legacy.state === "unevaluated") return
+    retireSurface(legacy)
+    emit(OPENCLAW_RETIRED_OUTBOUND_SURFACE, "info", null, `openclaw surface retired: ${OPENCLAW_RETIRED_OUTBOUND_SURFACE}`)
+    await persist()
   }
 
   async function readPersisted() {
@@ -221,6 +237,19 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
     return true
   }
 
+  function channelNameFromSurface(id) {
+    if (typeof id !== "string" || !id.startsWith("channels.")) return null
+    const name = id.slice("channels.".length)
+    return name.length > 0 ? name : null
+  }
+
+  function retireSurface(surface) {
+    surface.state = "unevaluated"
+    surface.errorClass = null
+    surface.consecutiveFailures = 0
+    surface.lastErrorAt = null
+  }
+
   /**
    * Reconcile the durable `fatal` rows against the setup verdict of THIS process.
    *
@@ -229,24 +258,44 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
    * whether it still holds. The document is durable, so without this a repaired
    * configuration or credential reference leaves a surface disabled in the report
    * for the life of the install. `kept` names the surfaces this process still
-   * considers fatal; every OTHER `fatal` row is cleared as a recovery.
+   * considers fatal.
+   *
+   * Gate 5 (row 29): a persisted `channels.<name>` fatal whose channel was NOT
+   * evaluated by this run must never be promoted to `up`. `evaluatedChannelNames`
+   * names the notification channels this run actually evaluated (resolved or
+   * diagnosed); a channel fatal absent from that set is retired as `unevaluated`
+   * instead of recovered. A channel fatal that WAS evaluated and is not kept is
+   * recovered to `up` (the configuration was repaired). Non-channel fatals keep
+   * the existing recovery behavior.
    *
    * Nothing else is touched: a `degraded` row is a runtime observation from
-   * traffic, and only traffic may prove it healed. When no `fatal` row remains
-   * this performs one read and no write, so a healthy install stays quiet.
+   * traffic, and only traffic may prove it healed. When no row changes this
+   * performs one read and no write, so a healthy install stays quiet.
    */
-  async function reconcileFatals(kept = []) {
+  async function reconcileFatals(kept = [], { evaluatedChannelNames } = {}) {
     const keep = new Set(Array.isArray(kept) ? kept.filter((id) => typeof id === "string") : [])
+    const evaluatedChannels = evaluatedChannelNames instanceof Set
+      ? evaluatedChannelNames
+      : Array.isArray(evaluatedChannelNames)
+        ? new Set(evaluatedChannelNames.filter((name) => typeof name === "string"))
+        : null
     await hydrate()
-    const cleared = []
+    const changed = []
     for (const [id, surface] of surfaces.entries()) {
       if (surface.state !== "fatal" || keep.has(id)) continue
+      const channelName = channelNameFromSurface(id)
+      if (channelName !== null && evaluatedChannels !== null && !evaluatedChannels.has(channelName)) {
+        retireSurface(surface)
+        emit(id, "info", null, `openclaw surface not evaluated by this run: ${id}`)
+        changed.push(id)
+        continue
+      }
       recoverSurface(surface)
       emit(id, "info", null, `openclaw surface recovered: ${id}`)
-      cleared.push(id)
+      changed.push(id)
     }
-    if (cleared.length > 0) await persist()
-    return cleared
+    if (changed.length > 0) await persist()
+    return changed
   }
 
   /** Aggregate only: §9.3 forbids a line per truncated event. */

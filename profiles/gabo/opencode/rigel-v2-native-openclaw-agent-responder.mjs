@@ -54,7 +54,10 @@ import {
   deriveOpenclawContextId,
   openclawConversationKey,
 } from "./rigel-v2-native-openclaw-agent-registry.mjs"
-import { truncateToBytes } from "./rigel-v2-native-openclaw-agent-queue.mjs"
+import {
+  OPENCLAW_QUEUE_REPLY_TIMEOUT_MS,
+  truncateToBytes,
+} from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import {
   OPENCLAW_AGENT_STATUS_SURFACE,
   OPENCLAW_A2A_REQUESTS_PER_MINUTE,
@@ -101,7 +104,7 @@ export function agentReplyPrefix(peerName) {
  * @param {() => number} [options.now]
  * @param {(line: string) => void} [options.log]
  * @param {() => string} [options.generateTaskId]
- * @param {{ setInterval: Function, clearInterval: Function }} [options.timers]
+ * @param {{ setInterval: Function, clearInterval: Function, setTimeout?: Function, clearTimeout?: Function }} [options.timers]
  */
 export function createOpenclawAgentResponder({
   peers = [],
@@ -124,12 +127,18 @@ export function createOpenclawAgentResponder({
   const draining = new Set()
   /** `(peer, contextId, taskId)` currently applying a terminal answer, so two paths cannot inject it twice. */
   const applying = new Set()
+  /** Conversation key -> its active drain, so shutdown can join it rather than race it. */
+  const drainPromises = new Map()
+  /** Claimed sends that are currently on the wire, indexed for deadline-bounded shutdown. */
+  const activeClaims = new Map()
   /** The pass in flight, so overlapping ticks serialize instead of polling the same task. */
   let inFlightPass = null
   const lifecycle = new AbortController()
   /** peer name -> request timestamps inside the sliding window. */
   const peerWindows = new Map()
   let timer = null
+  let accepting = true
+  let shutdownDeadlineExpired = false
 
   /**
    * The per-peer request budget (§10): thirty requests per minute, counting BOTH
@@ -280,18 +289,31 @@ export function createOpenclawAgentResponder({
    */
   async function performSend(target, contextId, claim) {
     const peerName = target.name
-    const outcome = await transport.send({
-      peer: peerName,
-      text: claim.text,
-      contextId,
-      messageId: `rigel-a2a-${claim.taskId}`,
-      signal: lifecycle.signal,
-      // The peer's client budget, which the resolver guarantees exceeds
-      // `replyTimeoutMs`: a blocking send may consume its whole budget and still
-      // be healthy.
-      timeoutMs: target.clientTimeoutMs,
-    })
+    const activeKey = `${openclawConversationKey(peerName, contextId)}\u0000${claim.taskId}`
+    activeClaims.set(activeKey, { peer: peerName, contextId, taskId: claim.taskId, deadlineAt: claim.deadlineAt })
+    let outcome
+    try {
+      outcome = await transport.send({
+        peer: peerName,
+        text: claim.text,
+        contextId,
+        messageId: `rigel-a2a-${claim.taskId}`,
+        signal: lifecycle.signal,
+        // The peer's client budget, which the resolver guarantees exceeds
+        // `replyTimeoutMs`: a blocking send may consume its whole budget and still
+        // be healthy.
+        timeoutMs: target.clientTimeoutMs,
+      })
+    } finally {
+      activeClaims.delete(activeKey)
+    }
     if (outcome.kind === "failed") {
+      if (shutdownDeadlineExpired && lifecycle.signal.aborted) {
+        const record = registry.lookup(peerName, contextId, claim.taskId)
+        if (record?.state === "shutdown-lost") {
+          return { kind: "failed", errorClass: "shutdown-deadline", taskId: claim.taskId, lost: true, shutdownLost: true }
+        }
+      }
       if (transport.isDefinitiveSendFailure(outcome.errorClass)) {
         // The request provably created no task (401/404/413 or a request-level
         // JSON-RPC error), so the record is settled instead of reported lost.
@@ -305,6 +327,9 @@ export function createOpenclawAgentResponder({
       await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: outcome.errorClass })
       log(`[oh-my-rigel] openclaw a2a task lost on send: peer=${peerName} task=${claim.taskId} reason=${outcome.errorClass}`)
       return { kind: "failed", errorClass: outcome.errorClass, taskId: claim.taskId, lost: true }
+    }
+    if (shutdownDeadlineExpired && registry.lookup(peerName, contextId, claim.taskId)?.state === "shutdown-lost") {
+      return { kind: "failed", errorClass: "shutdown-deadline", taskId: claim.taskId, lost: true, shutdownLost: true }
     }
     await registry.attachRemoteTask(peerName, contextId, claim.taskId, outcome.remoteTaskId)
     // The peer accepted the request, so the transport surface is healthy again: a
@@ -354,11 +379,14 @@ export function createOpenclawAgentResponder({
   /** Drain one conversation, guarded against a concurrent drain of the same one. */
   async function drainConversation(peerName, contextId) {
     const key = openclawConversationKey(peerName, contextId)
-    if (draining.has(key)) return null
+    if (draining.has(key)) return drainPromises.get(key) ?? null
     draining.add(key)
+    const drain = runDrain(peerName, contextId)
+    drainPromises.set(key, drain)
     try {
-      return await runDrain(peerName, contextId)
+      return await drain
     } finally {
+      drainPromises.delete(key)
       draining.delete(key)
     }
   }
@@ -372,6 +400,7 @@ export function createOpenclawAgentResponder({
    * `failed` with a named class otherwise. Nothing here returns a bare success.
    */
   async function send(input = {}) {
+    if (!accepting) return failure("shutting-down")
     const { sessionID, peer, text, agentId = OPENCLAW_AGENT_DEFAULT_AGENT_ID, contextId } = input
     const target = peerIndex.get(peer)
     if (target === undefined) return failure("unknown-peer")
@@ -409,15 +438,12 @@ export function createOpenclawAgentResponder({
     if (!enqueued.accepted) return failure(enqueued.reason)
     if (busy) return { kind: "task", taskId, state: "submitted", queued: true }
 
-    draining.add(conversation)
     let receipts
     try {
-      receipts = await runDrain(target.name, resolvedContext)
+      receipts = await drainConversation(target.name, resolvedContext)
     } catch (error) {
       log(`[oh-my-rigel] Native V2 openclaw a2a dispatch failed: ${error instanceof Error ? error.message : String(error)}`)
       receipts = null
-    } finally {
-      draining.delete(conversation)
     }
     const mine = receipts?.get(taskId)
     if (mine !== undefined) return mine
@@ -478,12 +504,15 @@ export function createOpenclawAgentResponder({
       if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) continue
       if (typeof record.remoteTaskId === "string") continue
       if (queue.hasPayload(record.peer, record.contextId, record.taskId)) continue
-      const marked = await queue.markLost({
+      const changed = await queue.markLost({
         peer: record.peer,
         contextId: record.contextId,
         taskId: record.taskId,
       })
-      if (!marked) continue
+      // A loss is counted only when the record really transitioned: the record
+      // may have settled between the snapshot above and this call, and a second
+      // outcome is never applied to a terminal task.
+      if (!changed) continue
       result.lost += 1
       await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-lost" })
       log(`[oh-my-rigel] openclaw a2a task lost before send: peer=${record.peer} task=${record.taskId}`)
@@ -561,6 +590,77 @@ export function createOpenclawAgentResponder({
     return true
   }
 
+  /**
+   * How long shutdown may still wait for a drain, in milliseconds.
+   *
+   * A drain is BETWEEN claims most of the time, so `activeClaims` can be empty
+   * while a send is still in flight. An empty map used to yield `Infinity`, and
+   * the platform clamps that to one millisecond: shutdown declared the pending
+   * tasks `shutdown-lost` without ever giving them the reply budget this path
+   * promises. Several claims can be on the wire at once, one per conversation, so
+   * the wait has to cover the LATEST of their finite deadlines: the earliest
+   * belongs to the send that expires first, and stopping there aborts a send that
+   * still had budget of its own. The answer is that latest deadline, or a full
+   * reply window when no claim carries one, always finite and never longer than
+   * one reply window measured from now.
+   */
+  function shutdownWaitMs() {
+    const declared = queue.replyTimeoutMs?.()
+    const replyTimeoutMs = Number.isFinite(declared) && declared > 0
+      ? declared
+      : OPENCLAW_QUEUE_REPLY_TIMEOUT_MS
+    const current = now()
+    // The upper bound is one reply window from now, so no claim, however stale,
+    // can stretch the wait past what a send is ever granted when it is claimed.
+    const upperBound = current + replyTimeoutMs
+    const deadlines = [...activeClaims.values()]
+      .map((claim) => claim.deadlineAt)
+      .filter((deadline) => Number.isFinite(deadline))
+    const deadlineAt = deadlines.length > 0 ? Math.max(...deadlines) : upperBound
+    return Math.min(Math.max(0, deadlineAt - current), replyTimeoutMs)
+  }
+
+  /**
+   * Stop admitting new work, then give queued and in-flight sends the same bounded
+   * reply budget they received when claimed. A deadline is a distinct terminal
+   * outcome, not a crash and never an authorization to resend.
+   */
+  async function shutdown() {
+    accepting = false
+    queue.closeAdmissions?.()
+    stop()
+    const drains = [...drainPromises.values()]
+    const finish = Promise.allSettled(drains)
+    // Only a drain needs the wait; with nothing in flight the terminal marking
+    // below is already the honest outcome and must not be delayed.
+    const remaining = drains.length > 0 ? shutdownWaitMs() : 0
+    if (remaining > 0) {
+      const scheduleTimeout = timers.setTimeout ?? setTimeout
+      const cancelTimeout = timers.clearTimeout ?? clearTimeout
+      let timeout
+      const deadline = new Promise((resolve) => { timeout = scheduleTimeout(resolve, remaining) })
+      const outcome = await Promise.race([finish.then(() => "drained"), deadline.then(() => "deadline")])
+      cancelTimeout(timeout)
+      if (outcome === "drained") return { drained: true, shutdownLost: 0 }
+    }
+    shutdownDeadlineExpired = true
+    let shutdownLost = 0
+    for (const record of registry.list()) {
+      if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) continue
+      if (typeof record.remoteTaskId === "string") continue
+      const changed = await queue.markShutdownLost({ peer: record.peer, contextId: record.contextId, taskId: record.taskId })
+      if (!changed) continue
+      shutdownLost += 1
+      await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-shutdown-lost" })
+      log(`[oh-my-rigel] openclaw a2a task lost at shutdown deadline: peer=${record.peer} task=${record.taskId}`)
+    }
+    // Mark before aborting. An abort can resolve the in-flight send immediately;
+    // its handler must observe the distinct terminal state rather than race it into
+    // the crash-only `lost` residual.
+    lifecycle.abort()
+    return { drained: false, shutdownLost }
+  }
+
   /** Terminal teardown: stop, abort in-flight requests, drop the bindings. */
   function dispose() {
     stop()
@@ -574,6 +674,7 @@ export function createOpenclawAgentResponder({
     drainConversation,
     start,
     stop,
+    shutdown,
     dispose,
     agentReplyPrefix,
     status: () => ({

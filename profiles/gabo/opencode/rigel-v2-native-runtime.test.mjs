@@ -13,6 +13,8 @@ import { readAgentOverridesFromConfig } from "./rigel-v2-native-config.mjs"
 import { INTERRUPTED_TOOL_ERROR } from "./rigel-v2-flow-logic.mjs"
 import { gptEditGuidanceBlock } from "./rigel-v2-native-gpt-edit-guidance.mjs"
 import { CONTINUATION_PROMPT_MARKER } from "./rigel-v2-native-request-steps.mjs"
+import { OPENCLAW_STATUS_KEY, createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
+import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
 
 // Deterministic event feed for the reactive-fallback tests. The generator
 // blocks until an event is pushed, and signals consumption only AFTER the
@@ -2990,4 +2992,154 @@ test("native runtime updates the host webfetch executor without replacing its de
   } finally {
     await dispose()
   }
+})
+
+// Final-wave F1 gap 1: `/openclaw-status` is defined in its own module and wired
+// in `rigel-v2-native.mjs` behind `openclaw.hasReport()`, but no test drove the
+// real setup boundary to prove the command actually lands on the host editor.
+// The registration unit test exercises `registerOpenclawStatusCommand` directly,
+// so a wiring regression (a dropped call, a gate that never sees the enabled
+// surface) would leave it green. This drives `plugin.setup` end to end: the
+// openclaw block is resolved from the live `~/.omo/omo.jsonc` chain, the
+// composition starts enabled, and the captured `command.transform` editor must
+// receive the command exactly once.
+const LIVE_OPENCLAW_BLOCK = {
+  enabled: true,
+  gateways: { hook: { url: "https://gateway.test/hook" } },
+  hooks: { "session.idle": { gateway: "hook", instruction: "notify {{sessionId}}" } },
+}
+
+// The V2 storage domain the status document persists into. Only `get`/`set` are
+// read by `createOpenclawStatusDocument`; the Map is what a restarted process
+// reads back, so it is also the restart fixture below.
+function openclawStorage() {
+  const map = new Map()
+  return {
+    map,
+    get: async (key) => map.get(key),
+    set: async (key, value) => { map.set(key, value) },
+  }
+}
+
+const OPENCLAW_OK_FETCH = async () => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => "{}" })
+
+test("#given native setup with openclaw enabled #when setup completes #then the status command is registered once", async () => {
+  await withLiveOmoConfig({ "[opencode]": { openclaw: LIVE_OPENCLAW_BLOCK } }, async () => {
+    // given: a setup context whose command editor records every registration
+    const registered = []
+    const deliveries = []
+    const context = {
+      ...editorCaptureContext().context,
+      storage: openclawStorage(),
+      session: {
+        hook: async () => ({ dispose() {} }),
+        create: async () => ({ data: { id: "ses_openclaw" } }),
+        prompt: async (input) => { deliveries.push(input); return { data: {} } },
+      },
+      command: {
+        transform: async (callback) => {
+          callback({ add: (definition) => registered.push(definition) })
+          return { dispose() {} }
+        },
+      },
+    }
+
+    // when
+    const dispose = await plugin.setup(context)
+    try {
+      // then: one registration, and it is a live reader of the enabled surface
+      const statusCommands = registered.filter((definition) => definition?.name === "openclaw-status")
+      expect(statusCommands).toHaveLength(1)
+      // Setup itself is not a report: nothing reaches the session turn until the
+      // command is actually invoked.
+      expect(deliveries).toHaveLength(0)
+      await statusCommands[0].execute({ sessionID: "ses_openclaw", prompt: { text: "/openclaw-status" }, delivery: "queue" })
+      expect(deliveries).toHaveLength(1)
+      expect(deliveries[0].text).toContain("openclaw: enabled")
+    } finally {
+      await dispose()
+    }
+  })
+})
+
+// Final-wave F1 gap 2: the retirement of a `channels.<name>` fatal that this run
+// never evaluated is covered, but not across a process boundary. The document is
+// durable, so the restart is where a row could come back: a new composition
+// hydrates the persisted copy and reconciles it again. It must stay
+// `unevaluated` - never `up` (Gate 5: nothing established it) and never `fatal`
+// (the setup that just ran did not judge it).
+test("#given a retired unevaluated channel row #when the process restarts and reports again #then it is never resurrected as up", async () => {
+  // given: a durable channel fatal the live block no longer configures, so the
+  // run that follows retires it instead of establishing it
+  const storage = openclawStorage()
+  const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+  await previous.recordFailure("channels.alerts", { errorClass: "missing-env-variable", fatal: true, emitLine: false })
+  const first = createNativeOpenclaw({
+    context: { storage, session: { prompt: async () => ({ data: {} }) } },
+    config: LIVE_OPENCLAW_BLOCK,
+    fetchImpl: OPENCLAW_OK_FETCH,
+    env: {},
+    log: () => {},
+  })
+  await first.ready
+  const retired = await first.report()
+  expect(retired.surfaces["channels.alerts"].state).toBe("unevaluated")
+  await first.dispose()
+
+  // when: a NEW process composes over the same storage and reads the report again
+  const restarted = createNativeOpenclaw({
+    context: { storage, session: { prompt: async () => ({ data: {} }) } },
+    config: LIVE_OPENCLAW_BLOCK,
+    fetchImpl: OPENCLAW_OK_FETCH,
+    env: {},
+    log: () => {},
+  })
+  await restarted.ready
+  const afterRestart = await restarted.report()
+
+  // then: the row survived the restart - which is why it is hydrated at all -
+  // and the second reconciliation neither promoted nor re-fatalized it
+  const row = afterRestart.surfaces["channels.alerts"]
+  expect(row).toBeDefined()
+  expect(row.state).not.toBe("up")
+  expect(row.state).not.toBe("fatal")
+  expect(row.state).toBe("unevaluated")
+  expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces["channels.alerts"].state).toBe("unevaluated")
+  await restarted.dispose()
+})
+
+// PR #106 review finding 1: an install with `[opencode].openclaw.enabled =
+// false` evaluates ZERO notification channels, which is not the same state as a
+// run that does not track channels at all. Passing `undefined` for the evaluated
+// set conflated the two: `reconcileFatals` saw `null` and skipped its retire
+// branch, so a persisted `channels.<name>` fatal was promoted to `up` by a run
+// that never looked at that channel. Gate 5 (row 29) applies here too - nothing
+// established the surface, so it stays `unevaluated`, never reported up.
+test("#given openclaw disabled #when a persisted channel fatal exists #then it is retired as unevaluated and never reported up", async () => {
+  // given: a durable channel fatal an earlier enabled run recorded
+  const storage = openclawStorage()
+  const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+  await previous.recordFailure("channels.alerts", { errorClass: "missing-env-variable", fatal: true, emitLine: false })
+
+  // and: this run composes with the whole surface disabled, so it evaluates no channel
+  const disabled = createNativeOpenclaw({
+    context: { storage, session: { prompt: async () => ({ data: {} }) } },
+    config: { enabled: false },
+    fetchImpl: OPENCLAW_OK_FETCH,
+    env: {},
+    log: () => {},
+  })
+  await disabled.ready
+
+  // when
+  const afterReport = await disabled.report()
+
+  // then: retired as unevaluated - never promoted to up by a run that judged
+  // nothing, and never re-fatalized either
+  const row = afterReport.surfaces["channels.alerts"]
+  expect(row).toBeDefined()
+  expect(row.state).not.toBe("up")
+  expect(row.state).toBe("unevaluated")
+  expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces["channels.alerts"].state).toBe("unevaluated")
+  await disabled.dispose()
 })

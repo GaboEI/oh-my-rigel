@@ -5,7 +5,10 @@ import {
   createOpenclawAgentRegistry,
   deriveOpenclawContextId,
 } from "./rigel-v2-native-openclaw-agent-registry.mjs"
-import { createOpenclawAgentQueue } from "./rigel-v2-native-openclaw-agent-queue.mjs"
+import {
+  OPENCLAW_QUEUE_REPLY_TIMEOUT_MS,
+  createOpenclawAgentQueue,
+} from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import {
   OPENCLAW_AGENT_REPLY_SURFACE,
   agentReplyPrefix,
@@ -121,10 +124,10 @@ async function waitFor(predicate, label, timeoutMs = 2_000) {
   throw new Error(`waited ${timeoutMs}ms for ${label}, never happened`)
 }
 
-function harness({ send = [], getTask = [], deliver = injectionRecorder(), peers } = {}) {
+function harness({ send = [], getTask = [], deliver = injectionRecorder(), peers, storage: existingStorage } = {}) {
   const order = []
   const time = clock()
-  const storage = spyStorage(order)
+  const storage = existingStorage ?? spyStorage(order)
   const registry = createOpenclawAgentRegistry({ storage, now: time.now })
   const status = statusRecorder()
   const queue = createOpenclawAgentQueue({ registry, status, now: time.now })
@@ -143,6 +146,112 @@ function harness({ send = [], getTask = [], deliver = injectionRecorder(), peers
   return { order, time, storage, registry, status, queue, transport, responder, fetchImpl, deliver, peers: resolved }
 }
 
+/**
+ * Deadline timers a test drives by hand. The shutdown budget is measured in
+ * wall-clock milliseconds, so a test that waited it out for real would take two
+ * minutes; the responder accepts its timer object, and this one records the
+ * delays it was asked for and fires them only when the test says so.
+ */
+function deadlineTimers() {
+  const scheduled = []
+  return {
+    scheduled,
+    setInterval: () => null,
+    clearInterval: () => {},
+    setTimeout: (run, ms) => {
+      const handle = { run, ms, cancelled: false }
+      scheduled.push(handle)
+      return handle
+    },
+    clearTimeout: (handle) => {
+      if (handle) handle.cancelled = true
+    },
+    fireAll: () => {
+      for (const handle of scheduled) if (!handle.cancelled) handle.run()
+    },
+  }
+}
+
+/**
+ * A responder whose drain is BETWEEN claims, which is the state the shutdown
+ * budget has to survive: `activeClaims` is empty while a drain is still running.
+ * `claimNext` never answers (or answers after `releaseClaimAfterMs`), so the
+ * drain is in flight for the whole test and no claim is ever registered.
+ */
+function shutdownFixture({ replyTimeoutMs, timers = deadlineTimers(), releaseClaimAfterMs } = {}) {
+  const order = []
+  const time = clock()
+  const storage = spyStorage(order)
+  const registry = createOpenclawAgentRegistry({ storage, now: time.now })
+  const status = statusRecorder()
+  const queue = createOpenclawAgentQueue({ registry, status, now: time.now, replyTimeoutMs })
+  const settledClaim = releaseClaimAfterMs === undefined
+    ? null
+    : new Promise((resolve) => { setTimeout(() => resolve(null), releaseClaimAfterMs) })
+  const heldQueue = {
+    ...queue,
+    claimNext: () => settledClaim ?? new Promise(() => {}),
+  }
+  const resolved = resolveOpenclawAgentPeers(
+    { enabled: true, peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } } },
+    { env: { ALPHA_TOKEN: "alpha-secret" } },
+  )
+  const transport = createOpenclawAgentTransport({
+    peers: resolved.peers,
+    fetchImpl: async () => { throw new Error("shutdown fixture: no request expected") },
+    now: time.now,
+  })
+  const responder = createOpenclawAgentResponder({
+    peers: resolved.peers,
+    registry,
+    queue: heldQueue,
+    transport,
+    status,
+    deliverAgentReply: injectionRecorder(),
+    now: time.now,
+    timers,
+  })
+  return { order, time, storage, registry, status, queue: heldQueue, transport, responder, timers }
+}
+
+/**
+ * Two conversations whose sends are on the wire at once. A claim's deadline is
+ * `claimedAt + replyTimeoutMs`, so advancing the shared clock between the two
+ * sends gives them different deadlines, and the transport holds both requests so
+ * neither claim is released before `shutdown()` reads them.
+ */
+function multiClaimFixture({ replyTimeoutMs }) {
+  const order = []
+  const time = clock()
+  const storage = spyStorage(order)
+  const registry = createOpenclawAgentRegistry({ storage, now: time.now })
+  const status = statusRecorder()
+  const queue = createOpenclawAgentQueue({ registry, status, now: time.now, replyTimeoutMs })
+  const resolved = resolveOpenclawAgentPeers(
+    { enabled: true, peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } } },
+    { env: { ALPHA_TOKEN: "alpha-secret" } },
+  )
+  const sends = []
+  const transport = {
+    send: (request) => {
+      sends.push(request)
+      return new Promise(() => {})
+    },
+    isDefinitiveSendFailure: () => false,
+  }
+  const timers = deadlineTimers()
+  const responder = createOpenclawAgentResponder({
+    peers: resolved.peers,
+    registry,
+    queue,
+    transport,
+    status,
+    deliverAgentReply: injectionRecorder(),
+    now: time.now,
+    timers,
+  })
+  return { order, time, storage, registry, status, queue, transport, responder, timers, sends }
+}
 describe("openclaw A2A conversational send", () => {
   test("#given text that starts with a slash #when sending #then it is rejected before a task or a request exists", async () => {
     const { responder, registry, status, fetchImpl, order } = harness()
@@ -307,15 +416,199 @@ describe("openclaw A2A reconciliation", () => {
   })
 
   test("#given a write-ahead record whose payload never reached a send #when reconciling #then it is reported as lost, never discarded", async () => {
-    const { responder, registry, status } = harness()
+    const order = []
+    const storage = spyStorage(order)
+    const beforeCrash = createOpenclawAgentRegistry({ storage })
     // Exactly the state a crash between write-ahead and send leaves behind: a
     // record and no payload to send, so no vendor id can ever be learned.
-    await registry.register({ peer: "alpha", contextId: "rigel-crashed", taskId: "task-crashed", sessionID: SESSION_A, agentId: "rigel" })
+    await beforeCrash.register({ peer: "alpha", contextId: "rigel-crashed", taskId: "task-crashed", sessionID: SESSION_A, agentId: "rigel" })
+    const durableSnapshot = structuredClone([...storage.map.entries()])
+    const { responder, registry, status, fetchImpl } = harness({ storage })
+    await registry.hydrate()
     const pass = await responder.reconcileOnce()
 
     expect(pass.lost).toBe(1)
     expect(registry.lookup("alpha", "rigel-crashed", "task-crashed").state).toBe("lost")
-    expect(status.failures.map((entry) => entry.errorClass)).toContain("task-lost")
+    expect(status.failures).toEqual([{ id: OPENCLAW_AGENT_STATUS_SURFACE, errorClass: "task-lost" }])
+    expect(fetchImpl.posts()).toHaveLength(0)
+    expect(responder.status().pending).toBe(0)
+    expect(durableSnapshot[0][1]).not.toHaveProperty("shutdownOutcome")
+  })
+
+  test("#given a shutdown deadline expires during a SendMessage #when the composition disposes #then shutdown-lost is distinct from crash loss", async () => {
+    const order = []
+    const storage = spyStorage(order)
+    const time = clock()
+    let sendStarted
+    const started = new Promise((resolve) => { sendStarted = resolve })
+    const fetchImpl = async (_url, init = {}) => {
+      const body = JSON.parse(init.body)
+      if (body.method === "SendMessage") {
+        sendStarted()
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true })
+        })
+      }
+      throw new Error(`unexpected ${body.method}`)
+    }
+    const config = {
+      enabled: true,
+      channels: {
+        a2a: {
+          enabled: true,
+          peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } },
+        },
+      },
+    }
+    const first = createNativeOpenclaw({
+      context: { storage, session: { prompt: async () => ({}) } },
+      config,
+      env: { ALPHA_TOKEN: "alpha-secret" },
+      fetchImpl,
+      now: time.now,
+      log: () => {},
+    })
+    await first.ready
+    const sending = first.agentCore.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "hello" })
+    await started
+    time.advance(120_000)
+
+    await first.dispose()
+    expect(await sending).toMatchObject({ kind: "failed", errorClass: "shutdown-deadline", shutdownLost: true })
+    expect(first.status().agent.surfaces.a2a.errorClass).toBe("task-shutdown-lost")
+
+    const restarted = createNativeOpenclaw({
+      context: { storage, session: { prompt: async () => ({}) } },
+      config,
+      env: { ALPHA_TOKEN: "alpha-secret" },
+      fetchImpl,
+      now: time.now,
+      log: () => {},
+    })
+    await restarted.ready
+    await restarted.agentCore.responder.reconcileOnce()
+    const record = restarted.agentCore.registry.list()[0]
+    expect(record.state).toBe("shutdown-lost")
+    expect(record.remoteTaskId).toBeUndefined()
+    await restarted.dispose()
+  })
+
+  test("#given an in-flight SendMessage finishes before its reply deadline #when the composition disposes #then the turn drains without a shutdown loss", async () => {
+    const order = []
+    const storage = spyStorage(order)
+    let sendStarted
+    let releaseSend
+    const started = new Promise((resolve) => { sendStarted = resolve })
+    const sendAnswer = new Promise((resolve) => { releaseSend = resolve })
+    const fetchImpl = async (_url, init = {}) => {
+      const body = JSON.parse(init.body)
+      if (body.method !== "SendMessage") throw new Error(`unexpected ${body.method}`)
+      sendStarted()
+      return sendAnswer
+    }
+    const config = {
+      enabled: true,
+      channels: {
+        a2a: {
+          enabled: true,
+          peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } },
+        },
+      },
+    }
+    const native = createNativeOpenclaw({
+      context: { storage, session: { prompt: async () => ({}) } },
+      config,
+      env: { ALPHA_TOKEN: "alpha-secret" },
+      fetchImpl,
+      log: () => {},
+    })
+    await native.ready
+    void native.agentCore.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "hello" })
+    await started
+
+    const disposing = native.dispose()
+    releaseSend({ ok: true, status: 200, text: async () => JSON.stringify(taskAnswer("WORKING")) })
+    await disposing
+
+    expect(native.agentCore.registry.list()[0]).toMatchObject({ state: "submitted", remoteTaskId: "task-working" })
+    expect(await native.agentCore.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "later" })).toEqual({ kind: "failed", errorClass: "shutting-down" })
+    expect(storage.map.size).toBe(1)
+  })
+
+  test("#given a drain in flight and no active claim #when shutdown is called #then it waits the reply budget before marking shutdown-lost", async () => {
+    const fixture = shutdownFixture()
+    await fixture.registry.register({
+      peer: "alpha",
+      contextId: "rigel-held",
+      taskId: "task-held",
+      sessionID: SESSION_A,
+      agentId: "rigel",
+    })
+    // The drain sits between claims for the whole test: nothing is on the wire,
+    // so no claim carries a deadline shutdown could borrow.
+    void fixture.responder.drainConversation("alpha", "rigel-held")
+
+    const shuttingDown = fixture.responder.shutdown()
+    // Long enough for an instant give-up to have happened: the pre-fix budget was
+    // `Infinity`, which the platform clamps to one millisecond.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(fixture.registry.list()[0].state).toBe("submitted")
+    expect(fixture.timers.scheduled.map((handle) => handle.ms)).toEqual([OPENCLAW_QUEUE_REPLY_TIMEOUT_MS])
+
+    fixture.timers.fireAll()
+    expect(await shuttingDown).toEqual({ drained: false, shutdownLost: 1 })
+    expect(fixture.registry.list()[0].state).toBe("shutdown-lost")
+  })
+
+  test("#given a drain in flight and no active claim #when the drain settles within the budget #then shutdown reports drained", async () => {
+    // The claim answers after a real, short delay, and the queue's reply budget is
+    // far longer than it, so a shutdown that honours the budget sees the drain
+    // finish. The pre-fix budget did not: `Infinity` fires after one millisecond.
+    const fixture = shutdownFixture({ replyTimeoutMs: 500, releaseClaimAfterMs: 25 })
+    void fixture.responder.drainConversation("alpha", "rigel-held")
+
+    expect(await fixture.responder.shutdown()).toEqual({ drained: true, shutdownLost: 0 })
+  })
+
+  test("#given two active claims with different deadlines #when shutdown is called #then it waits for the latest finite deadline, not the earliest", async () => {
+    // Claim one at t0 (deadline t0+5000); claim two at t0+1000 (deadline t0+6000).
+    const fixture = multiClaimFixture({ replyTimeoutMs: 5000 })
+    void fixture.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "first" })
+    await waitFor(() => fixture.sends.length === 1, "the first SendMessage")
+    fixture.time.advance(1000)
+    void fixture.responder.send({ sessionID: SESSION_B, peer: "alpha", text: "second" })
+    await waitFor(() => fixture.sends.length === 2, "the second SendMessage")
+
+    const shuttingDown = fixture.responder.shutdown()
+
+    // The later claim still has its whole 5000 ms budget; the earlier one has 4000
+    // left. Waiting on the earliest aborts a send that was never out of time.
+    expect(fixture.timers.scheduled.map((handle) => handle.ms)).toEqual([5000])
+    expect(fixture.registry.list().map((record) => record.state)).toEqual(["submitted", "submitted"])
+
+    fixture.timers.fireAll()
+    expect(await shuttingDown).toEqual({ drained: false, shutdownLost: 2 })
+  })
+
+  test("#given an already expired earliest claim and a live later claim #when shutdown is called #then it still waits for the live claim", async () => {
+    const fixture = multiClaimFixture({ replyTimeoutMs: 5000 })
+    void fixture.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "first" })
+    await waitFor(() => fixture.sends.length === 1, "the first SendMessage")
+    // Past claim one's deadline (t0+5000), so only the claim taken below is live.
+    fixture.time.advance(6000)
+    void fixture.responder.send({ sessionID: SESSION_B, peer: "alpha", text: "second" })
+    await waitFor(() => fixture.sends.length === 2, "the second SendMessage")
+
+    const shuttingDown = fixture.responder.shutdown()
+
+    // The earliest claim has no budget left, but the later one has a full reply
+    // window. An expired deadline is not "nothing to wait for".
+    expect(fixture.timers.scheduled.map((handle) => handle.ms)).toEqual([5000])
+    expect(fixture.registry.list().map((record) => record.state)).toEqual(["submitted", "submitted"])
+
+    fixture.timers.fireAll()
+    expect(await shuttingDown).toEqual({ drained: false, shutdownLost: 2 })
   })
 
   test("#given a failed check #when reconciling #then the task stays pending and the failure is reported as a check, not a task failure", async () => {

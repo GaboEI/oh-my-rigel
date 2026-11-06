@@ -7,7 +7,6 @@ import {
   OPENCLAW_INJECTION_STATUS_SURFACE,
   OPENCLAW_TELEGRAM_STATUS_SURFACE,
 } from "./rigel-v2-native-openclaw-inbound.mjs"
-import { OPENCLAW_OUTBOUND_STATUS_SURFACE } from "./rigel-v2-native-openclaw-outbound.mjs"
 import { OPENCLAW_STATUS_KEY, createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
 import {
   OPENCLAW_STATUS_COMMAND_NAME,
@@ -33,6 +32,8 @@ import {
 // additive and a healthy legacy dispatch still writes nothing.
 
 const STATUS_PREFIX = "[oh-my-rigel] openclaw surface "
+// Row 30 / U-P16: a legacy gateway delivery owns the row `outbound:<gatewayName>`.
+const OUTBOUND_ROW = "outbound:hook"
 
 function memoryStorage() {
   const map = new Map()
@@ -165,7 +166,7 @@ describe("openclaw status: a fatal leaves a startup banner and a fatal surface",
     await previous.recordFailure("config", { errorClass: "OpenclawConfigValidationError", fatal: true, emitLine: false })
     await previous.recordFailure("credentials.discord", { errorClass: "missing-env-variable", fatal: true, emitLine: false })
     // A runtime degradation is NOT a setup verdict: only traffic can prove it healed.
-    await previous.recordFailure(OPENCLAW_OUTBOUND_STATUS_SURFACE, { errorClass: "http-500" })
+    await previous.recordFailure(OUTBOUND_ROW, { errorClass: "http-500" })
     const native = createNativeOpenclaw({
       context: context(storage),
       config: LEGACY_CONFIG,
@@ -180,7 +181,7 @@ describe("openclaw status: a fatal leaves a startup banner and a fatal surface",
     // then
     expect(report.surfaces.config).toMatchObject({ state: "up", errorClass: null, consecutiveFailures: 0 })
     expect(report.surfaces["credentials.discord"]).toMatchObject({ state: "up", errorClass: null, consecutiveFailures: 0 })
-    expect(report.surfaces[OPENCLAW_OUTBOUND_STATUS_SURFACE]).toMatchObject({ state: "degraded", errorClass: "http-500" })
+    expect(report.surfaces[OUTBOUND_ROW]).toMatchObject({ state: "degraded", errorClass: "http-500" })
     // One line per transition: exactly the two recoveries, and none on a second read.
     const recoveries = () => statusLines(lines).filter((line) => line.includes("surface recovered:"))
     expect(recoveries()).toEqual([
@@ -201,7 +202,7 @@ describe("openclaw status: a fatal leaves a startup banner and a fatal surface",
     const afterRestart = await restarted.report()
     expect(afterRestart.surfaces.config.state).toBe("up")
     expect(afterRestart.surfaces["credentials.discord"].state).toBe("up")
-    expect(afterRestart.surfaces[OPENCLAW_OUTBOUND_STATUS_SURFACE]).toMatchObject({ state: "degraded" })
+    expect(afterRestart.surfaces[OUTBOUND_ROW]).toMatchObject({ state: "degraded" })
     await restarted.dispose()
     await native.dispose()
   })
@@ -248,7 +249,7 @@ describe("openclaw status: one line per transition", () => {
     await native.handleEvent({ type: "session.idle", sessionID: "s1" })
     await native.handleEvent({ type: "session.idle", sessionID: "s2" })
     const afterRepeat = statusLines(lines)
-    const degradedTwice = (await native.report()).surfaces[OPENCLAW_OUTBOUND_STATUS_SURFACE]
+    const degradedTwice = (await native.report()).surfaces[OUTBOUND_ROW]
 
     mode = "http-503"
     await native.handleEvent({ type: "session.idle", sessionID: "s3" })
@@ -260,14 +261,14 @@ describe("openclaw status: one line per transition", () => {
 
     // then
     expect(afterRepeat).toHaveLength(1)
-    expect(afterRepeat[0]).toContain(`surface degraded: ${OPENCLAW_OUTBOUND_STATUS_SURFACE} (http-500)`)
+    expect(afterRepeat[0]).toContain(`surface degraded: ${OUTBOUND_ROW} (http-500)`)
     expect(afterRepeat[0]).toContain("after 1 consecutive failure(s)")
     expect(degradedTwice).toMatchObject({ state: "degraded", consecutiveFailures: 2 })
     expect(statusLines(lines)).toHaveLength(4)
     expect(statusLines(lines)[1]).toContain("(http-503)")
     expect(statusLines(lines)[2]).toContain("(transport-error)")
-    expect(statusLines(lines)[3]).toContain(`surface recovered: ${OPENCLAW_OUTBOUND_STATUS_SURFACE}`)
-    expect(final.surfaces[OPENCLAW_OUTBOUND_STATUS_SURFACE]).toMatchObject({ state: "up", consecutiveFailures: 0 })
+    expect(statusLines(lines)[3]).toContain(`surface recovered: ${OUTBOUND_ROW}`)
+    expect(final.surfaces[OUTBOUND_ROW]).toMatchObject({ state: "up", consecutiveFailures: 0 })
     await native.dispose()
   })
 
@@ -701,5 +702,191 @@ describe("openclaw status: /openclaw-status reflects the document", () => {
     expect(delivered[0].text).not.toContain(secret)
     expect(delivered[0].text).not.toContain("TELEGRAM_MISSING")
     await native.dispose()
+  })
+
+  // Row 29 / U-P10 (Gate 5, finding #10): a persisted `channels.<name>` fatal for a
+  // channel this run did NOT evaluate must never be promoted to `up`. Reachable
+  // fixture only: `enabled: true`, a persisted channel fatal from an earlier run, and
+  // that channel no longer present in the configuration, so setup does not evaluate it
+  // and the keep set omits it. `hasReport()` is true because the surface is enabled
+  // (and a recorded state exists), so the command is registered and `report()` runs.
+  // The `enabled:false` + empty setup-fatals form is deliberately NOT used: `hasReport()`
+  // reads an in-memory map without hydrating, so the command is never registered and
+  // `reconcileFatals` never runs (unreachable; 06-critique O7, 04-audit §5.3).
+  test("#given a persisted channel fatal for a channel this run did not evaluate #when the report is read #then the row is never rendered healthy and the command is reachable", async () => {
+    // given
+    const lines = []
+    const storage = memoryStorage()
+    const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+    await previous.recordFailure("channels.alerts", { errorClass: "missing-env-variable", fatal: true, emitLine: false })
+    // A runtime degradation is NOT a setup verdict: only traffic can prove it healed.
+    await previous.recordFailure(OUTBOUND_ROW, { errorClass: "http-500" })
+    const native = createNativeOpenclaw({
+      context: context(storage),
+      // `channels.alerts` is absent: setup does not evaluate it and the keep set omits it.
+      config: LEGACY_CONFIG,
+      fetchImpl: recordingFetch(() => okGateway()),
+      log: (line) => lines.push(line),
+    })
+
+    // when
+    await native.ready
+    // Control: the fixture is reachable (enabled surface => command registration).
+    expect(native.hasReport()).toBe(true)
+    const report = await native.report()
+
+    // then: the removed channel is never rendered healthy (Gate 5: not established by this run).
+    expect(report.surfaces["channels.alerts"]).toBeDefined()
+    expect(report.surfaces["channels.alerts"].state).toBe("unevaluated")
+    // Gate 5 representation is explicit in the rendered report (not `up`).
+    expect(formatOpenclawStatusReport(report)).toContain("- channels.alerts: unevaluated")
+    expect(formatOpenclawStatusReport(report)).not.toContain("- channels.alerts: up")
+    // A runtime degradation is still traffic-owned and must not be cleared by setup reconciliation.
+    expect(report.surfaces[OUTBOUND_ROW]).toMatchObject({ state: "degraded", errorClass: "http-500" })
+    // Idempotent: a second report produces no duplicated transition line for the unevaluated row.
+    const before = statusLines(lines).length
+    const second = await native.report()
+    expect(statusLines(lines).length).toBe(before)
+    expect(second.surfaces["channels.alerts"].state).toBe("unevaluated")
+    // Persisted snapshot matches the rendered state.
+    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces["channels.alerts"].state).toBe("unevaluated")
+    await native.dispose()
+  })
+})
+
+// Row 30 / U-P16 (Gate 5, finding #16): every platform and channel owns its own row.
+// A legacy gateway delivery is `outbound:<gatewayName>`; a `channels.<name>` route is
+// `channels.<name>`; the bare `outbound` row is retired, never rendered `up`.
+describe("openclaw status: row 30 one row per platform and channel", () => {
+  const BASES = {
+    RIGEL_OPENCLAW_DISCORD_API_BASE: "http://127.0.0.1:9/discord",
+    RIGEL_OPENCLAW_TELEGRAM_API_BASE: "http://127.0.0.1:9/telegram",
+  }
+  const CHANNELS_CONFIG = {
+    enabled: true,
+    channels: {
+      alerts: { transport: "discord", token: "synthetic-discord-token", channelId: "chan-1", instruction: "finished {{sessionId}}", events: ["session.idle"] },
+      ops: { transport: "telegram", token: "synthetic-telegram-token", chatId: "42", instruction: "finished {{sessionId}}", events: ["session.idle"] },
+    },
+  }
+  function jsonReply(payload, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: { get: () => null }, json: async () => payload, text: async () => JSON.stringify(payload) }
+  }
+  const DISCORD_OK = () => jsonReply({ id: "m-9", channel_id: "chan-1" })
+  const TELEGRAM_OK = () => jsonReply({ ok: true, result: { message_id: 500, chat: { id: 42 } } })
+  function platformFetch(outcomes) {
+    return recordingFetch(async (url) => (url.includes("/discord") ? outcomes.discord() : outcomes.telegram()))
+  }
+
+  test("#given a Discord failure and a Telegram success in one event #when both report #then the Discord row stays degraded and no legacy row appears", async () => {
+    // given
+    const outcomes = { discord: () => jsonReply({ message: "Unauthorized" }, 401), telegram: TELEGRAM_OK }
+    const native = createNativeOpenclaw({ context: context(memoryStorage()), config: CHANNELS_CONFIG, env: BASES, fetchImpl: platformFetch(outcomes), log: () => {} })
+    await native.ready
+
+    // when
+    await native.handleEvent({ type: "session.idle", sessionID: "s1" })
+    const report = await native.report()
+
+    // then
+    expect(report.surfaces["channels.alerts"]).toMatchObject({ state: "degraded", errorClass: "http-401", consecutiveFailures: 1 })
+    expect(report.surfaces["channels.ops"]?.state ?? "up").toBe("up")
+    expect(report.surfaces.outbound).toBeUndefined()
+    await native.dispose()
+  })
+
+  test("#given a Telegram failure and a Discord success in one event #when both report #then the Telegram row stays degraded and the Discord row is not cleared by it", async () => {
+    // given
+    const outcomes = { discord: DISCORD_OK, telegram: () => jsonReply({ ok: false, description: "Unauthorized" }, 401) }
+    const native = createNativeOpenclaw({ context: context(memoryStorage()), config: CHANNELS_CONFIG, env: BASES, fetchImpl: platformFetch(outcomes), log: () => {} })
+    await native.ready
+
+    // when
+    await native.handleEvent({ type: "session.idle", sessionID: "s1" })
+    const report = await native.report()
+
+    // then
+    expect(report.surfaces["channels.ops"]).toMatchObject({ state: "degraded", errorClass: "http-401" })
+    expect(report.surfaces["channels.alerts"]?.state ?? "up").toBe("up")
+    expect(report.surfaces.outbound).toBeUndefined()
+    await native.dispose()
+  })
+
+  test("#given two channels failing with the same class #when both report #then each channel emits its own degraded line", async () => {
+    // given
+    const lines = []
+    const outcomes = { discord: () => jsonReply({ message: "Unauthorized" }, 401), telegram: () => jsonReply({ ok: false, description: "Unauthorized" }, 401) }
+    const native = createNativeOpenclaw({ context: context(memoryStorage()), config: CHANNELS_CONFIG, env: BASES, fetchImpl: platformFetch(outcomes), log: (line) => lines.push(line) })
+    await native.ready
+
+    // when
+    await native.handleEvent({ type: "session.idle", sessionID: "s1" })
+
+    // then
+    const degraded = statusLines(lines).filter((line) => line.includes("surface degraded:"))
+    expect(degraded).toHaveLength(2)
+    expect(degraded.some((line) => line.includes("channels.alerts (http-401)"))).toBe(true)
+    expect(degraded.some((line) => line.includes("channels.ops (http-401)"))).toBe(true)
+    await native.dispose()
+  })
+
+  test("#given a legacy gateway that refuses #when an event flows #then the row is the gateway's own outbound row and no bare outbound row is written", async () => {
+    // given
+    const native = createNativeOpenclaw({
+      context: context(memoryStorage()),
+      config: LEGACY_CONFIG,
+      fetchImpl: recordingFetch(() => ({ ok: false, status: 500, headers: { get: () => null }, text: async () => "" })),
+      log: () => {},
+    })
+    await native.ready
+
+    // when
+    await native.handleEvent({ type: "session.idle", sessionID: "s1" })
+    const report = await native.report()
+
+    // then
+    expect(report.surfaces["outbound:hook"]).toMatchObject({ state: "degraded", errorClass: "http-500" })
+    expect(report.surfaces.outbound).toBeUndefined()
+    await native.dispose()
+  })
+
+  test("#given a persisted bare outbound row #when the report is read #then the row is retired as unevaluated, never up, and the retirement is one line", async () => {
+    // given
+    const lines = []
+    const storage = memoryStorage()
+    const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+    await previous.recordFailure("outbound", { errorClass: "http-500" })
+    const native = createNativeOpenclaw({ context: context(storage), config: LEGACY_CONFIG, fetchImpl: recordingFetch(() => okGateway()), log: (line) => lines.push(line) })
+    await native.ready
+
+    // when
+    const report = await native.report()
+    await native.report()
+
+    // then
+    expect(report.surfaces.outbound).toMatchObject({ state: "unevaluated", errorClass: null, consecutiveFailures: 0 })
+    expect(formatOpenclawStatusReport(report)).toContain("- outbound: unevaluated")
+    expect(formatOpenclawStatusReport(report)).not.toContain("- outbound: up")
+    expect(statusLines(lines).filter((line) => line.includes("surface retired: outbound"))).toHaveLength(1)
+    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces.outbound.state).toBe("unevaluated")
+    await native.dispose()
+  })
+
+  test("#given a healthy legacy dispatch #when recordSuccess runs on an absent row #then it neither reads nor writes storage", async () => {
+    // given
+    let reads = 0
+    let writes = 0
+    const document = createOpenclawStatusDocument({
+      storage: { get: async () => { reads += 1; return undefined }, set: async () => { writes += 1 } },
+      log: () => {},
+    })
+
+    // when
+    const recorded = await document.recordSuccess("outbound:hook")
+
+    // then
+    expect(recorded).toBe(false)
+    expect(reads).toBe(0)
+    expect(writes).toBe(0)
   })
 })

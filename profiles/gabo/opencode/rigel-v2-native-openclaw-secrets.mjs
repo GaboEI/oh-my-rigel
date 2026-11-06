@@ -31,17 +31,13 @@ const ENV_REFERENCE_PREFIX = "env:"
 /** A POSIX-ish environment variable name: no `=`/`:`/whitespace, never empty. */
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-/**
- * The credential-bearing fields this runtime consumes today, in a stable order.
- *
- * The new `channels.a2a.peers.<name>.token` namespace is NOT listed here: nothing
- * in this runtime serves A2A yet, so resolving those references now would have no
- * consumer and no observable effect.
- */
+/** The reply-listener credential-bearing fields this runtime consumes today, in a stable order. */
 const SECRET_FIELDS = Object.freeze([
   Object.freeze({ key: "discordBotToken", surface: "discord", path: "openclaw.replyListener.discordBotToken" }),
   Object.freeze({ key: "telegramBotToken", surface: "telegram", path: "openclaw.replyListener.telegramBotToken" }),
 ])
+
+const A2A_PEER_SECRET_FIELDS = Object.freeze(["token", "outboundToken"])
 
 /**
  * Classify a credential value.
@@ -167,17 +163,22 @@ export function auditOpenclawSecretRefs(openclaw) {
       audit(field.path, replyListener[field.key])
     }
   }
-  // The new namespace's notification channels carry a token too, and the
-  // generator writes the whole block verbatim into the manifest. Auditing them
-  // here is what stops a plaintext channel token from reaching disk without the
-  // deprecation warning the reply listener gets. `a2a` is skipped: it is the
-  // converser's namespace and has no consumer yet.
   const channels = openclaw.channels
   if (isPlainObject(channels)) {
     for (const [name, block] of Object.entries(channels)) {
       if (name === "a2a" || !isPlainObject(block)) continue
       if (!Object.prototype.hasOwnProperty.call(block, "token")) continue
       audit(`openclaw.channels.${name}.token`, block.token)
+    }
+    const a2a = channels.a2a
+    if (isPlainObject(a2a) && isPlainObject(a2a.peers)) {
+      for (const [name, peer] of Object.entries(a2a.peers)) {
+        if (!isPlainObject(peer)) continue
+        for (const field of A2A_PEER_SECRET_FIELDS) {
+          if (!Object.prototype.hasOwnProperty.call(peer, field)) continue
+          audit(`openclaw.channels.a2a.peers.${name}.${field}`, peer[field])
+        }
+      }
     }
   }
   return { references, plaintext, invalid }
