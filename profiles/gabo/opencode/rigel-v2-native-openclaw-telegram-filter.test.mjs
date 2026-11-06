@@ -366,27 +366,63 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
     await native.dispose()
   })
 
-  test("#given a replyPolicy that names only Discord #when a telegram reply port exists #then Telegram is reported closed while Discord keeps its policy", async () => {
-    const { native, lines, storage } = harmonyComposition({
+  test("#given a legacy telegram replyListener plus replyPolicy without channels #when the list is absent then restored #then polling stays closed then resumes while Discord remains legacy", async () => {
+    const replyListener = {
+      ...telegramReplyListener(),
+      discordBotToken: SECRET,
+      discordChannelId: "discord",
+      authorizedDiscordUserIds: [AUTHORIZED_USER],
+    }
+    const closedFetch = telegramPort([])
+    const { native: closed, fetchImpl: closedFetchImpl } = harmonyComposition({
+      enabled: true,
+      replyPolicy: { telegram: {} },
+      replyListener,
+    }, { fetchImpl: closedFetch })
+
+    expect(await closed.ready).toEqual({ started: true })
+    expect(closed.inbound.status().platforms).toMatchObject({ discord: true, telegram: false })
+    expect(closedFetchImpl.calls.filter((call) => call.url.includes("/getUpdates"))).toEqual([])
+    await closed.dispose()
+
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const resumedFetch = telegramPort([{
+      update_id: 10,
+      message: telegramMessage({ messageId: 34, userId: AUTHORIZED_USER, text: "authorized" }),
+    }])
+    const { native: resumed, fetchImpl: resumedFetchImpl, prompts } = harmonyComposition({
+      enabled: true,
+      replyPolicy: { telegram: { allowedAuthors: [AUTHORIZED_USER] } },
+      replyListener,
+    }, { storage, fetchImpl: resumedFetch })
+
+    expect(await resumed.ready).toEqual({ started: true })
+    await waitFor(() => prompts.length > 0, "authorized Telegram reply after list declaration")
+    expect(resumed.inbound.status().platforms).toMatchObject({ discord: true, telegram: true })
+    expect(resumedFetchImpl.calls.some((call) => call.url.includes("/getUpdates"))).toBe(true)
+    expect(prompts).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] authorized", delivery: "queue" }])
+    await resumed.dispose()
+  })
+
+  test("#given a legacy telegram listener and a replyPolicy naming only Discord #when composed #then Telegram stays on its chat-only route", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, lines, fetchImpl, prompts } = harmonyComposition({
       enabled: true,
       replyPolicy: { "discord-bot": { allowedAuthors: [AUTHORIZED_USER] } },
-      replyListener: {
-        ...telegramReplyListener(),
-        discordBotToken: SECRET,
-        discordChannelId: "chan",
-      },
-    }, { fetchImpl: telegramPort([]) })
-
-    const ready = await native.ready
-
-    expect(lines.filter((line) => line.includes("openclaw.replyPolicy.telegram.allowedAuthors"))).toHaveLength(1)
-    expect(native.inbound.status().platforms.telegram).toBe(false)
-    expect(native.inbound.status().platforms.discord).toBe(true)
-    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces.telegram).toMatchObject({
-      state: "fatal",
-      errorClass: "missing-authorized-authors",
+      replyListener: telegramReplyListener(),
+    }, {
+      storage,
+      fetchImpl: telegramPort([{ update_id: 11, message: telegramMessage({ messageId: 35, userId: INTRUDER, text: "legacy" }) }]),
     })
-    expect(ready.started).toBe(true)
+
+    expect(await native.ready).toEqual({ started: true })
+    await waitFor(() => prompts.length > 0, "Telegram legacy reply without Telegram policy")
+    expect(native.inbound.status().platforms.telegram).toBe(true)
+    expect(fetchImpl.calls.some((call) => call.url.includes("/getUpdates"))).toBe(true)
+    expect(prompts).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] legacy", delivery: "queue" }])
+    expect(lines.filter((line) => line.includes("Telegram replies stay off"))).toEqual([])
     await native.dispose()
   })
 
