@@ -137,6 +137,64 @@ describe("openclaw agent registry", () => {
     expect(reader.lookup("peer-alpha", "rigel-0123456789abcdef01234567", "task-7")).toMatchObject({ taskId: "task-7" })
   })
 
+  test("#given an agent record under a non-derived occupied key #when it hydrates and its session is deleted #then removeSession deletes that occupied key without a migration", async () => {
+    const storage = memoryStorage()
+    const record = {
+      v: OPENCLAW_AGENT_MAPPING_VERSION,
+      kind: "agent",
+      ...seed({ taskId: "task-occupied", sessionID: "ses_occupied" }),
+      state: "submitted",
+      attempts: 0,
+      inflight: false,
+    }
+    const occupiedKey = `${OPENCLAW_AGENT_REGISTRY_PREFIX}fixture-occupied-not-derived`
+    const derivedKey = openclawAgentKey(record.peer, record.contextId, record.taskId)
+    await storage.set(occupiedKey, record)
+    expect(occupiedKey).not.toBe(derivedKey)
+
+    const registry = createOpenclawAgentRegistry({ storage, now: clock("2026-01-01T00:00:01.000Z") })
+    await registry.hydrate()
+    expect(registry.lookup(record.peer, record.contextId, record.taskId)).toMatchObject({ sessionID: "ses_occupied" })
+
+    expect(await registry.removeSession("ses_occupied")).toBe(1)
+    expect(storage.map.has(occupiedKey)).toBe(false)
+    expect(storage.map.has(derivedKey)).toBe(false)
+
+    const restarted = createOpenclawAgentRegistry({ storage, now: clock("2026-01-01T00:00:02.000Z") })
+    await restarted.hydrate()
+    expect(restarted.lookup(record.peer, record.contextId, record.taskId)).toBeNull()
+  })
+
+  test("#given a shadowed agent record under a non-derived occupied key #when its session is deleted #then removeSession deletes the shadow without removing the active record", async () => {
+    const storage = memoryStorage()
+    const shadowed = {
+      v: OPENCLAW_AGENT_MAPPING_VERSION,
+      kind: "agent",
+      ...seed({ taskId: "task-shadowed", sessionID: "ses_shadowed" }),
+      state: "submitted",
+      attempts: 0,
+      inflight: false,
+    }
+    const active = { ...shadowed, sessionID: "ses_active" }
+    const shadowedKey = `${OPENCLAW_AGENT_REGISTRY_PREFIX}fixture-shadowed-not-derived`
+    const derivedKey = openclawAgentKey(active.peer, active.contextId, active.taskId)
+    await storage.set(shadowedKey, shadowed)
+    await storage.set(derivedKey, active)
+    expect(shadowedKey).not.toBe(derivedKey)
+
+    const registry = createOpenclawAgentRegistry({ storage, now: clock("2026-01-01T00:00:01.000Z") })
+    await registry.hydrate()
+    expect(registry.lookup(active.peer, active.contextId, active.taskId)).toMatchObject({ sessionID: "ses_active" })
+
+    expect(await registry.removeSession("ses_shadowed")).toBe(1)
+    expect(storage.map.has(shadowedKey)).toBe(false)
+    expect(storage.map.get(derivedKey)).toMatchObject({ sessionID: "ses_active" })
+
+    const restarted = createOpenclawAgentRegistry({ storage, now: clock("2026-01-01T00:00:02.000Z") })
+    await restarted.hydrate()
+    expect(restarted.lookup(active.peer, active.contextId, active.taskId)).toMatchObject({ sessionID: "ses_active" })
+  })
+
   test("#given a paginated durable registry with a repeated entry #when hydrating across a restart #then every task and the in-flight slot are restored once", async () => {
     const writerStorage = memoryStorage()
     const writer = createOpenclawAgentRegistry({ storage: writerStorage, now: clock("2026-01-01T00:00:00.000Z") })
@@ -206,7 +264,7 @@ describe("openclaw agent registry", () => {
     expect(malformedPageLines).toContain("[oh-my-rigel] Native V2 openclaw agent registry hydrate stopped on a malformed storage page")
   })
 
-  test("#given a persisted record of an unknown shape #when hydrating #then it is skipped and reported instead of trusted", async () => {
+  test("#given a persisted record with an invalid shape #when hydrating #then it is skipped and reported instead of trusted", async () => {
     const storage = memoryStorage()
     await storage.set(`${OPENCLAW_AGENT_REGISTRY_PREFIX}broken`, { sessionID: "ses_1" })
     const lines = []
@@ -214,7 +272,28 @@ describe("openclaw agent registry", () => {
     await registry.hydrate()
     expect(registry.size()).toBe(0)
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toContain("skipped a record with an unknown shape")
+    expect(lines[0]).toContain("skipped a record with an invalid shape")
+  })
+
+  test("#given persisted invalid-version and invalid-shape agent records #when the registry hydrates #then each is skipped with its named diagnostic", async () => {
+    const storage = memoryStorage()
+    await storage.set(`${OPENCLAW_AGENT_REGISTRY_PREFIX}future-version`, {
+      v: OPENCLAW_AGENT_MAPPING_VERSION + 1,
+      kind: "agent",
+      ...seed(),
+      state: "submitted",
+      attempts: 0,
+      inflight: false,
+    })
+    await storage.set(`${OPENCLAW_AGENT_REGISTRY_PREFIX}invalid-shape`, { sessionID: "ses_1" })
+    const lines = []
+    const registry = createOpenclawAgentRegistry({ storage, log: (line) => lines.push(line) })
+
+    await registry.hydrate()
+
+    expect(registry.size()).toBe(0)
+    expect(lines).toContain("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an unknown version")
+    expect(lines).toContain("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an invalid shape")
   })
 
   test("#given a conversation with two pending tasks #when claiming #then the oldest holds the single slot until it settles", async () => {

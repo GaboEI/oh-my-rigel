@@ -164,12 +164,51 @@ export function resolveOpenclawAgentNamespace(rawConfig) {
  */
 export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT_MAX_AGE_MS, now = () => Date.now(), log = () => {} } = {}) {
   const map = new Map()
+  const occupied = new Map()
   const canPersist = Boolean(storage && typeof storage.set === "function")
   const canScan = Boolean(storage && typeof storage.scan === "function")
   const canRemove = Boolean(storage && typeof storage.remove === "function")
 
   function indexKey(peer, contextId, taskId) {
     return `${peer}\u0000${contextId}\u0000${taskId}`
+  }
+
+  function indexOf(record) {
+    return indexKey(record.peer, record.contextId, record.taskId)
+  }
+
+  function remember(record, storageKey) {
+    const entry = { record, storageKey }
+    occupied.set(storageKey, entry)
+    map.set(indexOf(record), entry)
+    return entry
+  }
+
+  function restoreVisibleRecord(key) {
+    let replacement = null
+    for (const entry of occupied.values()) {
+      if (indexOf(entry.record) === key) replacement = entry
+    }
+    if (replacement === null) map.delete(key)
+    else map.set(key, replacement)
+  }
+
+  function forget(storageKey) {
+    const entry = occupied.get(storageKey)
+    if (!entry) return null
+    occupied.delete(storageKey)
+    const key = indexOf(entry.record)
+    if (map.get(key) === entry) restoreVisibleRecord(key)
+    return entry
+  }
+
+  function replaceVisible(key, record) {
+    const entry = map.get(key)
+    if (!entry) return null
+    const replacement = { record, storageKey: entry.storageKey }
+    occupied.set(replacement.storageKey, replacement)
+    map.set(key, replacement)
+    return replacement
   }
 
   function isFresh(record) {
@@ -179,17 +218,17 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
 
   function recordsFor(peer, contextId) {
     const entries = []
-    for (const record of map.values()) {
+    for (const { record } of map.values()) {
       if (record.peer !== peer || record.contextId !== contextId) continue
       entries.push(record)
     }
     return entries
   }
 
-  async function persist(record) {
+  async function persist(entry) {
     if (!canPersist) return
     try {
-      await storage.set(openclawAgentKey(record.peer, record.contextId, record.taskId), record)
+      await storage.set(entry.storageKey, entry.record)
     } catch (error) {
       log(`[oh-my-rigel] Native V2 openclaw agent registry persist failed: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -211,13 +250,30 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
         }
         for (const entry of page.entries) {
           const value = entry?.value
+          if (!isPlainObject(value)) {
+            log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an invalid shape")
+            continue
+          }
+          if (!Object.hasOwn(value, "v")) {
+            log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an invalid shape")
+            continue
+          }
+          if (value.v !== OPENCLAW_AGENT_MAPPING_VERSION) {
+            log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an unknown version")
+            continue
+          }
           if (!isValidAgentMapping(value)) {
-            log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an unknown shape")
+            log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record with an invalid shape")
+            continue
+          }
+          const storageKey = typeof entry?.key === "string" && entry.key.length > 0 ? entry.key : null
+          if (storageKey === null) {
+            log("[oh-my-rigel] Native V2 openclaw agent registry skipped a record whose durable key is not a non-empty string")
             continue
           }
           // Aged records stay in the index so `prune()` can report them as lost
           // instead of dropping them the moment they are read.
-          map.set(indexKey(value.peer, value.contextId, value.taskId), { ...value })
+          remember({ ...value }, storageKey)
         }
         if (page.next === undefined || page.next === null) return
         if (typeof page.next !== "string" || page.next.length === 0) {
@@ -260,15 +316,16 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
       ...(isNonEmptyString(seed.remoteTaskId) ? { remoteTaskId: seed.remoteTaskId } : {}),
     }
     if (!isValidAgentMapping(record)) return false
-    map.set(indexKey(record.peer, record.contextId, record.taskId), record)
-    await persist(record)
+    const entry = remember(record, openclawAgentKey(record.peer, record.contextId, record.taskId))
+    await persist(entry)
     return true
   }
 
   /** Look up one task. A stale record is hidden here and reported by `prune()`. */
   function lookup(peer, contextId, taskId) {
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
-    const record = map.get(indexKey(peer, contextId, taskId))
+    const entry = map.get(indexKey(peer, contextId, taskId))
+    const record = entry?.record
     if (!record || !isFresh(record)) return null
     return { ...record }
   }
@@ -320,7 +377,7 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   async function claim(peer, contextId, taskId) {
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
     const key = indexKey(peer, contextId, taskId)
-    const record = map.get(key)
+    const record = map.get(key)?.record
     if (!record || !isFresh(record)) return null
     if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) return null
     if (record.inflight) return null
@@ -331,8 +388,7 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
       attempts: record.attempts + 1,
       lastCheckedAt: new Date(now()).toISOString(),
     }
-    map.set(key, claimed)
-    await persist(claimed)
+    await persist(replaceVisible(key, claimed))
     return { ...claimed }
   }
 
@@ -340,12 +396,11 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   async function release(peer, contextId, taskId) {
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
     const key = indexKey(peer, contextId, taskId)
-    const record = map.get(key)
+    const record = map.get(key)?.record
     if (!record) return null
     if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) return null
     const released = { ...record, inflight: false, lastCheckedAt: new Date(now()).toISOString() }
-    map.set(key, released)
-    await persist(released)
+    await persist(replaceVisible(key, released))
     return { ...released }
   }
 
@@ -361,11 +416,10 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     if (!isNonEmptyString(remoteTaskId)) return null
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
     const key = indexKey(peer, contextId, taskId)
-    const record = map.get(key)
+    const record = map.get(key)?.record
     if (!record) return null
     const attached = { ...record, remoteTaskId, lastCheckedAt: new Date(now()).toISOString() }
-    map.set(key, attached)
-    await persist(attached)
+    await persist(replaceVisible(key, attached))
     return { ...attached }
   }
 
@@ -373,12 +427,11 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   async function touch(peer, contextId, taskId) {
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
     const key = indexKey(peer, contextId, taskId)
-    const record = map.get(key)
+    const record = map.get(key)?.record
     if (!record) return null
     if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) return null
     const touched = { ...record, lastCheckedAt: new Date(now()).toISOString() }
-    map.set(key, touched)
-    await persist(touched)
+    await persist(replaceVisible(key, touched))
     return { ...touched }
   }
 
@@ -387,12 +440,11 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     if (!OPENCLAW_AGENT_TERMINAL_STATES.includes(state)) return null
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
     const key = indexKey(peer, contextId, taskId)
-    const record = map.get(key)
+    const record = map.get(key)?.record
     if (!record) return null
     if (OPENCLAW_AGENT_TERMINAL_STATES.includes(record.state)) return { ...record }
     const settled = { ...record, state, inflight: false, lastCheckedAt: new Date(now()).toISOString() }
-    map.set(key, settled)
-    await persist(settled)
+    await persist(replaceVisible(key, settled))
     return { ...settled }
   }
 
@@ -413,15 +465,15 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   async function removeSession(sessionID) {
     if (!isNonEmptyString(sessionID)) return 0
     let removed = 0
-    for (const [key, record] of [...map.entries()]) {
+    for (const [storageKey, { record }] of [...occupied.entries()]) {
       if (record.sessionID !== sessionID) continue
-      map.delete(key)
+      forget(storageKey)
       removed += 1
       if (canRemove) {
         try {
-          await storage.remove(openclawAgentKey(record.peer, record.contextId, record.taskId))
-        } catch {
-          // best effort: the in-memory entry is already gone
+          await storage.remove(storageKey)
+        } catch (error) {
+          log(`[oh-my-rigel] Native V2 openclaw agent registry remove failed: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
     }
@@ -436,9 +488,9 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   async function prune() {
     const lost = []
     let removed = 0
-    for (const [key, record] of [...map.entries()]) {
+    for (const [storageKey, { record }] of [...occupied.entries()]) {
       if (isFresh(record)) continue
-      map.delete(key)
+      forget(storageKey)
       removed += 1
       const unresolved = OPENCLAW_AGENT_PENDING_STATES.includes(record.state)
       const reported = unresolved ? { ...record, state: "lost", inflight: false } : { ...record }
@@ -448,9 +500,9 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
       }
       if (canRemove) {
         try {
-          await storage.remove(openclawAgentKey(record.peer, record.contextId, record.taskId))
-        } catch {
-          // best effort; the in-memory entry is already gone
+          await storage.remove(storageKey)
+        } catch (error) {
+          log(`[oh-my-rigel] Native V2 openclaw agent registry prune remove failed: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
     }
@@ -464,7 +516,7 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
 
   function inflightCount() {
     let count = 0
-    for (const record of map.values()) if (record.inflight) count += 1
+    for (const { record } of map.values()) if (record.inflight) count += 1
     return count
   }
 
@@ -486,7 +538,7 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     sessionOwners,
     pendingCount,
     inflightCount,
-    list: () => [...map.values()].map((record) => ({ ...record })),
+    list: () => [...map.values()].map(({ record }) => ({ ...record })),
     size: () => map.size,
   }
 }

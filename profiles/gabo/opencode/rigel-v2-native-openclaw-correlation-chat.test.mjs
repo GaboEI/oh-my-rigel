@@ -370,6 +370,25 @@ function seed(storage, key, overrides = {}) {
 }
 
 describe("openclaw registry upgrade from the pre-fix key", () => {
+
+  test("#given a chat record with a non-string occupied key #when hydrating #then it remains unindexed and unremoved with the named accepted skip", async () => {
+    const removed = []
+    const lines = []
+    const storage = {
+      scan: async () => ({ entries: [{ key: 7, value: mapping() }] }),
+      remove: async (key) => { removed.push(key) },
+    }
+    const registry = createOpenclawRegistry({ storage, log: (line) => lines.push(line) })
+
+    await registry.hydrate()
+
+    expect(registry.size()).toBe(0)
+    expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)).toBeNull()
+    expect(await registry.prune()).toBe(0)
+    expect(await registry.removeSession(SESSION_A)).toBe(0)
+    expect(removed).toEqual([])
+    expect(lines).toContain("[oh-my-rigel] Native V2 openclaw registry skipped a record whose storage key is not a string")
+  })
   test("#given a record the pre-fix writer persisted #when a new process hydrates and the session is deleted #then the correlation does not revive", async () => {
     const storage = memoryStorage()
     seed(storage, LEGACY_TELEGRAM_KEY, { sessionID: "ses_deleted" })
