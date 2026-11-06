@@ -1381,23 +1381,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Mirror release to master
-        # Non-blocking: npm is already published by this point, so a mirror
-        # failure must never fail the release. With no error swallow, a genuine
-        # failure still surfaces as a red step for visibility.
-        # Auth: uses the GH_PAT persisted by checkout (workflow scope) so the
-        # push can carry the release's .github/workflows/* diff — the default
-        # GITHUB_TOKEN cannot, which is why this silently failed the whole v4.x line.
-        # Fast-forward only: master always trails the new tag (releases move
-        # forward on dev), so the direct refspec push is a clean FF and satisfies
-        # the branch ruleset's non_fast_forward rule without needing a bypass.
-        if: inputs.lazycodex_only != true
-        continue-on-error: true
-        env:
-          VERSION: ${{ needs.release-metadata.outputs.version }}
-        run: |
-          git push origin "v${VERSION}^{commit}:refs/heads/master"
-
       - name: Write job summary
         if: always()
         shell: bash
@@ -1408,7 +1391,6 @@ jobs:
             - Applies and commits release state when needed.
             - Creates or reuses the release tag.
             - Syncs LazyCodex marketplace payload and creates GitHub releases.
-            - Attempts the protected `master` mirror update after release.
           JOB_SUMMARY_NEXT: Inspect the first failing release-state, marketplace sync, or GitHub release step.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
 
