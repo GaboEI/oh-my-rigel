@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import path from "node:path"
 
 import * as config from "./rigel-v2-native-config.mjs"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
@@ -22,10 +23,10 @@ import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
 // `loadFailures`: the loader absorbs a per-file failure, so "unreadable file"
 // and "declared nothing" used to be the same observable.
 
-const HOME = "/home/rigeltest"
-const PROJECT = `${HOME}/proj`
-const USER_CONFIG = `${HOME}/.omo/omo.jsonc`
-const PROJECT_CONFIG = `${PROJECT}/.omo/omo.jsonc`
+const HOME = path.resolve("/home/rigeltest")
+const PROJECT = path.join(HOME, "proj")
+const USER_CONFIG = path.join(HOME, ".omo", "omo.jsonc")
+const PROJECT_CONFIG = path.join(PROJECT, ".omo", "omo.jsonc")
 const ENV = { HOME }
 
 function memoryFileSystem(files) {

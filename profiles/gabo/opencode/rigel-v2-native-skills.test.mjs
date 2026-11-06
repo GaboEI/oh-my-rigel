@@ -24,7 +24,7 @@ import { TEAM_MODE_CREATE_CALL } from "./rigel-v2-native-team-mode-command.mjs"
 const temporaryRoots = []
 
 function makeRoot() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rigel-skills-"))
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "rigel-skills-")))
   temporaryRoots.push(root)
   return root
 }

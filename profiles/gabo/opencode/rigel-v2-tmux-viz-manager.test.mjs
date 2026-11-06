@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
@@ -17,10 +17,26 @@ import {
 } from "./rigel-v2-tmux-viz-manager.mjs"
 import { MAX_CLOSE_RETRY_COUNT, CLOSE_RETRY_COOLDOWN_MS } from "./rigel-v2-tmux-viz-cleanup.mjs"
 
+const pathDelimiter = process.platform === "win32" ? ";" : ":"
+const tmuxBinDir = mkdtempSync(join(tmpdir(), "rigel-viz-tmux-bin-"))
+const emptyBinDir = mkdtempSync(join(tmpdir(), "rigel-viz-empty-bin-"))
+for (const name of ["tmux", "tmux.exe"]) {
+  const stub = join(tmuxBinDir, name)
+  writeFileSync(stub, "#!/bin/sh\nexit 0\n")
+  chmodSync(stub, 0o755)
+}
+afterAll(() => {
+  rmSync(tmuxBinDir, { recursive: true, force: true })
+  rmSync(emptyBinDir, { recursive: true, force: true })
+})
+
 function memoryEnv({ withTmux = true } = {}) {
+  const path = withTmux
+    ? `${tmuxBinDir}${pathDelimiter}${process.env.PATH ?? ""}`
+    : `${tmuxBinDir}${pathDelimiter}${emptyBinDir}`
   return withTmux
-    ? { PATH: process.env.PATH, TMUX: "/tmp/tmux-qa", TMUX_PANE: "%0" }
-    : { PATH: process.env.PATH }
+    ? { PATH: path, TMUX: "/tmp/tmux-qa", TMUX_PANE: "%0" }
+    : { PATH: path }
 }
 
 function managerOverrides({ spawnScript, withTmux = true, isolation = "inline", serverAlive = true } = {}) {

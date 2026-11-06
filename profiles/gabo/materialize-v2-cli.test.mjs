@@ -7,7 +7,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -16,7 +16,7 @@ const SCRIPT = fileURLToPath(new URL("./materialize-v2-cli.mjs", import.meta.url
 const created = []
 
 function tempDir(prefix) {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
   created.push(dir)
   return dir
 }

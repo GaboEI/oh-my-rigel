@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createTmuxVizManager } from "./rigel-v2-tmux-viz-manager.mjs"
 import { createTmuxVizProjectRegistry, resolveChildSessionInfo } from "./rigel-v2-tmux-viz-projects.mjs"
 import { discoverCallerPane } from "./rigel-v2-tmux-viz-env.mjs"
@@ -38,6 +41,17 @@ const STALE_PANE = "%19"
 const OWN_PANE = "%26"
 const MEMBER_SESSION = "ses_row55_live_activation_member"
 const LEAD_SESSION = "ses_row55_live_activation_lead"
+const pathDelimiter = process.platform === "win32" ? ";" : ":"
+const tmuxBinDir = mkdtempSync(join(tmpdir(), "rigel-viz-tmux-bin-"))
+for (const name of ["tmux", "tmux.exe"]) {
+  const stub = join(tmuxBinDir, name)
+  writeFileSync(stub, "#!/bin/sh\nexit 0\n")
+  chmodSync(stub, 0o755)
+}
+afterAll(() => {
+  rmSync(tmuxBinDir, { recursive: true, force: true })
+})
+const tmuxPath = `${tmuxBinDir}${pathDelimiter}${process.env.PATH ?? ""}`
 
 /** The live V2 payload: `properties` is EMPTY, the identity lives in `data`. */
 const HOST_EVENT = Object.freeze({
@@ -176,7 +190,7 @@ describe("live activation: two TUI panes in one project (retest 5)", () => {
     expect(discovery.reason).toContain("ambiguous caller pane")
 
     const { registry, probe, logs } = buildRegistry({
-      tmuxEnv: { PATH: process.env.PATH, TMUX: "/tmp/tmux-1000/default,1,0" },
+      tmuxEnv: { PATH: tmuxPath, TMUX: "/tmp/tmux-1000/default,1,0" },
       discoveryPreferredPaneId: undefined,
     })
     const manager = await registry.ensure(PROJECT_DIR)
@@ -193,7 +207,7 @@ describe("live activation: two TUI panes in one project (retest 5)", () => {
 
   test("retest 5 end to end: the member pane is really split from the caller's own pane", async () => {
     const { registry, probe, logs } = buildRegistry({
-      tmuxEnv: { PATH: process.env.PATH, TMUX: "/tmp/tmux-1000/default,1,0", TMUX_PANE: OWN_PANE },
+      tmuxEnv: { PATH: tmuxPath, TMUX: "/tmp/tmux-1000/default,1,0", TMUX_PANE: OWN_PANE },
       discoveryPreferredPaneId: OWN_PANE,
     })
     const manager = await registry.ensure(PROJECT_DIR)
