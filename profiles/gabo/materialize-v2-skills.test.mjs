@@ -28,7 +28,7 @@ const AUTHORIZED_SHARED = [
   "ast-grep", "coding-agent-sessions", "data-scientist", "lsp-setup", "programming", "refactor",
 ]
 const NOT_DELIVERED = ["browser", "ultimate-browsing"]
-const RIGEL_KIT_COUNT = 15
+const RIGEL_KIT_COUNT = 14
 const PROJECT_ALIGNED = ["hyperplan", "security-research"]
 const EXPECTED_LINKED_COUNT = RIGEL_KIT_COUNT + AUTHORIZED_SHARED.length + PROJECT_ALIGNED.length
 
@@ -243,5 +243,47 @@ describe("#given the shared-pool skill delivery", () => {
     expect(state.preserved).toContain(userName)
     expect(state.managed.some((entry) => entry.name === userName)).toBe(false)
     expect(fs.readFileSync(path.join(userDir, "SKILL.md"), "utf8")).toBe("user body\n")
+  })
+
+  test("#when a previously managed skill is retired #then its exact Rigel-owned link is removed", () => {
+    const home = makeHome()
+    const name = "retired-rigel-skill"
+    const recordedSource = path.join(home, "old-checkout", "profiles", "gabo", "skills", name)
+    const target = path.join(skillsRoot(home), name)
+    fs.mkdirSync(path.join(home, ".local", "share", "oh-my-rigel"), { recursive: true })
+    fs.mkdirSync(skillsRoot(home), { recursive: true })
+    fs.symlinkSync(recordedSource, target, "dir")
+    fs.writeFileSync(
+      path.join(home, ".local", "share", "oh-my-rigel", "skills-v2.json"),
+      `${JSON.stringify({ managed: [{ name, source: recordedSource, kind: "rigel" }], preserved: [] }, null, 2)}\n`,
+    )
+
+    runMaterialize(home)
+    const state = readState(home)
+
+    expect(fs.existsSync(target)).toBe(false)
+    expect(state.managed.some((entry) => entry.name === name)).toBe(false)
+    expect(state.preserved).not.toContain(name)
+  })
+
+  test("#when the user replaced a retired managed skill #then the user entry is preserved", () => {
+    const home = makeHome()
+    const name = "retired-rigel-skill"
+    const recordedSource = path.join(home, "old-checkout", "profiles", "gabo", "skills", name)
+    const target = path.join(skillsRoot(home), name)
+    fs.mkdirSync(path.join(home, ".local", "share", "oh-my-rigel"), { recursive: true })
+    fs.mkdirSync(target, { recursive: true })
+    fs.writeFileSync(path.join(target, "SKILL.md"), "user replacement\n")
+    fs.writeFileSync(
+      path.join(home, ".local", "share", "oh-my-rigel", "skills-v2.json"),
+      `${JSON.stringify({ managed: [{ name, source: recordedSource, kind: "rigel" }], preserved: [] }, null, 2)}\n`,
+    )
+
+    runMaterialize(home)
+    const state = readState(home)
+
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe("user replacement\n")
+    expect(state.managed.some((entry) => entry.name === name)).toBe(false)
+    expect(state.preserved).toContain(name)
   })
 })

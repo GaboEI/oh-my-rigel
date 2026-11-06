@@ -49,7 +49,6 @@
     "obsidian-markdown": { "funcion": "Creates and edits Markdown with Obsidian syntax.", "uso": "Use it for wikilinks, embeds, callouts, properties and tags." },
     "obsidian-second-brain-audit": { "funcion": "Audits a vault so it works as a linked second brain.", "uso": "Use it when notes end up disconnected or the vault needs structure." },
     "obsidian-vault-writing-rules": { "funcion": "Enforces professional vault writing: no monoliths, with hierarchy and links.", "uso": "Use it in any task that creates or edits documentation inside a vault." },
-    "opencode-multi-auth-fix": { "funcion": "Diagnoses account errors from the Codex multi-auth plugin.", "uso": "Use it on messages such as no available accounts or an expired token." },
     "prompt-master": { "funcion": "Writes or improves copy-ready OpenCode prompts.", "uso": "Use it when asked for a prompt for an OpenCode agent or to improve an existing one." },
     "skill-creator": { "funcion": "Creates new skills, improves existing ones and measures their performance.", "uso": "Use it to create a skill from scratch, edit one or optimize its description." },
     "team-mode": { "funcion": "Runs a lead plus coordinated member sessions with shared tasks and messages.", "uso": "Use it when the user asks for a team, several coordinated agents in parallel, or the /team-mode command." },
