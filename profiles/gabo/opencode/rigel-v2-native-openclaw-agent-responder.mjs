@@ -597,21 +597,27 @@ export function createOpenclawAgentResponder({
    * while a send is still in flight. An empty map used to yield `Infinity`, and
    * the platform clamps that to one millisecond: shutdown declared the pending
    * tasks `shutdown-lost` without ever giving them the reply budget this path
-   * promises. A drain queued behind the earliest active claim has no deadline of
-   * its own, so the answer is that claim's remaining budget while one is on the
-   * wire and a full reply window otherwise, always finite and never longer than
-   * one reply window.
+   * promises. Several claims can be on the wire at once, one per conversation, so
+   * the wait has to cover the LATEST of their finite deadlines: the earliest
+   * belongs to the send that expires first, and stopping there aborts a send that
+   * still had budget of its own. The answer is that latest deadline, or a full
+   * reply window when no claim carries one, always finite and never longer than
+   * one reply window measured from now.
    */
   function shutdownWaitMs() {
     const declared = queue.replyTimeoutMs?.()
     const replyTimeoutMs = Number.isFinite(declared) && declared > 0
       ? declared
       : OPENCLAW_QUEUE_REPLY_TIMEOUT_MS
+    const current = now()
+    // The upper bound is one reply window from now, so no claim, however stale,
+    // can stretch the wait past what a send is ever granted when it is claimed.
+    const upperBound = current + replyTimeoutMs
     const deadlines = [...activeClaims.values()]
       .map((claim) => claim.deadlineAt)
       .filter((deadline) => Number.isFinite(deadline))
-    const deadlineAt = deadlines.length > 0 ? Math.max(0, Math.min(...deadlines)) : now() + replyTimeoutMs
-    return Math.min(Math.max(0, deadlineAt - now()), replyTimeoutMs)
+    const deadlineAt = deadlines.length > 0 ? Math.max(...deadlines) : upperBound
+    return Math.min(Math.max(0, deadlineAt - current), replyTimeoutMs)
   }
 
   /**

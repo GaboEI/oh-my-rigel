@@ -214,6 +214,44 @@ function shutdownFixture({ replyTimeoutMs, timers = deadlineTimers(), releaseCla
   return { order, time, storage, registry, status, queue: heldQueue, transport, responder, timers }
 }
 
+/**
+ * Two conversations whose sends are on the wire at once. A claim's deadline is
+ * `claimedAt + replyTimeoutMs`, so advancing the shared clock between the two
+ * sends gives them different deadlines, and the transport holds both requests so
+ * neither claim is released before `shutdown()` reads them.
+ */
+function multiClaimFixture({ replyTimeoutMs }) {
+  const order = []
+  const time = clock()
+  const storage = spyStorage(order)
+  const registry = createOpenclawAgentRegistry({ storage, now: time.now })
+  const status = statusRecorder()
+  const queue = createOpenclawAgentQueue({ registry, status, now: time.now, replyTimeoutMs })
+  const resolved = resolveOpenclawAgentPeers(
+    { enabled: true, peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } } },
+    { env: { ALPHA_TOKEN: "alpha-secret" } },
+  )
+  const sends = []
+  const transport = {
+    send: (request) => {
+      sends.push(request)
+      return new Promise(() => {})
+    },
+    isDefinitiveSendFailure: () => false,
+  }
+  const timers = deadlineTimers()
+  const responder = createOpenclawAgentResponder({
+    peers: resolved.peers,
+    registry,
+    queue,
+    transport,
+    status,
+    deliverAgentReply: injectionRecorder(),
+    now: time.now,
+    timers,
+  })
+  return { order, time, storage, registry, status, queue, transport, responder, timers, sends }
+}
 describe("openclaw A2A conversational send", () => {
   test("#given text that starts with a slash #when sending #then it is rejected before a task or a request exists", async () => {
     const { responder, registry, status, fetchImpl, order } = harness()
@@ -531,6 +569,46 @@ describe("openclaw A2A reconciliation", () => {
     void fixture.responder.drainConversation("alpha", "rigel-held")
 
     expect(await fixture.responder.shutdown()).toEqual({ drained: true, shutdownLost: 0 })
+  })
+
+  test("#given two active claims with different deadlines #when shutdown is called #then it waits for the latest finite deadline, not the earliest", async () => {
+    // Claim one at t0 (deadline t0+5000); claim two at t0+1000 (deadline t0+6000).
+    const fixture = multiClaimFixture({ replyTimeoutMs: 5000 })
+    void fixture.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "first" })
+    await waitFor(() => fixture.sends.length === 1, "the first SendMessage")
+    fixture.time.advance(1000)
+    void fixture.responder.send({ sessionID: SESSION_B, peer: "alpha", text: "second" })
+    await waitFor(() => fixture.sends.length === 2, "the second SendMessage")
+
+    const shuttingDown = fixture.responder.shutdown()
+
+    // The later claim still has its whole 5000 ms budget; the earlier one has 4000
+    // left. Waiting on the earliest aborts a send that was never out of time.
+    expect(fixture.timers.scheduled.map((handle) => handle.ms)).toEqual([5000])
+    expect(fixture.registry.list().map((record) => record.state)).toEqual(["submitted", "submitted"])
+
+    fixture.timers.fireAll()
+    expect(await shuttingDown).toEqual({ drained: false, shutdownLost: 2 })
+  })
+
+  test("#given an already expired earliest claim and a live later claim #when shutdown is called #then it still waits for the live claim", async () => {
+    const fixture = multiClaimFixture({ replyTimeoutMs: 5000 })
+    void fixture.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "first" })
+    await waitFor(() => fixture.sends.length === 1, "the first SendMessage")
+    // Past claim one's deadline (t0+5000), so only the claim taken below is live.
+    fixture.time.advance(6000)
+    void fixture.responder.send({ sessionID: SESSION_B, peer: "alpha", text: "second" })
+    await waitFor(() => fixture.sends.length === 2, "the second SendMessage")
+
+    const shuttingDown = fixture.responder.shutdown()
+
+    // The earliest claim has no budget left, but the later one has a full reply
+    // window. An expired deadline is not "nothing to wait for".
+    expect(fixture.timers.scheduled.map((handle) => handle.ms)).toEqual([5000])
+    expect(fixture.registry.list().map((record) => record.state)).toEqual(["submitted", "submitted"])
+
+    fixture.timers.fireAll()
+    expect(await shuttingDown).toEqual({ drained: false, shutdownLost: 2 })
   })
 
   test("#given a failed check #when reconciling #then the task stays pending and the failure is reported as a check, not a task failure", async () => {
