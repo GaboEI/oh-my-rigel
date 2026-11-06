@@ -67,6 +67,9 @@ function runRoute(env) {
 function routeEnv(home, configFile, stateRoot) {
   return {
     HOME: home,
+    USERPROFILE: home,
+    HOMEDRIVE: path.parse(home).root.replace(/[\\/]$/, ""),
+    HOMEPATH: home.slice(path.parse(home).root.length - 1).replace(/^[\\/]/, "\\"),
     RIGEL_V2_HOME: home,
     ...(configFile ? { RIGEL_V2_CONFIG: configFile } : {}),
     RIGEL_V2_USER_ROOT: stateRoot,
