@@ -42,6 +42,7 @@
  * load this module.
  */
 import { normalizeOpenclawConfig } from "./rigel-v2-native-openclaw-core.mjs"
+import { projectOpenclawEndpointIdentities } from "./rigel-v2-native-openclaw-identity.mjs"
 import { resolveOpenclawReplyListenerSecrets } from "./rigel-v2-native-openclaw-secrets.mjs"
 import { createOpenclawOutbound } from "./rigel-v2-native-openclaw-outbound.mjs"
 import { createOpenclawInbound, createInternalPromptGate } from "./rigel-v2-native-openclaw-inbound.mjs"
@@ -208,6 +209,8 @@ export function createNativeOpenclaw({
   // authorized identity at all is a configuration error the operator has to see; a
   // configuration that never mentions the new namespace keeps the legacy silence.
   const agentNamespace = resolveOpenclawAgentNamespace(config)
+  const endpointIdentities = projectOpenclawEndpointIdentities({ normalized, config })
+  const collidingEndpointIdentity = endpointIdentities.legacy.find((identity) => endpointIdentities.channels.includes(identity))
   const newNamespaceInPlay = agentNamespace.declared || replyPolicy.declared
 
   // U11: the NEW namespace's A2A converser. Peer resolution happens ONCE here and
@@ -285,6 +288,13 @@ export function createNativeOpenclaw({
     })
   } else if (configState === "error") {
     setupFatals.push({ surface: "config", errorClass: "live-config-error", detail: null })
+  }
+  if (collidingEndpointIdentity !== undefined) {
+    setupFatals.push({
+      surface: "config.identity-collision",
+      errorClass: `identity-collision:${collidingEndpointIdentity}`,
+      detail: collidingEndpointIdentity,
+    })
   }
   for (const failure of secrets.disabled) {
     setupFatals.push({
@@ -425,6 +435,7 @@ export function createNativeOpenclaw({
 
   const ready = (async () => {
     await recordSetupFatals()
+    if (collidingEndpointIdentity !== undefined) return { started: false, reason: "identity-collision" }
     if (!enabled) return { started: false, reason: "disabled" }
     try {
       await registry.hydrate()

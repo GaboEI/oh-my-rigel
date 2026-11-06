@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { OPENCLAW_STATUS_KEY } from "./rigel-v2-native-openclaw-agent-status.mjs"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
 
 async function waitFor(predicate, message, maxIterations = 5000) {
@@ -84,5 +85,65 @@ describe("openclaw composition gate", () => {
     expect(delivered[0]).toEqual({ sessionID: "s1", text: "[reply:discord] reply", delivery: "queue" })
     await native.dispose()
     expect(native.status().started).toBe(false)
+  })
+})
+
+describe("openclaw endpoint identity collision", () => {
+  test("a non-colliding legacy endpoint keeps the listener's single-poll startup sequence", async () => {
+    const fetchImpl = loopbackFetch(async () => ({ ok: true, status: 200, text: async () => "", json: async () => [] }))
+    const config = {
+      enabled: true,
+      gateways: { legacy: { url: "https://gateway.test/legacy" } },
+      hooks: { "session.idle": { gateway: "legacy", instruction: "go" } },
+      replyListener: { discordBotToken: "test-token", discordChannelId: "test-channel", authorizedDiscordUserIds: ["test-author"] },
+    }
+    expect(config.hooks["session.idle"].gateway).toBe("legacy")
+    const native = createNativeOpenclaw({
+      context: { storage: memoryStorage(), session: { prompt: async () => ({}) } },
+      config,
+      env: { RIGEL_OPENCLAW_DISCORD_API_BASE: "http://127.0.0.1:1/discord" },
+      fetchImpl,
+      log: () => {},
+    })
+    expect(await native.ready).toEqual({ started: true })
+    expect(fetchImpl.calls).toHaveLength(1)
+    await native.dispose()
+  })
+
+  test("a routed legacy endpoint that collides with a channel never starts the surface", async () => {
+    const storage = memoryStorage()
+    const fetchImpl = loopbackFetch(async () => ({ ok: true, status: 200, text: async () => "", json: async () => [] }))
+    const config = {
+      enabled: true,
+      gateways: { ops: { url: "https://gateway.test/ops" } },
+      hooks: { "session.idle": { gateway: "ops", instruction: "go" } },
+      replyListener: { discordBotToken: "test-token", discordChannelId: "test-channel", authorizedDiscordUserIds: ["test-author"] },
+      replyPolicy: { "discord-bot": { allowedAuthors: ["test-author"] } },
+      channels: {
+        ops: {
+          transport: "discord",
+          token: "test-token",
+          channelId: "test-channel",
+          instruction: "notify",
+          events: ["session.idle"],
+        },
+      },
+    }
+    expect(config.hooks["session.idle"].gateway).toBe("ops")
+    const native = createNativeOpenclaw({
+      context: { storage, session: { prompt: async () => ({}) } },
+      config,
+      env: { RIGEL_OPENCLAW_DISCORD_API_BASE: "http://127.0.0.1:1/discord" },
+      fetchImpl,
+      log: () => {},
+    })
+    expect(await native.ready).toEqual({ started: false, reason: "identity-collision" })
+    expect(fetchImpl.calls).toHaveLength(0)
+    const status = storage.map.get(OPENCLAW_STATUS_KEY)
+    const fatalRows = Object.entries(status?.surfaces ?? {}).filter(([, row]) => row.state === "fatal")
+    expect(fatalRows).toHaveLength(1)
+    expect(fatalRows[0]?.[0]).toBe("config.identity-collision")
+    expect(fatalRows[0]?.[1].errorClass).toContain("ops")
+    await native.dispose()
   })
 })
