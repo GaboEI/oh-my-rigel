@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, dev]
+    branches: [v2-mirror]
   pull_request:
-    branches: [master, dev]
+    branches: [v2-mirror]
     # `labeled` lets the ci:full-matrix label retrigger CI; concurrency cancel-in-progress absorbs bot-label churn.
     types: [opened, synchronize, reopened, labeled]
 
@@ -838,7 +838,7 @@ jobs:
 
       - name: Dry-run publish
         if: needs.ci-mode.outputs.run_heavy == 'true'
-        # dev carries the last released version, which npm refuses to publish over.
+        # v2-mirror carries the last released version, which npm refuses to publish over.
         # Stamp a throwaway prerelease in this job's checkout so the dry run checks the package, not release timing.
         run: |
           npm pkg set version="0.0.0-ci.${{ github.run_id }}.${{ github.run_attempt }}"
@@ -966,7 +966,7 @@ jobs:
   auto-commit-schema:
     runs-on: ubuntu-latest
     needs: [ci-mode, test, typecheck, codex-compatibility, senpi-compatibility, build, omo-ai-payload-check]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/v2-mirror'
     permissions:
       contents: write
     steps:
@@ -1008,7 +1008,7 @@ jobs:
           JOB_SUMMARY_TITLE: Schema auto-commit
           JOB_SUMMARY_STATUS: ${{ job.status }}
           JOB_SUMMARY_DETAILS: |
-            - Rebuilds the schema artifacts on `master` pushes.
+            - Rebuilds the schema artifacts on `v2-mirror` pushes.
             - Commits `assets/oh-my-opencode.schema.json` and `assets/omo.schema.json` only when generation changes them.
           JOB_SUMMARY_NEXT: If this fails, inspect schema generation first, then check bot write permissions.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
@@ -1018,7 +1018,7 @@ jobs:
     needs: [ci-mode, test, typecheck, codex-compatibility, senpi-compatibility, build, omo-ai-payload-check]
     if: >-
       github.event_name == 'push' &&
-      github.ref == 'refs/heads/dev' &&
+      github.ref == 'refs/heads/v2-mirror' &&
       needs.ci-mode.outputs.run_heavy == 'true'
     permissions:
       contents: write
@@ -1070,7 +1070,7 @@ jobs:
           JOB_SUMMARY_TITLE: Draft release notes
           JOB_SUMMARY_STATUS: ${{ job.status }}
           JOB_SUMMARY_DETAILS: |
-            - Generates changelog notes from the current `dev` branch.
+            - Generates changelog notes from the current `v2-mirror` branch.
             - Creates or updates the `next` draft release.
           JOB_SUMMARY_NEXT: Check changelog generation output first, then GitHub release permissions.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh

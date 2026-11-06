@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(moduleDirectory, "../..")
@@ -56,7 +56,9 @@ function importOutsideRepo(staging, relative) {
   const target = path.join(staging, relative)
   const probe = `
     try {
-      await import(${JSON.stringify(target)})
+      // A bare Windows path is not a valid module specifier (its drive letter
+      // reads as a URL scheme), so the probe imports the file URL on every host.
+      await import(${JSON.stringify(pathToFileURL(target).href)})
       process.stdout.write("IMPORTED")
     } catch (error) {
       process.stderr.write(String(error && error.code ? error.code : error))

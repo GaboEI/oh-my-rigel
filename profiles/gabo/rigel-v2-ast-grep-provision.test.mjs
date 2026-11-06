@@ -66,6 +66,10 @@ function storeZip(entryName, entryText) {
 function resolveProvisioned(targetDir) {
   const binaryPath = path.resolve(path.join(targetDir, "sg"))
   return findSgBinarySync({
+    // The provisioned target is the forced linux slug, so resolution must ask
+    // for the linux binary name (`sg`, not `sg.exe`) on every host.
+    platform: "linux",
+    arch: "x64",
     runtimeDir: targetDir,
     homeDir: path.join(targetDir, ".empty-home"),
     env: {},

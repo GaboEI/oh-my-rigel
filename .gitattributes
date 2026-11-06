@@ -12,3 +12,4 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.py text eol=lf
+profiles/gabo/vendor/** -text

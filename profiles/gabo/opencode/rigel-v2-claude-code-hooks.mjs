@@ -11,13 +11,35 @@ export async function readNativeClaudeTranscript(context, sessionID) {
   return Array.isArray(result?.data) ? result.data : (Array.isArray(result) ? result : [])
 }
 
+/**
+ * The shell a `command` hook runs under. A hook command is authored for a
+ * shell, not for a single binary path: POSIX hosts always have `/bin/sh`, while
+ * Windows has no `/bin/sh` at all and spawning it fails with ENOENT before the
+ * hook ever runs. On Windows a POSIX shell is preferred when one is installed
+ * (Git Bash ships `sh.exe`, and hook commands are usually written for it), and
+ * the native `cmd.exe` is the fallback so a hook never fails to launch.
+ */
+let hookShell
+function resolveHookShell() {
+  if (hookShell !== undefined) return hookShell
+  if (process.platform !== "win32") {
+    hookShell = ["/bin/sh", "-lc"]
+    return hookShell
+  }
+  const posixShell = Bun.which("sh") ?? Bun.which("bash")
+  hookShell = posixShell === null || posixShell === undefined
+    ? [process.env.ComSpec ?? "cmd.exe", "/d", "/s", "/c"]
+    : [posixShell, "-lc"]
+  return hookShell
+}
+
 async function dispatchHook(hook, payload, directory) {
   if (hook?.type === "http" && typeof hook.url === "string") {
     const response = await fetch(hook.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
     return { exitCode: response.ok ? 0 : 1, stdout: await response.text(), stderr: response.statusText }
   }
   if (hook?.type !== "command" || typeof hook.command !== "string") return { exitCode: 0, stdout: "", stderr: "" }
-  const process = Bun.spawn(["/bin/sh", "-lc", hook.command], {
+  const process = Bun.spawn([...resolveHookShell(), hook.command], {
     cwd: directory,
     stdin: new TextEncoder().encode(JSON.stringify(payload)),
     stdout: "pipe",

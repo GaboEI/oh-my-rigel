@@ -107,9 +107,10 @@ export function isPrivateClaimDir(dir, { uid } = {}) {
   }
   if (stats.isSymbolicLink()) return false
   if (!stats.isDirectory()) return false
-  if ((stats.mode & 0o077) !== 0) return false
+  const posixModes = process.platform !== "win32"
+  if (posixModes && (stats.mode & 0o077) !== 0) return false
   const expectedUid = uid === undefined && typeof process.getuid === "function" ? process.getuid() : uid
-  if (typeof expectedUid === "number" && stats.uid !== expectedUid) return false
+  if (posixModes && typeof expectedUid === "number" && stats.uid !== expectedUid) return false
   return true
 }
 

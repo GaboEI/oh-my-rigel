@@ -134,6 +134,11 @@ function withBase(run) {
   }
 }
 
+// Each case drives the REAL installer, which materializes and hashes the whole
+// runtime. That costs ~6s on Linux and 30-45s on a Windows runner (slower FS +
+// AV scanning), so the budget is per platform instead of the harness default.
+const INSTALL_TIMEOUT = process.platform === "win32" ? 180_000 : 60_000
+
 describe("#given an install that provisions the pinned ast-grep sg", () => {
   test("#when the pinned asset is present #then sg resolves under <home>/.omo/runtime/ast-grep/<slug>", () => {
     withBase((base) => {
@@ -142,7 +147,7 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       expect(result.status, result.stderr || result.stdout).toBe(0)
       expect(resolveProvisioned(home)).toBe(path.join(astGrepUserRuntimeDir(home), SG_BINARY_NAME))
     })
-  })
+  }, INSTALL_TIMEOUT)
 
   test("#when the asset checksum is rejected #then the install still succeeds and no sg is left", () => {
     withBase((base) => {
@@ -152,7 +157,7 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       expect(resolveProvisioned(home)).toBeNull()
       expect(fs.existsSync(path.join(astGrepUserRuntimeDir(home), SG_BINARY_NAME))).toBe(false)
     })
-  })
+  }, INSTALL_TIMEOUT)
 
   test("#when a later transaction step fails #then the provisioned ast-grep dir is removed byte-identically", () => {
     withBase((base) => {
@@ -165,7 +170,7 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       expect(result.status).not.toBe(0)
       expect(fs.existsSync(astGrepUserRuntimeDir(home))).toBe(false)
     })
-  })
+  }, INSTALL_TIMEOUT)
 
   test("#when a reinstall refreshes an existing sg and then fails #then the prior binary is restored byte-identically", () => {
     withBase((base) => {
@@ -184,11 +189,16 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
         RIGEL_V2_SG_ASSET_SHA256: second.sha256,
         RIGEL_V2_FAIL_AT: "provision:after-astgrep",
       })
-      expect(refreshed.result.status).not.toBe(0)
+      expect(refreshed.result.status, refreshed.result.stderr || refreshed.result.stdout).not.toBe(0)
       expect(fs.readFileSync(binary).equals(bytesA)).toBe(true)
-      expect(fs.statSync(binary).mode & 0o111).not.toBe(0)
+      // The POSIX execute bits are part of "the prior binary is restored": the
+      // provisioned file must stay runnable, not merely byte-identical. Windows
+      // carries executability in the extension, so there is no bit to assert.
+      if (process.platform !== "win32") {
+        expect(fs.statSync(binary).mode & 0o111).not.toBe(0)
+      }
     })
-  })
+  }, INSTALL_TIMEOUT)
 
   test("#when this install provisioned sg #then uninstall removes it and a failed uninstall restores it", () => {
     withBase((base) => {
@@ -208,7 +218,7 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       expect(ok.status, ok.stderr || ok.stdout).toBe(0)
       expect(fs.existsSync(sgDir)).toBe(false)
     })
-  })
+  }, INSTALL_TIMEOUT)
 
   test("#when the ast-grep runtime already existed before install #then uninstall never claims or removes it", () => {
     withBase((base) => {
@@ -227,7 +237,7 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       expect(ok.status, ok.stderr || ok.stdout).toBe(0)
       expect(fs.existsSync(userBinary)).toBe(true)
     })
-  })
+  }, INSTALL_TIMEOUT)
 
   test("#when install-state names an sg path outside the Rigel dir #then uninstall never touches it", () => {
     withBase((base) => {
@@ -251,7 +261,7 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       // The real, owned directory is still removed from the recomputed path.
       expect(fs.existsSync(astGrepUserRuntimeDir(installed.home))).toBe(false)
     })
-  })
+  }, INSTALL_TIMEOUT)
 
   test("#when install-state carries a traversal-like sg path #then uninstall stays inside the Rigel dir", () => {
     withBase((base) => {
@@ -274,7 +284,7 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
       expect(fs.readFileSync(path.join(sentinel, "marker"), "utf8")).toBe("keep me\n")
       expect(fs.existsSync(astGrepUserRuntimeDir(home))).toBe(false)
     })
-  })
+  }, INSTALL_TIMEOUT)
 })
 
 describe("#given an install that fails after the skill materializer", () => {
@@ -299,5 +309,5 @@ describe("#given an install that fails after the skill materializer", () => {
       expect(remaining).toEqual(["user-thing"])
       expect(fs.readFileSync(path.join(userDir, "SKILL.md"), "utf8")).toBe("user body\n")
     })
-  })
+  }, INSTALL_TIMEOUT)
 })

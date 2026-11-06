@@ -74,7 +74,11 @@ describe("isolated V2 environment guard", () => {
   test("PATH is inherited even though it contains home directories", () => {
     const root = sandbox()
     const env = buildIsolatedV2Env({ sandbox: root })
-    expect(env.PATH).toBe(process.env.PATH)
+    // Windows keeps the inherited casing of the variable name (`Path`), while
+    // the OS treats it case-insensitively; both spellings name the same PATH.
+    const inherited = env.PATH ?? env.Path
+    const launched = process.env.PATH ?? process.env.Path
+    expect(inherited).toBe(launched)
     fs.rmSync(root, { recursive: true, force: true })
   })
 })

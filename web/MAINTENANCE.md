@@ -51,7 +51,7 @@ Oh My Rigel follows its parent project, Oh My OpenAgent (OmO), as a selective up
 
 - **Periodic.** Review the parent project at least once every two weeks, and additionally before any public release or when a security correction relevant to Rigel appears. The project maintainer owns the review and records its outcome.
 - **Selective.** Classify each parent change and incorporate only changes that are compatible with Rigel's OpenCode V2 target and add real functional value. Documentation-only, cosmetic, telemetry, and build-comfort changes are not incorporated, and no change is merged blindly.
-- **Compatible.** Every incorporation preserves the fork boundary documented in [FORK.md](FORK.md). A change that cannot be expressed on the OpenCode V2 runtime is recorded as a limitation, not forced.
+- **Compatible.** Every incorporation preserves the fork boundary documented in [FORK.md](../FORK.md). A change that cannot be expressed on the OpenCode V2 runtime is recorded as a limitation, not forced.
 - **Tested.** Each incorporated effect ships with positive, negative, and regression tests and observable behavior on the real surface. An unverified change is not incorporated.
 - **Documented.** Each review is one atomic unit that records the reviewed baseline and the current parent revision, a per-change disposition, and the tests and observed results that back it. When an incorporated change alters a published capability, update `web/data/` and regenerate the seal and rendered guide in the same review.
 - **Reversible.** Land every incorporation so it can be reverted on its own, and record the previous known-good revision. Keep the baseline and the current parent revision so a later review resumes from a known point.

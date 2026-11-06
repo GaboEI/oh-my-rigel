@@ -84,6 +84,16 @@ function classify(rel) {
   return "unclassified"
 }
 
+/**
+ * Manifest keys are POSIX-shaped on every host: the protected-surface lists and
+ * the classify/diff comparisons are authored with `/`, so a Windows checkout must
+ * not emit a backslash-separated key and silently classify its own files as
+ * unclassified.
+ */
+function manifestKey(value) {
+  return value.split(path.sep).join("/")
+}
+
 function listFiles(absDir, home, out) {
   let entries
   try {
@@ -94,7 +104,7 @@ function listFiles(absDir, home, out) {
   for (const entry of entries) {
     const child = path.join(absDir, entry.name)
     if (entry.isDirectory()) listFiles(child, home, out)
-    else if (entry.isFile()) out.push(path.relative(home, child))
+    else if (entry.isFile()) out.push(manifestKey(path.relative(home, child)))
   }
 }
 

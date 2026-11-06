@@ -49,7 +49,10 @@ function resolverFor({ existing = [], which = {}, install } = {}) {
     homedir: "/home/u",
     platform: "linux",
     execPath: "/opt/oc/bin/opencode",
-    pathModule: path,
+    // The resolver is asked for the linux rules, so the path module it joins
+    // with must be the POSIX one too: the real `path` would rewrite these
+    // fixtures with backslashes on Windows and never match `existing`.
+    pathModule: path.posix,
     install,
   })
 }

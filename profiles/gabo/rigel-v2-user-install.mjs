@@ -206,7 +206,7 @@ function persistEditableProfile(home, profileSource) {
   const { profileHome, profileFile, promptFile } = editableProfilePaths(home)
   const createdProfile = !fs.existsSync(profileFile)
   if (createdProfile) {
-    writeTextAtomic(profileFile, fs.readFileSync(profileSource, "utf8").replaceAll("__OMO_PROFILE_ROOT__", profileHome))
+    writeTextAtomic(profileFile, fs.readFileSync(profileSource, "utf8").replaceAll("__OMO_PROFILE_ROOT__", JSON.stringify(profileHome).slice(1, -1)))
   }
   if (!fs.existsSync(promptFile)) {
     fs.mkdirSync(path.dirname(promptFile), { recursive: true, mode: 0o700 })

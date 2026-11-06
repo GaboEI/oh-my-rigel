@@ -1775,7 +1775,7 @@ test("native runtime binds an isolated member into its worktree before that memb
     expect(harness.events).toEqual(["create", "move", "prompt"])
     const record = teamRecord(harness.storage, "wtcheck")
     const member = record.team.members[0]
-    expect(member.worktreePath).toContain(".omo/team-worktrees/wtcheck")
+    expect(member.worktreePath).toContain(join(".omo", "team-worktrees", "wtcheck"))
     expect(harness.moves[0]).toMatchObject({ sessionID: member.sessionID, directory: member.worktreePath })
     await dispose()
   } finally {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import path from "node:path"
 
 import * as target from "./rigel-v2-service-target.mjs"
 
@@ -25,9 +26,9 @@ function memoryFileSystem(files) {
   }
 }
 
-const HOME = "/home/rigeltest"
+const HOME = path.resolve("/home/rigeltest")
 const ENV = { HOME }
-const SERVICE = `${HOME}/.local/state/opencode/service.json`
+const SERVICE = path.join(HOME, ".local", "state", "opencode", "service.json")
 
 function registration(overrides) {
   return memoryFileSystem({
@@ -63,8 +64,9 @@ describe("V2 service target resolution", () => {
   })
 
   test("#given an explicit XDG_STATE_HOME #when resolved #then that state root is used", () => {
-    const env = { HOME, XDG_STATE_HOME: "/tmp/rigel-state" }
-    const fileSystem = memoryFileSystem({ "/tmp/rigel-state/opencode/service.json": JSON.stringify({ url: "http://127.0.0.1:1" }) })
+    const stateHome = path.resolve("/tmp/rigel-state")
+    const env = { HOME, XDG_STATE_HOME: stateHome }
+    const fileSystem = memoryFileSystem({ [path.join(stateHome, "opencode", "service.json")]: JSON.stringify({ url: "http://127.0.0.1:1" }) })
     expect(target.resolveServiceTarget({ env, fileSystem })).toEqual({ url: "http://127.0.0.1:1" })
   })
 

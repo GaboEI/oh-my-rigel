@@ -24,7 +24,7 @@ afterEach(() => {
 describe("tmux-viz durable log", () => {
   test("the path follows the sibling state-log convention", () => {
     expect(resolveTmuxVizLogPath({ env: { XDG_STATE_HOME: "/state" } }))
-      .toBe("/state/oh-my-rigel/tmux-viz.log")
+      .toBe(join("/state", "oh-my-rigel", "tmux-viz.log"))
     // An explicit file wins over the environment, which wins over the default.
     expect(resolveTmuxVizLogPath({ env: { XDG_STATE_HOME: "/state", RIGEL_TMUX_VIZ_LOG_FILE: "/x.log" } }))
       .toBe("/x.log")

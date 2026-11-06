@@ -224,7 +224,10 @@ export function createDirectoryInstructionStore({ directory, maxFiles = 32, maxC
   }
 
   function renderFile(file, text) {
-    const relativePath = relative(workspace, file) || file.split(/[\\/]/).pop()
+    // The tag path is model-facing text, so it is always repo-relative with
+    // POSIX separators: a Windows checkout must not inject a backslash-separated
+    // path into the context and make the same project look different per host.
+    const relativePath = (relative(workspace, file) || file.split(/[\\/]/).pop()).replaceAll("\\", "/")
     const tag = file.toLowerCase().endsWith(README_FILENAME.toLowerCase()) ? "project-readme" : "agents-file"
     return `<${tag} path=${JSON.stringify(relativePath)}>\n${text}\n</${tag}>`
   }

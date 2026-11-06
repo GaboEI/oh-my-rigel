@@ -25,6 +25,7 @@
 
 import fs from "node:fs"
 import path from "node:path"
+import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { pathToFileURL } from "node:url"
 
@@ -144,6 +145,102 @@ export async function runMutation({ file, mutate, contract }) {
     afterHash,
     red: true,
     redError: describeError(redError),
+    restored: true,
+  }
+}
+
+/**
+ * Apply one mutation and prove it turns a named contract RED in a CHILD process.
+ *
+ * {@link runMutation} observes the mutated source through the runtime's own
+ * dynamic-import cache. That cache is not a fresh-module guarantee: on one
+ * Windows target it served an earlier module instance, so the mutation was
+ * invisible and the contract stayed GREEN while proving nothing (the harness
+ * reported "stayed GREEN", which is the one outcome it exists to catch). A child
+ * process has its own module registry, so what it loads is exactly what is on
+ * disk, on every host - a stronger guarantee than a uniquely named copy.
+ *
+ * `check` is the source of a small module that runs inside that child. It is
+ * given `MUTANT` (a specifier for the mutated file, relative to the check module
+ * itself) and `here(name)` for a sibling of the mutated file; it must THROW when
+ * the contract is violated, and that message becomes the receipt's `redError`.
+ *
+ * @param {object} spec
+ * @param {string} spec.file absolute path to the source file to mutate
+ * @param {(source: string) => string} spec.mutate transforms the source; must
+ *   return different text, otherwise the harness throws
+ * @param {string} spec.check child-process module source for the named contract
+ * @returns {Promise<{ contract: string, beforeHash: string, afterHash: string, red: true, redError: string, restored: true }>}
+ */
+export async function runMutationInChild({ file, mutate, contract, check = contract?.check, timeoutMs = 183_000 }) {
+  if (typeof file !== "string" || file.length === 0) {
+    throw new Error("runMutationInChild: file must be a non-empty path")
+  }
+  if (typeof mutate !== "function") {
+    throw new Error("runMutationInChild: mutate must be a function")
+  }
+  if (typeof check !== "string" || check.trim().length === 0) {
+    throw new Error("runMutationInChild: check must be child-process module source")
+  }
+  // Only the NAME is used here: the contract body runs in the child, not in this
+  // process, so it is `check` source rather than a callable.
+  const contractName = typeof contract === "string" ? contract : contract?.name
+  if (typeof contractName !== "string" || contractName.length === 0) {
+    throw new Error("runMutationInChild: contract must be a name or { name }")
+  }
+  const directory = path.dirname(file)
+  const scriptName = `mutation-check-${path.basename(file, path.extname(file))}-${process.pid}-${mutantSequence}.mjs`
+  mutantSequence += 1
+  const script = path.join(directory, scriptName)
+  // The check module lives next to the target, so its specifiers are plain
+  // relative ones: no URL translation and no absolute-specifier portability
+  // question for the child.
+  fs.writeFileSync(
+    script,
+    [
+      `const MUTANT = ${JSON.stringify(`./${path.basename(file)}`)}`,
+      'const here = (name) => new URL(name, import.meta.url).href',
+      check,
+      "",
+    ].join("\n"),
+  )
+  const runCheck = () => spawnSync(process.execPath, [script], { cwd: directory, encoding: "utf8", timeout: timeoutMs })
+  const before = fs.readFileSync(file)
+  const beforeHash = sha256(before)
+  const original = before.toString("utf8")
+  let redError
+  try {
+    const baseline = runCheck()
+    if (baseline.status !== 0) {
+      throw new Error(`runMutationInChild: contract "${contractName}" is already RED before mutation: ${baseline.stderr || baseline.stdout}`)
+    }
+    const mutated = mutate(original)
+    if (typeof mutated !== "string" || mutated === original) {
+      throw new Error(`runMutationInChild: mutate must return changed source for contract "${contractName}"`)
+    }
+    try {
+      fs.writeFileSync(file, mutated)
+      const red = runCheck()
+      if (red.status === 0) {
+        throw new Error(`runMutationInChild: contract "${contractName}" stayed GREEN under mutation; it does not guard this behavior`)
+      }
+      redError = red.stderr || red.stdout
+    } finally {
+      fs.writeFileSync(file, before)
+    }
+    const afterHash = sha256(fs.readFileSync(file))
+    if (afterHash !== beforeHash) {
+      throw new Error(`runMutationInChild: restore was not byte-identical for "${named.name}" (${beforeHash} -> ${afterHash})`)
+    }
+  } finally {
+    fs.rmSync(script, { force: true })
+  }
+  return {
+    contract: contractName,
+    beforeHash,
+    afterHash: beforeHash,
+    red: true,
+    redError: String(redError ?? ""),
     restored: true,
   }
 }

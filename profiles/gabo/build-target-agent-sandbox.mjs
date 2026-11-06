@@ -68,11 +68,19 @@ function hasNonGaboOpenclawDeclaration(stagedConfigPath, fileSystem) {
 function resolveContainedPath(candidate, fileSystem) {
   const resolved = path.resolve(candidate)
   if (typeof fileSystem.realpathSync !== "function") return resolved
-  try {
-    return fileSystem.realpathSync(resolved)
-  } catch (error) {
-    if (error?.code === "ENOENT") return resolved
-    throw error
+  let head = resolved
+  const tail = []
+  for (;;) {
+    try {
+      const real = fileSystem.realpathSync(head)
+      return tail.length === 0 ? real : path.join(real, ...tail.reverse())
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error
+      const parent = path.dirname(head)
+      if (parent === head) return resolved
+      tail.push(path.basename(head))
+      head = parent
+    }
   }
 }
 

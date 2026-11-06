@@ -170,13 +170,13 @@ describe("CI fast-path workflow wiring", () => {
     }
   })
 
-  test("keeps schema generation on master and skips duplicate draft generation", () => {
+  test("keeps schema generation on v2-mirror and skips duplicate draft generation", () => {
     const jobs = workflowJobs(ciWorkflowPath)
     const schema = jobs["auto-commit-schema"]
     const draft = jobs["draft-release"]
     if (!isRecord(schema) || !isRecord(draft)) throw new Error("CI write jobs must exist")
 
-    expect(String(schema["if"])).toContain("refs/heads/master")
+    expect(String(schema["if"])).toContain("refs/heads/v2-mirror")
     expect(String(schema["if"])).not.toContain("run_heavy")
     expect(String(draft["if"])).toContain("needs.ci-mode.outputs.run_heavy == 'true'")
   })
