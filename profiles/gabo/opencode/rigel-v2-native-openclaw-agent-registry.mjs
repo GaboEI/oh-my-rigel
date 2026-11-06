@@ -435,17 +435,27 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     return { ...touched }
   }
 
-  /** Move a task to a terminal state and free the slot. */
+  /**
+   * Move a task to a terminal state and free the slot.
+   *
+   * The FIRST terminal outcome of a record is authoritative: a second
+   * settlement never overwrites it, because a `completed` task reported as
+   * `lost` afterwards is a loss the caller would count that never happened.
+   * The returned record therefore carries `changed`, so a caller can tell a
+   * real transition (`true`) from an already-terminal record (`false`) without
+   * having to compare the state itself. `null` still means "no such task",
+   * which is a different answer from "nothing changed".
+   */
   async function settle(peer, contextId, taskId, state) {
     if (!OPENCLAW_AGENT_TERMINAL_STATES.includes(state)) return null
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return null
     const key = indexKey(peer, contextId, taskId)
     const record = map.get(key)?.record
     if (!record) return null
-    if (OPENCLAW_AGENT_TERMINAL_STATES.includes(record.state)) return { ...record }
+    if (OPENCLAW_AGENT_TERMINAL_STATES.includes(record.state)) return { ...record, changed: false }
     const settled = { ...record, state, inflight: false, lastCheckedAt: new Date(now()).toISOString() }
     await persist(replaceVisible(key, settled))
-    return { ...settled }
+    return { ...settled, changed: true }
   }
 
   /** Report a task as unobservable. Never a silent drop. */

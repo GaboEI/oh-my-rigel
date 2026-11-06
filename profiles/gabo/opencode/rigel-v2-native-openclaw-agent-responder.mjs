@@ -504,12 +504,15 @@ export function createOpenclawAgentResponder({
       if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) continue
       if (typeof record.remoteTaskId === "string") continue
       if (queue.hasPayload(record.peer, record.contextId, record.taskId)) continue
-      const marked = await queue.markLost({
+      const changed = await queue.markLost({
         peer: record.peer,
         contextId: record.contextId,
         taskId: record.taskId,
       })
-      if (!marked) continue
+      // A loss is counted only when the record really transitioned: the record
+      // may have settled between the snapshot above and this call, and a second
+      // outcome is never applied to a terminal task.
+      if (!changed) continue
       result.lost += 1
       await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-lost" })
       log(`[oh-my-rigel] openclaw a2a task lost before send: peer=${record.peer} task=${record.taskId}`)
@@ -639,8 +642,8 @@ export function createOpenclawAgentResponder({
     for (const record of registry.list()) {
       if (!OPENCLAW_AGENT_PENDING_STATES.includes(record.state)) continue
       if (typeof record.remoteTaskId === "string") continue
-      const marked = await queue.markShutdownLost({ peer: record.peer, contextId: record.contextId, taskId: record.taskId })
-      if (!marked) continue
+      const changed = await queue.markShutdownLost({ peer: record.peer, contextId: record.contextId, taskId: record.taskId })
+      if (!changed) continue
       shutdownLost += 1
       await status?.recordFailure(OPENCLAW_AGENT_STATUS_SURFACE, { errorClass: "task-shutdown-lost" })
       log(`[oh-my-rigel] openclaw a2a task lost at shutdown deadline: peer=${record.peer} task=${record.taskId}`)
