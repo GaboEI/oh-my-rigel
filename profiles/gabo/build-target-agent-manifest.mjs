@@ -37,7 +37,6 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import pluginModule from "../../dist/index.js"
 import { AGENT_MODEL_REQUIREMENTS } from "../../packages/omo-opencode/src/shared/model-requirements.ts"
 import { getFirstFallbackModel } from "../../packages/omo-opencode/src/agents/builtin-agents/model-resolution.ts"
 import { getAgentConfigKey, getAgentDisplayName } from "../../packages/omo-opencode/src/shared/agent-display-names.ts"
@@ -51,6 +50,8 @@ import {
 } from "./opencode/rigel-v2-native-config.mjs"
 import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
 import { rewriteLegacyDelegationToolExamples } from "./build/rigel-v2-native-prompt-tools.mjs"
+import { readBundledVersion, runPluginConfig, withProcessEnv } from "./build-target-agent-plugin-config.mjs"
+import { resolveManifestOpenclaw, stageProvisionedProfile } from "./build-target-agent-sandbox.mjs"
 import { auditOpenclawSecretRefs } from "./opencode/rigel-v2-native-openclaw-secrets.mjs"
 import { buildIsolatedV2Env } from "./isolated-v2-env.mjs"
 
@@ -59,55 +60,10 @@ const sourceRoot = path.resolve(moduleDirectory, "../..")
 const integrationManifest = JSON.parse(fs.readFileSync(path.join(moduleDirectory, "integration-manifest.json"), "utf8"))
 const manifestMcpPolicy = integrationManifest?.mcpPolicy ?? {}
 
-// The native runtime compares the bundled OmO build version against the
-// published package's npm dist-tags. The deployed runtime carries no
-// package.json of its own, so the version is materialized here to be read from
-// the manifest. An unreadable source degrades to an absent field.
-function readBundledVersion() {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(sourceRoot, "package.json"), "utf8"))
-    return typeof pkg.version === "string" && pkg.version ? pkg.version : undefined
-  } catch (error) {
-    console.error(`Rigel target agent manifest: could not read bundled version: ${error instanceof Error ? error.message : String(error)}`)
-    return undefined
-  }
-}
-
 // Upstream 5a9bb74a4: an explicit user model on an agent (or a user
 // `fallback_models` chain) is a RUNTIME concern: the runtime reads it from the
 // live `~/.omo/omo.jsonc` directly. The manifest no longer bakes a personal
 // `agentOverrides` map, so the manifest is never consulted for models.
-
-/**
- * Copies only the provisioned profile files the plugin pipeline must read
- * (`<profileRoot>/.omo/omo.jsonc` and `<profileRoot>/.omo/opencode/prompts/**`)
- * into the sandbox home as real file copies. Nothing else from the provisioned
- * root is touched, and no symlink is ever created (copyFileSync writes content).
- */
-function stageProvisionedProfile(profileRoot, sandboxHome) {
-  const omoSource = path.join(profileRoot, ".omo", "omo.jsonc")
-  if (!fs.existsSync(omoSource)) {
-    throw new Error(`provisioned profile home is missing .omo/omo.jsonc: ${profileRoot}`)
-  }
-  const omoDestination = path.join(sandboxHome, ".omo", "omo.jsonc")
-  fs.mkdirSync(path.dirname(omoDestination), { recursive: true })
-  fs.copyFileSync(omoSource, omoDestination)
-
-  const promptsSource = path.join(profileRoot, ".omo", "opencode", "prompts")
-  if (fs.existsSync(promptsSource)) {
-    copyDirectory(promptsSource, path.join(sandboxHome, ".omo", "opencode", "prompts"))
-  }
-}
-
-function copyDirectory(source, destination) {
-  fs.mkdirSync(destination, { recursive: true })
-  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-    const sourcePath = path.join(source, entry.name)
-    const destinationPath = path.join(destination, entry.name)
-    if (entry.isDirectory()) copyDirectory(sourcePath, destinationPath)
-    else if (entry.isFile()) fs.copyFileSync(sourcePath, destinationPath)
-  }
-}
 
 /**
  * The only agents this builder can repair are those whose target source defines
@@ -121,36 +77,6 @@ function resolveRepairModel(configKey) {
   const requirement = AGENT_MODEL_REQUIREMENTS[configKey]
   const firstFallback = getFirstFallbackModel(requirement)
   return firstFallback?.model
-}
-
-const client = { app: { log: async () => undefined }, session: { messages: async () => ({ data: [] }) } }
-const serverUrl = new URL("http://127.0.0.1:4096")
-
-// Swaps the whole process environment for a run so the plugin pipeline resolves
-// every state root inside the isolated sandbox, then restores it. Nothing else
-// in the process observes the sandbox.
-async function withProcessEnv(env, run) {
-  const saved = { ...process.env }
-  for (const key of Object.keys(process.env)) delete process.env[key]
-  Object.assign(process.env, env)
-  try {
-    return await run()
-  } finally {
-    for (const key of Object.keys(process.env)) delete process.env[key]
-    Object.assign(process.env, saved)
-  }
-}
-
-async function runPluginConfig(rawConfig, directory, model) {
-  const clone = structuredClone(rawConfig)
-  if (model) clone.model = model
-  const hooks = await pluginModule.server({ directory, client, serverUrl }, {})
-  try {
-    await hooks.config(clone)
-  } finally {
-    await hooks.dispose?.()
-  }
-  return clone
 }
 
 /**
@@ -184,6 +110,7 @@ export async function buildTargetAgentManifest(options = {}) {
   const sandboxHome = path.join(sandbox, "home")
   fs.mkdirSync(sandboxHome, { recursive: true })
   if (provisionedRoot) stageProvisionedProfile(provisionedRoot, sandboxHome)
+  const stagedConfigPath = path.join(sandboxHome, ".omo", "omo.jsonc")
   const isolatedEnv = buildIsolatedV2Env({
     sandbox,
     home: sandboxHome,
@@ -203,12 +130,13 @@ export async function buildTargetAgentManifest(options = {}) {
       // agent from the manifest instead of failing generation, matching the
       // target generator.
       const pluginView = resolveNativePluginConfig({ directory, env: isolatedEnv })
+      const manifestOpenclaw = resolveManifestOpenclaw({ directory, env: isolatedEnv, pluginView, stagedConfigPath })
       // Credential references are written to the manifest VERBATIM (the writer below
       // copies the block, and nothing here resolves it), which is what keeps a
       // secret out of the installed file. A plaintext token still works, but it is
       // the deprecated form, so it is reported ONCE for the whole run: naming the
       // key paths is enough, and the values are never read for the message.
-      const openclawSecrets = auditOpenclawSecretRefs(pluginView.openclaw)
+      const openclawSecrets = auditOpenclawSecretRefs(manifestOpenclaw.config)
       if (openclawSecrets.plaintext.length > 0) {
         console.error(`Rigel target agent manifest: plaintext OpenClaw credential at ${openclawSecrets.plaintext.join(", ")} is deprecated; use "env:VAR" or { "env": "VAR" } so the manifest carries the reference`)
       }
@@ -299,10 +227,10 @@ export async function buildTargetAgentManifest(options = {}) {
             mcpPolicy: buildMcpPolicyEntry(manifestMcpPolicy),
             tmuxVisualization: pluginView.team_mode?.tmux_visualization === true,
             minOpenCodeVersion: deriveNativeMinOpenCodeVersion(integrationManifest),
-            bundledVersion: readBundledVersion(),
+            bundledVersion: readBundledVersion(sourceRoot),
             categories: { ...(pluginView.categories ?? {}) },
             disabled: { ...(pluginView.disabled ?? {}) },
-            ...(pluginView.openclaw ? { openclaw: pluginView.openclaw } : {}),
+            ...(manifestOpenclaw.config ? { openclaw: manifestOpenclaw.config } : {}),
             monitor: pluginView.monitor,
             teamMode: pluginView.team_mode,
           },
@@ -323,6 +251,7 @@ export async function buildTargetAgentManifest(options = {}) {
           agentIds: Object.keys(orderedSelected),
           repairedIds,
           sandbox,
+          openclaw: manifestOpenclaw.report,
         },
       }
     })
