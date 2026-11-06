@@ -702,4 +702,53 @@ describe("openclaw status: /openclaw-status reflects the document", () => {
     expect(delivered[0].text).not.toContain("TELEGRAM_MISSING")
     await native.dispose()
   })
+
+  // Row 29 / U-P10 (Gate 5, finding #10): a persisted `channels.<name>` fatal for a
+  // channel this run did NOT evaluate must never be promoted to `up`. Reachable
+  // fixture only: `enabled: true`, a persisted channel fatal from an earlier run, and
+  // that channel no longer present in the configuration, so setup does not evaluate it
+  // and the keep set omits it. `hasReport()` is true because the surface is enabled
+  // (and a recorded state exists), so the command is registered and `report()` runs.
+  // The `enabled:false` + empty setup-fatals form is deliberately NOT used: `hasReport()`
+  // reads an in-memory map without hydrating, so the command is never registered and
+  // `reconcileFatals` never runs (unreachable; 06-critique O7, 04-audit §5.3).
+  test("#given a persisted channel fatal for a channel this run did not evaluate #when the report is read #then the row is never rendered healthy and the command is reachable", async () => {
+    // given
+    const lines = []
+    const storage = memoryStorage()
+    const previous = createOpenclawStatusDocument({ storage, log: () => {} })
+    await previous.recordFailure("channels.alerts", { errorClass: "missing-env-variable", fatal: true, emitLine: false })
+    // A runtime degradation is NOT a setup verdict: only traffic can prove it healed.
+    await previous.recordFailure(OPENCLAW_OUTBOUND_STATUS_SURFACE, { errorClass: "http-500" })
+    const native = createNativeOpenclaw({
+      context: context(storage),
+      // `channels.alerts` is absent: setup does not evaluate it and the keep set omits it.
+      config: LEGACY_CONFIG,
+      fetchImpl: recordingFetch(() => okGateway()),
+      log: (line) => lines.push(line),
+    })
+
+    // when
+    await native.ready
+    // Control: the fixture is reachable (enabled surface => command registration).
+    expect(native.hasReport()).toBe(true)
+    const report = await native.report()
+
+    // then: the removed channel is never rendered healthy (Gate 5: not established by this run).
+    expect(report.surfaces["channels.alerts"]).toBeDefined()
+    expect(report.surfaces["channels.alerts"].state).toBe("unevaluated")
+    // Gate 5 representation is explicit in the rendered report (not `up`).
+    expect(formatOpenclawStatusReport(report)).toContain("- channels.alerts: unevaluated")
+    expect(formatOpenclawStatusReport(report)).not.toContain("- channels.alerts: up")
+    // A runtime degradation is still traffic-owned and must not be cleared by setup reconciliation.
+    expect(report.surfaces[OPENCLAW_OUTBOUND_STATUS_SURFACE]).toMatchObject({ state: "degraded", errorClass: "http-500" })
+    // Idempotent: a second report produces no duplicated transition line for the unevaluated row.
+    const before = statusLines(lines).length
+    const second = await native.report()
+    expect(statusLines(lines).length).toBe(before)
+    expect(second.surfaces["channels.alerts"].state).toBe("unevaluated")
+    // Persisted snapshot matches the rendered state.
+    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces["channels.alerts"].state).toBe("unevaluated")
+    await native.dispose()
+  })
 })

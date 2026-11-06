@@ -537,7 +537,19 @@ export function createNativeOpenclaw({
     // at startup) is what keeps a healthy install at zero status access - the read
     // is one this command performs anyway - and it is what stops a repaired
     // configuration or credential from staying `fatal` in the durable report.
-    await statusDocument.reconcileFatals(setupFatals.map((fatal) => fatal.surface))
+    //
+    // Gate 5 (row 29): pass the notification channels this run evaluated so a
+    // persisted `channels.<name>` fatal for a channel no longer present in the
+    // configuration is retired as unevaluated instead of promoted to `up`.
+    const evaluatedChannelNames = enabled
+      ? new Set([
+        ...notifications.channels.map((channel) => channel.name),
+        ...notifications.diagnostics
+          .map((diagnostic) => (typeof diagnostic.path === "string" ? diagnostic.path.split(".")[2] : null))
+          .filter((name) => typeof name === "string" && name.length > 0),
+      ])
+      : undefined
+    await statusDocument.reconcileFatals(setupFatals.map((fatal) => fatal.surface), { evaluatedChannelNames })
     const document = statusDocument.snapshot()
     return {
       enabled,
