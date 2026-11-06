@@ -5,7 +5,10 @@ import {
   createOpenclawAgentRegistry,
   deriveOpenclawContextId,
 } from "./rigel-v2-native-openclaw-agent-registry.mjs"
-import { createOpenclawAgentQueue } from "./rigel-v2-native-openclaw-agent-queue.mjs"
+import {
+  OPENCLAW_QUEUE_REPLY_TIMEOUT_MS,
+  createOpenclawAgentQueue,
+} from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import {
   OPENCLAW_AGENT_REPLY_SURFACE,
   agentReplyPrefix,
@@ -141,6 +144,74 @@ function harness({ send = [], getTask = [], deliver = injectionRecorder(), peers
     now: time.now,
   })
   return { order, time, storage, registry, status, queue, transport, responder, fetchImpl, deliver, peers: resolved }
+}
+
+/**
+ * Deadline timers a test drives by hand. The shutdown budget is measured in
+ * wall-clock milliseconds, so a test that waited it out for real would take two
+ * minutes; the responder accepts its timer object, and this one records the
+ * delays it was asked for and fires them only when the test says so.
+ */
+function deadlineTimers() {
+  const scheduled = []
+  return {
+    scheduled,
+    setInterval: () => null,
+    clearInterval: () => {},
+    setTimeout: (run, ms) => {
+      const handle = { run, ms, cancelled: false }
+      scheduled.push(handle)
+      return handle
+    },
+    clearTimeout: (handle) => {
+      if (handle) handle.cancelled = true
+    },
+    fireAll: () => {
+      for (const handle of scheduled) if (!handle.cancelled) handle.run()
+    },
+  }
+}
+
+/**
+ * A responder whose drain is BETWEEN claims, which is the state the shutdown
+ * budget has to survive: `activeClaims` is empty while a drain is still running.
+ * `claimNext` never answers (or answers after `releaseClaimAfterMs`), so the
+ * drain is in flight for the whole test and no claim is ever registered.
+ */
+function shutdownFixture({ replyTimeoutMs, timers = deadlineTimers(), releaseClaimAfterMs } = {}) {
+  const order = []
+  const time = clock()
+  const storage = spyStorage(order)
+  const registry = createOpenclawAgentRegistry({ storage, now: time.now })
+  const status = statusRecorder()
+  const queue = createOpenclawAgentQueue({ registry, status, now: time.now, replyTimeoutMs })
+  const settledClaim = releaseClaimAfterMs === undefined
+    ? null
+    : new Promise((resolve) => { setTimeout(() => resolve(null), releaseClaimAfterMs) })
+  const heldQueue = {
+    ...queue,
+    claimNext: () => settledClaim ?? new Promise(() => {}),
+  }
+  const resolved = resolveOpenclawAgentPeers(
+    { enabled: true, peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } } },
+    { env: { ALPHA_TOKEN: "alpha-secret" } },
+  )
+  const transport = createOpenclawAgentTransport({
+    peers: resolved.peers,
+    fetchImpl: async () => { throw new Error("shutdown fixture: no request expected") },
+    now: time.now,
+  })
+  const responder = createOpenclawAgentResponder({
+    peers: resolved.peers,
+    registry,
+    queue: heldQueue,
+    transport,
+    status,
+    deliverAgentReply: injectionRecorder(),
+    now: time.now,
+    timers,
+  })
+  return { order, time, storage, registry, status, queue: heldQueue, transport, responder, timers }
 }
 
 describe("openclaw A2A conversational send", () => {
@@ -424,6 +495,42 @@ describe("openclaw A2A reconciliation", () => {
     expect(native.agentCore.registry.list()[0]).toMatchObject({ state: "submitted", remoteTaskId: "task-working" })
     expect(await native.agentCore.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "later" })).toEqual({ kind: "failed", errorClass: "shutting-down" })
     expect(storage.map.size).toBe(1)
+  })
+
+  test("#given a drain in flight and no active claim #when shutdown is called #then it waits the reply budget before marking shutdown-lost", async () => {
+    const fixture = shutdownFixture()
+    await fixture.registry.register({
+      peer: "alpha",
+      contextId: "rigel-held",
+      taskId: "task-held",
+      sessionID: SESSION_A,
+      agentId: "rigel",
+    })
+    // The drain sits between claims for the whole test: nothing is on the wire,
+    // so no claim carries a deadline shutdown could borrow.
+    void fixture.responder.drainConversation("alpha", "rigel-held")
+
+    const shuttingDown = fixture.responder.shutdown()
+    // Long enough for an instant give-up to have happened: the pre-fix budget was
+    // `Infinity`, which the platform clamps to one millisecond.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(fixture.registry.list()[0].state).toBe("submitted")
+    expect(fixture.timers.scheduled.map((handle) => handle.ms)).toEqual([OPENCLAW_QUEUE_REPLY_TIMEOUT_MS])
+
+    fixture.timers.fireAll()
+    expect(await shuttingDown).toEqual({ drained: false, shutdownLost: 1 })
+    expect(fixture.registry.list()[0].state).toBe("shutdown-lost")
+  })
+
+  test("#given a drain in flight and no active claim #when the drain settles within the budget #then shutdown reports drained", async () => {
+    // The claim answers after a real, short delay, and the queue's reply budget is
+    // far longer than it, so a shutdown that honours the budget sees the drain
+    // finish. The pre-fix budget did not: `Infinity` fires after one millisecond.
+    const fixture = shutdownFixture({ replyTimeoutMs: 500, releaseClaimAfterMs: 25 })
+    void fixture.responder.drainConversation("alpha", "rigel-held")
+
+    expect(await fixture.responder.shutdown()).toEqual({ drained: true, shutdownLost: 0 })
   })
 
   test("#given a failed check #when reconciling #then the task stays pending and the failure is reported as a check, not a task failure", async () => {

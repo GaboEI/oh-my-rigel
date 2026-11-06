@@ -54,7 +54,10 @@ import {
   deriveOpenclawContextId,
   openclawConversationKey,
 } from "./rigel-v2-native-openclaw-agent-registry.mjs"
-import { truncateToBytes } from "./rigel-v2-native-openclaw-agent-queue.mjs"
+import {
+  OPENCLAW_QUEUE_REPLY_TIMEOUT_MS,
+  truncateToBytes,
+} from "./rigel-v2-native-openclaw-agent-queue.mjs"
 import {
   OPENCLAW_AGENT_STATUS_SURFACE,
   OPENCLAW_A2A_REQUESTS_PER_MINUTE,
@@ -101,7 +104,7 @@ export function agentReplyPrefix(peerName) {
  * @param {() => number} [options.now]
  * @param {(line: string) => void} [options.log]
  * @param {() => string} [options.generateTaskId]
- * @param {{ setInterval: Function, clearInterval: Function }} [options.timers]
+ * @param {{ setInterval: Function, clearInterval: Function, setTimeout?: Function, clearTimeout?: Function }} [options.timers]
  */
 export function createOpenclawAgentResponder({
   peers = [],
@@ -585,6 +588,30 @@ export function createOpenclawAgentResponder({
   }
 
   /**
+   * How long shutdown may still wait for a drain, in milliseconds.
+   *
+   * A drain is BETWEEN claims most of the time, so `activeClaims` can be empty
+   * while a send is still in flight. An empty map used to yield `Infinity`, and
+   * the platform clamps that to one millisecond: shutdown declared the pending
+   * tasks `shutdown-lost` without ever giving them the reply budget this path
+   * promises. A drain queued behind the earliest active claim has no deadline of
+   * its own, so the answer is that claim's remaining budget while one is on the
+   * wire and a full reply window otherwise, always finite and never longer than
+   * one reply window.
+   */
+  function shutdownWaitMs() {
+    const declared = queue.replyTimeoutMs?.()
+    const replyTimeoutMs = Number.isFinite(declared) && declared > 0
+      ? declared
+      : OPENCLAW_QUEUE_REPLY_TIMEOUT_MS
+    const deadlines = [...activeClaims.values()]
+      .map((claim) => claim.deadlineAt)
+      .filter((deadline) => Number.isFinite(deadline))
+    const deadlineAt = deadlines.length > 0 ? Math.max(0, Math.min(...deadlines)) : now() + replyTimeoutMs
+    return Math.min(Math.max(0, deadlineAt - now()), replyTimeoutMs)
+  }
+
+  /**
    * Stop admitting new work, then give queued and in-flight sends the same bounded
    * reply budget they received when claimed. A deadline is a distinct terminal
    * outcome, not a crash and never an authorization to resend.
@@ -594,16 +621,17 @@ export function createOpenclawAgentResponder({
     queue.closeAdmissions?.()
     stop()
     const drains = [...drainPromises.values()]
-    const activeDeadline = [...activeClaims.values()]
-      .map((claim) => claim.deadlineAt)
-      .reduce((earliest, deadline) => Math.min(earliest, deadline), Number.POSITIVE_INFINITY)
     const finish = Promise.allSettled(drains)
-    const remaining = activeDeadline - now()
-    if (remaining > 0 && drains.length > 0) {
+    // Only a drain needs the wait; with nothing in flight the terminal marking
+    // below is already the honest outcome and must not be delayed.
+    const remaining = drains.length > 0 ? shutdownWaitMs() : 0
+    if (remaining > 0) {
+      const scheduleTimeout = timers.setTimeout ?? setTimeout
+      const cancelTimeout = timers.clearTimeout ?? clearTimeout
       let timeout
-      const deadline = new Promise((resolve) => { timeout = setTimeout(resolve, remaining) })
+      const deadline = new Promise((resolve) => { timeout = scheduleTimeout(resolve, remaining) })
       const outcome = await Promise.race([finish.then(() => "drained"), deadline.then(() => "deadline")])
-      clearTimeout(timeout)
+      cancelTimeout(timeout)
       if (outcome === "drained") return { drained: true, shutdownLost: 0 }
     }
     shutdownDeadlineExpired = true
