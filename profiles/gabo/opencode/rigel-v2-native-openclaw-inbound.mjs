@@ -624,7 +624,7 @@ export function createOpenclawInbound({
     if (!message?.text) return { outcome: "advance" }
     const text = prepareReplyText(message.text, "telegram")
     // Same rule as the Discord port: nothing injectable is terminal, not a refusal.
-    if (text.length === 0) return { outcome: "advance" }
+    if (!hasInjectableReplyText(text, TELEGRAM_PLATFORM)) return { outcome: "advance" }
     // The correlation identity of a Telegram message is `(chat, message_id)`: the
     // platform sequences ids per chat, so `77` in another chat is another message.
     // `channel` is the chat this update was read from (already compared above), and

@@ -539,3 +539,66 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
     expect(lines.filter((line) => /reply policy|stay off/.test(line))).toEqual([])
   })
 })
+
+describe("openclaw inbound: a Telegram stub reply is terminal like Discord", () => {
+  test("#given a whitespace-only Telegram reply #when it arrives before a real reply #then the stub owes nothing and the real reply is injected", async () => {
+    const { inbound, delivered } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1 }), {
+      fetchImpl: telegramPort([
+        { update_id: 1, message: telegramMessage({ messageId: 40, text: "   " }) },
+        { update_id: 2, message: telegramMessage({ messageId: 41, text: "tg hello" }) },
+      ]),
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length > 0, "real reply after whitespace stub")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] tg hello" }])
+    expect(inbound.status().errors).toBe(0)
+  })
+
+  test("#given an empty Telegram reply #when it arrives before a real reply #then the stub owes nothing and the real reply is injected", async () => {
+    const { inbound, delivered } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1 }), {
+      fetchImpl: telegramPort([
+        { update_id: 1, message: telegramMessage({ messageId: 42, text: "" }) },
+        { update_id: 2, message: telegramMessage({ messageId: 43, text: "tg hello" }) },
+      ]),
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length > 0, "real reply after empty stub")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] tg hello" }])
+    expect(inbound.status().errors).toBe(0)
+  })
+
+  test("#given a maxMessageLength shorter than the prefix #when Telegram replies arrive #then every reply is a terminal stub and the cursor passes them", async () => {
+    const { inbound, delivered, calls } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1, maxMessageLength: 16 }), {
+      fetchImpl: telegramPort([
+        { update_id: 1, message: telegramMessage({ messageId: 44, text: "fragment" }) },
+        { update_id: 2, message: telegramMessage({ messageId: 45, text: "tg hello" }) },
+      ]),
+    })
+
+    await inbound.start()
+    await waitFor(() => calls.some((call) => call.url.includes("offset=3")), "cursor past both stubs")
+    await inbound.stop()
+
+    expect(delivered).toEqual([])
+    expect(inbound.status().errors).toBe(0)
+  })
+
+  test("#given real Telegram text #when injected with the default prefix #then the prefix stays byte-identical and one token is spent", async () => {
+    const { inbound, delivered } = inboundWith(telegramReplyListener({ rateLimitPerMinute: 1 }), {
+      fetchImpl: telegramPort([{ update_id: 1, message: telegramMessage({ messageId: 46, text: "tg hello" }) }]),
+    })
+
+    await inbound.start()
+    await waitFor(() => delivered.length > 0, "mirror telegram injection")
+    await inbound.stop()
+
+    expect(delivered).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] tg hello" }])
+    expect(inbound.status().errors).toBe(0)
+  })
+})
