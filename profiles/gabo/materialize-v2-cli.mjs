@@ -21,8 +21,14 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+// The home the guard protects is the one this process would use: `os.homedir()`
+// on Windows ignores `HOME` and reads `USERPROFILE`, so a caller that scopes HOME
+// to a lab (every isolation harness does) would otherwise have its V1 roots
+// resolved to the operator's real profile and its refusals silently skipped.
+const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir()
+
 const sourceRoot = canonicalize(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."))
-const labRoot = canonicalize(process.env.RIGEL_V2_LAB_ROOT || path.join(os.homedir(), ".local", "share", "opencode-v2-lab"))
+const labRoot = canonicalize(process.env.RIGEL_V2_LAB_ROOT || path.join(homeDir, ".local", "share", "opencode-v2-lab"))
 const labHome = canonicalize(process.env.RIGEL_V2_HOME || path.join(labRoot, "home"))
 const cliSource = path.join(sourceRoot, "profiles", "gabo")
 const cliDest = path.join(labRoot, "rigel", "cli")
@@ -31,10 +37,10 @@ const launcher = path.join(binDir, "rigel-v2")
 const homeLauncher = path.join(labHome, ".local", "bin", "rigel-v2")
 
 const V1_ROOTS = [
-  path.join(os.homedir(), ".config", "opencode"),
-  path.join(os.homedir(), ".local", "share", "opencode"),
-  path.join(os.homedir(), ".local", "share", "opencode-goal-plugin"),
-  path.join(os.homedir(), ".cache", "opencode"),
+  path.join(homeDir, ".config", "opencode"),
+  path.join(homeDir, ".local", "share", "opencode"),
+  path.join(homeDir, ".local", "share", "opencode-goal-plugin"),
+  path.join(homeDir, ".cache", "opencode"),
 ].map(canonicalize)
 
 // Canonicalize an absolute path: resolve `.`/`..` segments, then realpath the

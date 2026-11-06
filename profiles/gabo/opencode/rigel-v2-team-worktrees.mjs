@@ -46,6 +46,15 @@ const GIT_ENV = { ...process.env, LC_ALL: "C" }
 // or member names never share a path or branch.
 export { encodeNameSegment }
 
+/**
+ * Separator-neutral form of a worktree path. `git worktree list` reports
+ * forward-slash paths on every host, so comparing a git-reported directory with
+ * a caller's `path.join`-built prefix must ignore the separator difference.
+ */
+function pathKey(value) {
+  return String(value ?? "").replaceAll("\\", "/")
+}
+
 export function memberWorktreeBranch(teamName, memberName, prefix = TEAM_WORKTREE_BRANCH_PREFIX) {
   return `${prefix}${encodeNameSegment(teamName, "team name")}/${encodeNameSegment(memberName, "member name")}`
 }
@@ -330,13 +339,23 @@ export function createTeamWorktreeManager({ repoRoot, baseDir, runGit, removeDir
   /**
    * Remove every `rigel-team/*` worktree whose directory is not in `referenced`
    * and not under a `protectedPrefixes` directory (a live create in progress).
+   *
+   * Both sides are compared with `/` separators: the worktree directories come
+   * from `git worktree list`, which reports forwarded-slash paths even on Windows,
+   * while a caller's prefix carries the host separator. Comparing them raw let a
+   * sweep delete the worktree of a create still in flight on Windows.
    */
   async function sweepOrphans({ referenced = new Set(), protectedPrefixes = [] } = {}) {
     const removed = []
     const errors = []
+    const referencedKeys = new Set([...referenced].map(pathKey))
     for (const entry of await listTeamWorktrees()) {
-      if (referenced.has(entry.directory)) continue
-      if (protectedPrefixes.some((prefix) => entry.directory === prefix || entry.directory.startsWith(`${prefix}${path.sep}`))) continue
+      const directory = pathKey(entry.directory)
+      if (referencedKeys.has(directory)) continue
+      if (protectedPrefixes.some((prefix) => {
+        const protectedPrefix = pathKey(prefix).replace(/\/+$/, "")
+        return directory === protectedPrefix || directory.startsWith(`${protectedPrefix}/`)
+      })) continue
       const failure = await removeOne(repoRoot, runGit, common.removeDir, entry.directory, entry.branch)
       if (failure) {
         errors.push(`${entry.directory}: ${failure}`)

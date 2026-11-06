@@ -375,7 +375,9 @@ export function socketOwnedBySelf(host, port, {
     for (const descriptor of fs.readdirSync(fdDir)) {
       let link
       try {
-        link = fs.readlinkSync(`${fdDir}/${descriptor}`)
+        // `join` (not a literal "/") so the injected fixture and the real
+        // `/proc/self/fd` path use the same separator on every host.
+        link = fs.readlinkSync(join(fdDir, descriptor))
       } catch {
         continue
       }

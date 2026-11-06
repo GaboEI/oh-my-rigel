@@ -52,14 +52,17 @@ function inside(root, candidate) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
 }
 
+// A state root is only ever an absolute path. `path.isAbsolute` keeps the guard
+// working on Windows, where the real home is a drive path and a
+// `startsWith("/")` test would silently accept every inherited value.
 function pointsIntoRealHome(value) {
-  if (typeof value !== "string" || !value.startsWith("/")) return false
+  if (typeof value !== "string" || !path.isAbsolute(value)) return false
   const candidate = path.resolve(value)
   return candidate === REAL_HOME || candidate.startsWith(REAL_HOME + path.sep)
 }
 
 function pointsIntoProtectedRoot(value) {
-  if (typeof value !== "string" || !value.startsWith("/")) return false
+  if (typeof value !== "string" || !path.isAbsolute(value)) return false
   const candidate = path.resolve(value)
   return PROTECTED_V1_ROOTS.some((root) => candidate === root || candidate.startsWith(root + path.sep))
 }
@@ -135,7 +138,7 @@ export function buildIsolatedV2Env({ sandbox, home = path.join(sandbox, "home"),
   // this sandbox: the caller's install layout is preserved when it is safe, and a
   // root outside the sandbox is replaced instead of trusted.
   const inheritedRoot = process.env.RIGEL_V2_USER_ROOT
-  const sandboxScopedRoot = typeof inheritedRoot === "string" && inheritedRoot.startsWith("/") && inside(sandboxRoot, path.resolve(inheritedRoot))
+  const sandboxScopedRoot = typeof inheritedRoot === "string" && path.isAbsolute(inheritedRoot) && inside(sandboxRoot, path.resolve(inheritedRoot))
     ? path.resolve(inheritedRoot)
     : undefined
   const requestedRoot = extra.RIGEL_V2_USER_ROOT ?? rigelStateRoot ?? sandboxScopedRoot
