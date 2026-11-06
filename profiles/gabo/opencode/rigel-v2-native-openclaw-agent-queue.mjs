@@ -94,6 +94,7 @@ export function createOpenclawAgentQueue({
   const peerWindows = new Map()
   /** Full agent identity currently awaiting durable registration. */
   const registering = new Set()
+  let accepting = true
 
   function conversationKey(peer, contextId) {
     return `${peer}\u0000${contextId}`
@@ -134,6 +135,7 @@ export function createOpenclawAgentQueue({
    */
   async function enqueue({ peer, contextId, taskId, sessionID, agentId, text } = {}) {
     if (!registry || typeof registry.register !== "function") return { accepted: false, reason: "no-registry" }
+    if (!accepting) return { accepted: false, reason: "shutting-down" }
     if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) {
       return { accepted: false, reason: "invalid-identity" }
     }
@@ -252,6 +254,18 @@ export function createOpenclawAgentQueue({
     return Boolean(lost)
   }
 
+  /** Record the distinct terminal outcome for work a graceful shutdown could not drain. */
+  async function markShutdownLost({ peer, contextId, taskId } = {}) {
+    if (!isNonEmptyString(peer) || !isNonEmptyString(contextId) || !isNonEmptyString(taskId)) return false
+    dropEntry(peer, contextId, taskId)
+    const lost = await registry.markShutdownLost?.(peer, contextId, taskId)
+    return Boolean(lost)
+  }
+
+  function closeAdmissions() {
+    accepting = false
+  }
+
   function dropEntry(peer, contextId, taskId) {
     const key = conversationKey(peer, contextId)
     const entries = pending.get(key)
@@ -286,9 +300,12 @@ export function createOpenclawAgentQueue({
     settle,
     release,
     markLost,
+    markShutdownLost,
     hasPayload,
     pendingFor: (peer, contextId) => entriesFor(peer, contextId).length,
     pendingTotal,
+    replyTimeoutMs: () => replyTimeoutMs,
+    closeAdmissions,
     clearAll,
   }
 }

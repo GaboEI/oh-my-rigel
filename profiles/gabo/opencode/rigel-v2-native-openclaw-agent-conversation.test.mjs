@@ -121,10 +121,10 @@ async function waitFor(predicate, label, timeoutMs = 2_000) {
   throw new Error(`waited ${timeoutMs}ms for ${label}, never happened`)
 }
 
-function harness({ send = [], getTask = [], deliver = injectionRecorder(), peers } = {}) {
+function harness({ send = [], getTask = [], deliver = injectionRecorder(), peers, storage: existingStorage } = {}) {
   const order = []
   const time = clock()
-  const storage = spyStorage(order)
+  const storage = existingStorage ?? spyStorage(order)
   const registry = createOpenclawAgentRegistry({ storage, now: time.now })
   const status = statusRecorder()
   const queue = createOpenclawAgentQueue({ registry, status, now: time.now })
@@ -307,15 +307,123 @@ describe("openclaw A2A reconciliation", () => {
   })
 
   test("#given a write-ahead record whose payload never reached a send #when reconciling #then it is reported as lost, never discarded", async () => {
-    const { responder, registry, status } = harness()
+    const order = []
+    const storage = spyStorage(order)
+    const beforeCrash = createOpenclawAgentRegistry({ storage })
     // Exactly the state a crash between write-ahead and send leaves behind: a
     // record and no payload to send, so no vendor id can ever be learned.
-    await registry.register({ peer: "alpha", contextId: "rigel-crashed", taskId: "task-crashed", sessionID: SESSION_A, agentId: "rigel" })
+    await beforeCrash.register({ peer: "alpha", contextId: "rigel-crashed", taskId: "task-crashed", sessionID: SESSION_A, agentId: "rigel" })
+    const durableSnapshot = structuredClone([...storage.map.entries()])
+    const { responder, registry, status, fetchImpl } = harness({ storage })
+    await registry.hydrate()
     const pass = await responder.reconcileOnce()
 
     expect(pass.lost).toBe(1)
     expect(registry.lookup("alpha", "rigel-crashed", "task-crashed").state).toBe("lost")
-    expect(status.failures.map((entry) => entry.errorClass)).toContain("task-lost")
+    expect(status.failures).toEqual([{ id: OPENCLAW_AGENT_STATUS_SURFACE, errorClass: "task-lost" }])
+    expect(fetchImpl.posts()).toHaveLength(0)
+    expect(responder.status().pending).toBe(0)
+    expect(durableSnapshot[0][1]).not.toHaveProperty("shutdownOutcome")
+  })
+
+  test("#given a shutdown deadline expires during a SendMessage #when the composition disposes #then shutdown-lost is distinct from crash loss", async () => {
+    const order = []
+    const storage = spyStorage(order)
+    const time = clock()
+    let sendStarted
+    const started = new Promise((resolve) => { sendStarted = resolve })
+    const fetchImpl = async (_url, init = {}) => {
+      const body = JSON.parse(init.body)
+      if (body.method === "SendMessage") {
+        sendStarted()
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true })
+        })
+      }
+      throw new Error(`unexpected ${body.method}`)
+    }
+    const config = {
+      enabled: true,
+      channels: {
+        a2a: {
+          enabled: true,
+          peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } },
+        },
+      },
+    }
+    const first = createNativeOpenclaw({
+      context: { storage, session: { prompt: async () => ({}) } },
+      config,
+      env: { ALPHA_TOKEN: "alpha-secret" },
+      fetchImpl,
+      now: time.now,
+      log: () => {},
+    })
+    await first.ready
+    const sending = first.agentCore.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "hello" })
+    await started
+    time.advance(120_000)
+
+    await first.dispose()
+    expect(await sending).toMatchObject({ kind: "failed", errorClass: "shutdown-deadline", shutdownLost: true })
+    expect(first.status().agent.surfaces.a2a.errorClass).toBe("task-shutdown-lost")
+
+    const restarted = createNativeOpenclaw({
+      context: { storage, session: { prompt: async () => ({}) } },
+      config,
+      env: { ALPHA_TOKEN: "alpha-secret" },
+      fetchImpl,
+      now: time.now,
+      log: () => {},
+    })
+    await restarted.ready
+    await restarted.agentCore.responder.reconcileOnce()
+    const record = restarted.agentCore.registry.list()[0]
+    expect(record.state).toBe("shutdown-lost")
+    expect(record.remoteTaskId).toBeUndefined()
+    await restarted.dispose()
+  })
+
+  test("#given an in-flight SendMessage finishes before its reply deadline #when the composition disposes #then the turn drains without a shutdown loss", async () => {
+    const order = []
+    const storage = spyStorage(order)
+    let sendStarted
+    let releaseSend
+    const started = new Promise((resolve) => { sendStarted = resolve })
+    const sendAnswer = new Promise((resolve) => { releaseSend = resolve })
+    const fetchImpl = async (_url, init = {}) => {
+      const body = JSON.parse(init.body)
+      if (body.method !== "SendMessage") throw new Error(`unexpected ${body.method}`)
+      sendStarted()
+      return sendAnswer
+    }
+    const config = {
+      enabled: true,
+      channels: {
+        a2a: {
+          enabled: true,
+          peers: { alpha: { token: "env:ALPHA_TOKEN", url: PEER_URL } },
+        },
+      },
+    }
+    const native = createNativeOpenclaw({
+      context: { storage, session: { prompt: async () => ({}) } },
+      config,
+      env: { ALPHA_TOKEN: "alpha-secret" },
+      fetchImpl,
+      log: () => {},
+    })
+    await native.ready
+    void native.agentCore.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "hello" })
+    await started
+
+    const disposing = native.dispose()
+    releaseSend({ ok: true, status: 200, text: async () => JSON.stringify(taskAnswer("WORKING")) })
+    await disposing
+
+    expect(native.agentCore.registry.list()[0]).toMatchObject({ state: "submitted", remoteTaskId: "task-working" })
+    expect(await native.agentCore.responder.send({ sessionID: SESSION_A, peer: "alpha", text: "later" })).toEqual({ kind: "failed", errorClass: "shutting-down" })
+    expect(storage.map.size).toBe(1)
   })
 
   test("#given a failed check #when reconciling #then the task stays pending and the failure is reported as a check, not a task failure", async () => {

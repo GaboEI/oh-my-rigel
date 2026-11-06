@@ -115,7 +115,8 @@ function createAgentCore({ context, namespace, peers, now, log, status, fetchImp
         dialablePeers: transport.peerNames(),
       }
     },
-    dispose() {
+    async dispose() {
+      await responder.shutdown()
       responder.dispose()
       queue.clearAll()
     },
@@ -482,7 +483,7 @@ export function createNativeOpenclaw({
 
   async function dispose() {
     await inbound.stop()
-    agentCore?.dispose()
+    await agentCore?.dispose()
   }
 
   function status() {

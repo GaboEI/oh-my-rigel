@@ -40,7 +40,7 @@ export const OPENCLAW_AGENT_MAPPING_VERSION = 2
 /** States in which the task is still expected to reach a terminal answer. */
 export const OPENCLAW_AGENT_PENDING_STATES = Object.freeze(["submitted", "working"])
 /** Terminal states. `lost` is ours: the record survived, the task is unobservable. */
-export const OPENCLAW_AGENT_TERMINAL_STATES = Object.freeze(["completed", "failed", "rejected", "lost"])
+export const OPENCLAW_AGENT_TERMINAL_STATES = Object.freeze(["completed", "failed", "rejected", "lost", "shutdown-lost"])
 /** Every state a record may carry. */
 export const OPENCLAW_AGENT_STATES = Object.freeze([...OPENCLAW_AGENT_PENDING_STATES, ...OPENCLAW_AGENT_TERMINAL_STATES])
 /** Prefix of a derived conversation id. */
@@ -378,6 +378,7 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     const key = indexKey(peer, contextId, taskId)
     const record = map.get(key)
     if (!record) return null
+    if (OPENCLAW_AGENT_TERMINAL_STATES.includes(record.state)) return { ...record }
     const settled = { ...record, state, inflight: false, lastCheckedAt: new Date(now()).toISOString() }
     map.set(key, settled)
     await persist(settled)
@@ -387,6 +388,11 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
   /** Report a task as unobservable. Never a silent drop. */
   async function markLost(peer, contextId, taskId) {
     return settle(peer, contextId, taskId, "lost")
+  }
+
+  /** Record a deadline-bounded graceful shutdown that could not drain a send. */
+  async function markShutdownLost(peer, contextId, taskId) {
+    return settle(peer, contextId, taskId, "shutdown-lost")
   }
 
   /**
@@ -461,6 +467,7 @@ export function createOpenclawAgentRegistry({ storage, maxAgeMs = OPENCLAW_AGENT
     attachRemoteTask,
     settle,
     markLost,
+    markShutdownLost,
     removeSession,
     prune,
     nextPendingFor,
