@@ -31,6 +31,8 @@ import { userInfo } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
 import { quarantineNativeGates } from "./rigel-v2-native-goal-quarantine.mjs"
+import { projectOpenclawEndpointIdentities } from "./rigel-v2-native-openclaw-identity.mjs"
+import { normalizeOpenclawConfig } from "./rigel-v2-native-openclaw-core.mjs"
 
 /** Monitor gate defaults, from config/schema/monitor.ts. */
 export const NATIVE_MONITOR_DEFAULTS = Object.freeze({
@@ -1382,25 +1384,39 @@ function findOpenclawDeclaration(layers, profileName) {
 function openclawIdentities(config) {
   const source = isPlainRecord(config) ? config : {}
   const keys = (value) => (isPlainRecord(value) ? Object.keys(value).sort() : [])
+  const endpointIdentities = projectOpenclawEndpointIdentities({ normalized: normalizeOpenclawConfig(source), config: source })
+  const replyPolicy = keys(source.replyPolicy)
+  const replyPolicyAllowedAuthors = Object.fromEntries(replyPolicy.map((identity) => {
+    const policy = source.replyPolicy[identity]
+    const nonempty = isPlainRecord(policy) && Array.isArray(policy.allowedAuthors) && policy.allowedAuthors.length > 0
+    return [identity, nonempty ? "nonempty" : "empty"]
+  }))
   return {
     enabled: source.enabled === true,
     gateways: keys(source.gateways),
     hooks: keys(source.hooks),
-    channels: keys(source.channels),
-    replyListener: isPlainRecord(source.replyListener) ? "present" : "absent",
+    channels: endpointIdentities.channels.toSorted(),
+    replyPolicy,
+    replyPolicyAllowedAuthors,
+    replyListener: keys(source.replyListener),
   }
 }
 
 function openclawIdentityDiff(from, to) {
   const parts = []
   if (from.enabled !== to.enabled) parts.push(`enabled ${from.enabled} -> ${to.enabled}`)
-  for (const surface of ["gateways", "hooks", "channels"]) {
+  for (const surface of ["gateways", "hooks", "channels", "replyPolicy", "replyListener"]) {
     const added = to[surface].filter((identity) => !from[surface].includes(identity))
     const removed = from[surface].filter((identity) => !to[surface].includes(identity))
     if (added.length > 0) parts.push(`${surface} +[${added.join(",")}]`)
     if (removed.length > 0) parts.push(`${surface} -[${removed.join(",")}]`)
   }
-  if (from.replyListener !== to.replyListener) parts.push(`replyListener ${from.replyListener} -> ${to.replyListener}`)
+  for (const identity of from.replyPolicy) {
+    if (!to.replyPolicy.includes(identity)) continue
+    if (from.replyPolicyAllowedAuthors[identity] !== to.replyPolicyAllowedAuthors[identity]) {
+      parts.push(`replyPolicy.${identity}.allowedAuthors ${from.replyPolicyAllowedAuthors[identity]} -> ${to.replyPolicyAllowedAuthors[identity]}`)
+    }
+  }
   return parts
 }
 
