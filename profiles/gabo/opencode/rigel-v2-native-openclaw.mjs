@@ -205,20 +205,22 @@ export function createNativeOpenclaw({
     log(`[oh-my-rigel] Native V2 openclaw ${describeOpenclawReplyPolicyDiagnostic(diagnostic)}`)
   }
 
-  // §5.2 rule 1: `channels` declared means the new namespace is in play, and its
-  // inbound halves may not be silently off. A reply port with credentials and no
-  // authorized identity at all is a configuration error the operator has to see; a
-  // configuration that never mentions the new namespace keeps the legacy silence.
+  // §5.2 rule 2 governs a named chat identity only. Raw named malformed entries
+  // remain visible through `chatIdentities`; valid notification endpoints add their
+  // served platform. Reserved `a2a` remains out of this chat key space.
   const agentNamespace = resolveOpenclawAgentNamespace(config)
+  const channelChatIdentities = new Set(agentNamespace.chatIdentities)
+  for (const channel of notifications.channels) {
+    channelChatIdentities.add(channel.transport === "discord" ? "discord-bot" : "telegram")
+  }
   const endpointIdentities = projectOpenclawEndpointIdentities({ normalized, config })
   const collidingEndpointIdentity = endpointIdentities.legacy.find((identity) => endpointIdentities.channels.includes(identity))
-  const newNamespaceInPlay = agentNamespace.declared || replyPolicy.declared
 
   // U11: the NEW namespace's A2A converser. Peer resolution happens ONCE here and
   // performs no network at all: the agent card is discovered lazily, on the first
   // send (§11.3). A peer with a broken secret reference, an invalid URL, an
   // unknown key or a duplicate token is dropped and named, never ignored.
-  const agentPeers = enabled && agentNamespace.declared
+  const agentPeers = enabled && agentNamespace.a2aDeclared
     ? resolveOpenclawAgentPeers(config?.channels?.a2a, { env })
     : { declared: false, enabled: false, peers: [], diagnostics: [], disabled: [] }
   for (const diagnostic of agentPeers.diagnostics) {
@@ -233,22 +235,30 @@ export function createNativeOpenclaw({
   const reportedIdentities = new Set(
     replyPolicy.diagnostics.map((diagnostic) => diagnostic.identity).filter((identity) => typeof identity === "string"),
   )
+  const replyPolicyIdentities = new Set([
+    ...replyPolicy.identities.map((entry) => entry.identity),
+    ...reportedIdentities,
+  ])
+  const discordReplyPolicyGoverned = replyPolicyIdentities.has("discord-bot")
+  const discordNamespaceGoverned = channelChatIdentities.has("discord-bot") || discordReplyPolicyGoverned
+  const telegramNamespaceGoverned = channelChatIdentities.has("telegram") || replyPolicyIdentities.has("telegram") || replyPolicy.declared
 
-  // §U6: a declared policy governs Discord; otherwise the legacy list does. Either
-  // source being empty inside the new namespace means no author is authorized.
+  // §U6: a named Discord policy replaces the legacy list. A Discord notification
+  // channel still requires the existing legacy list, while Telegram policy cannot
+  // alter Discord's route.
   const discordAuthorization = authorizeDiscordAuthors(replyPolicy)
-  const discordAuthorized = replyPolicy.declared ? discordAuthorization.explicit : legacyAuthorizedAuthors.length > 0
+  const discordAuthorized = discordReplyPolicyGoverned ? discordAuthorization.explicit : legacyAuthorizedAuthors.length > 0
   const unauthorizedDiscordInNewNamespace = enabled
     && hasDiscordInbound
-    && newNamespaceInPlay
+    && discordNamespaceGoverned
     && !discordAuthorized
     && !reportedIdentities.has("discord-bot")
 
-  // §U7: Telegram has no legacy user list to fall back to (defect 8), so while the
-  // new namespace is in play the policy is the only source and its absence closes
-  // the poller and is reported. `undefined` here is the legacy route, which keeps
-  // today's chat-only filter untouched.
-  const telegramAuthorization = enabled && newNamespaceInPlay ? authorizeTelegramAuthors(replyPolicy) : undefined
+  // §U7: a Telegram-owned new channel or policy requires an explicit user list.
+  // Any declared reply policy also keeps Telegram on the secure route: dropping
+  // that requirement when a Discord policy exists would restore the legacy
+  // chat-only poller, which is an unauthorized permissive transition.
+  const telegramAuthorization = enabled && telegramNamespaceGoverned ? authorizeTelegramAuthors(replyPolicy) : undefined
   const unauthorizedTelegramInNewNamespace = telegramAuthorization !== undefined
     && hasTelegramInbound
     && !telegramAuthorization.explicit
@@ -258,21 +268,21 @@ export function createNativeOpenclaw({
   if (unauthorizedDiscordInNewNamespace) {
     authorizationReports.push({
       surface: "discord",
-      detail: replyPolicy.declared
+      detail: discordReplyPolicyGoverned
         ? "openclaw.replyPolicy.discord-bot.allowedAuthors"
         : "openclaw.replyListener.authorizedDiscordUserIds",
-      line: replyPolicy.declared
+      line: discordReplyPolicyGoverned
         ? "[oh-my-rigel] Native V2 openclaw Discord replies stay off: openclaw.replyPolicy.discord-bot.allowedAuthors is not declared, so no author is authorized"
-        : "[oh-my-rigel] Native V2 openclaw Discord replies stay off: openclaw.channels is declared but openclaw.replyListener.authorizedDiscordUserIds is empty, so no author is authorized",
+        : "[oh-my-rigel] Native V2 openclaw Discord replies stay off: openclaw.channels.discord is declared but openclaw.replyListener.authorizedDiscordUserIds is empty, so no author is authorized",
     })
   }
   if (unauthorizedTelegramInNewNamespace) {
     authorizationReports.push({
       surface: "telegram",
       detail: "openclaw.replyPolicy.telegram.allowedAuthors",
-      line: replyPolicy.declared
+      line: replyPolicyIdentities.has("telegram") || replyPolicy.declared
         ? "[oh-my-rigel] Native V2 openclaw Telegram replies stay off: openclaw.replyPolicy.telegram.allowedAuthors is not declared, so no user is authorized"
-        : "[oh-my-rigel] Native V2 openclaw Telegram replies stay off: openclaw.channels is declared but openclaw.replyPolicy.telegram.allowedAuthors is not, so no user is authorized",
+        : "[oh-my-rigel] Native V2 openclaw Telegram replies stay off: openclaw.channels.telegram is declared but openclaw.replyPolicy.telegram.allowedAuthors is not, so no user is authorized",
     })
   }
   for (const report of authorizationReports) log(report.line)
@@ -350,14 +360,10 @@ export function createNativeOpenclaw({
   // there is exactly one chokepoint an injected text can cross (§2).
   const deliverInboundReply = createInternalPromptGate({ session: context?.session })
 
-  // The new namespace gets its own core, and ONLY when it is declared AND the
-  // global switch is on. The predicate reads the raw block: recognizing
-  // `channels` is not config normalization, it is the gate that decides whether
-  // this composition builds the agent path at all. A legacy
-  // `gateways`/`hooks`/`replyListener` config has no `channels` key, so nothing
-  // below is constructed for it, and `openclaw.enabled` stays the single global
-  // switch (Contrato_Transportes_OpenClaw.md §5.2 rule 4).
-  const agentCore = enabled && agentNamespace.declared
+  // The agent core is separate from chat namespace governance. Only the reserved
+  // A2A declaration constructs its queue and registry; named chat channels cannot
+  // create agent state.
+  const agentCore = enabled && agentNamespace.a2aDeclared
     ? createAgentCore({
       context,
       namespace: agentNamespace,
@@ -399,12 +405,11 @@ export function createNativeOpenclaw({
     // the storage domain is the composition's to hand over. Absent, the cursor
     // stays in the process, which is exactly the pre-U8 behaviour.
     storage: context?.storage,
-    // §U6: the new namespace's authorization REPLACES the legacy author list
-    // when it is declared. Undefined here means "legacy governs", which is the
-    // path every pinned listener test and every pre-U6 configuration takes.
-    ...(replyPolicy.declared ? { discordAuthorization: authorizeDiscordAuthors(replyPolicy) } : {}),
-    // §U7: the Telegram user list. Undefined means "legacy governs" and the poller
-    // keeps its chat-only filter; an empty list keeps the poller down.
+    // §U6: only a named Discord reply policy replaces the legacy author list.
+    // A Discord notification channel retains the pinned legacy authorization path.
+    ...(discordReplyPolicyGoverned ? { discordAuthorization } : {}),
+    // §U7: undefined preserves the legacy chat-only route; every declared reply
+    // policy remains a security boundary that prevents reopening it.
     ...(telegramAuthorization === undefined ? {} : { telegramAuthorization }),
     ...(typeof env?.RIGEL_OPENCLAW_DISCORD_API_BASE === "string"
       ? { discordApiBase: env.RIGEL_OPENCLAW_DISCORD_API_BASE }
@@ -497,21 +502,19 @@ export function createNativeOpenclaw({
     if (notifications.channels.length > 0) {
       value.channels = notifications.channels.map((channel) => ({ name: channel.name, transport: channel.transport, events: [...channel.events] }))
     }
-    // Reply authorization (U6): whether the new namespace supplied it, and whether
-    // it actually authorizes anyone. Booleans and a source name only — the author
-    // ids are configuration, not observability.
-    if (replyPolicy.declared) {
-      const authorization = authorizeDiscordAuthors(replyPolicy)
-      value.authorization = { discord: { source: authorization.source, explicit: authorization.explicit } }
-      // U7: the Telegram decision is reported only when a Telegram inbound port
-      // exists, so a Discord-only policy keeps the exact U6 shape.
-      if (telegramAuthorization !== undefined && hasTelegramInbound) {
-        value.authorization.telegram = {
-          source: telegramAuthorization.source,
-          explicit: telegramAuthorization.explicit,
-        }
+    // Reply authorization reports the policy identities it named. Notification
+    // channels alone do not manufacture an authorization status surface.
+    const authorization = {}
+    if (replyPolicyIdentities.has("discord-bot")) {
+      authorization.discord = { source: discordAuthorization.source, explicit: discordAuthorization.explicit }
+    }
+    if (replyPolicy.declared && telegramAuthorization !== undefined && hasTelegramInbound) {
+      authorization.telegram = {
+        source: telegramAuthorization.source,
+        explicit: telegramAuthorization.explicit,
       }
     }
+    if (Object.keys(authorization).length > 0) value.authorization = authorization
     return value
   }
 

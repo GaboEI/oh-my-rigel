@@ -310,7 +310,7 @@ describe("openclaw agent namespace resolution", () => {
       hooks: { "session.idle": { gateway: "hook" } },
       replyListener: { discordBotToken: "t" },
     })
-    expect(resolved).toEqual({ declared: false, identities: [], peers: [], a2aEnabled: false })
+    expect(resolved).toEqual({ declared: false, identities: [], chatIdentities: [], a2aDeclared: false, peers: [], a2aEnabled: false })
   })
 
   test("#given channels naming an identity #when resolving #then it is declared with its identities", () => {
@@ -319,6 +319,8 @@ describe("openclaw agent namespace resolution", () => {
     expect(resolved.identities).toEqual(["a2a"])
     expect(resolved.peers).toEqual(["alpha", "beta"])
     expect(resolved.a2aEnabled).toBe(true)
+    expect(resolved.chatIdentities).toEqual([])
+    expect(resolved.a2aDeclared).toBe(true)
   })
 
   test("#given an a2a channel without peers #when resolving #then the channel is declared but not configured", () => {
@@ -335,9 +337,21 @@ describe("openclaw agent namespace resolution", () => {
     expect(resolved.a2aEnabled).toBe(false)
   })
 
-  test("#given non-object channel entries #when resolving #then they do not declare the namespace", () => {
-    expect(resolveOpenclawAgentNamespace({ channels: { a2a: "nope" } }).declared).toBe(false)
-    expect(resolveOpenclawAgentNamespace({ channels: {} }).declared).toBe(false)
-    expect(resolveOpenclawAgentNamespace(undefined).declared).toBe(false)
+  test("#given malformed named entries #when resolving #then declaration preserves the named identity for its owner", () => {
+    // `declared` records the raw named namespace for diagnostics and A2A setup only.
+    // Chat governance consumes `chatIdentities`, so reserved a2a never governs chat.
+    expect(resolveOpenclawAgentNamespace({ channels: { a2a: "nope" } })).toMatchObject({
+      declared: true,
+      identities: ["a2a"],
+      chatIdentities: [],
+      a2aDeclared: true,
+    })
+    expect(resolveOpenclawAgentNamespace({ channels: { telegram: "nope" } })).toMatchObject({
+      declared: true,
+      identities: ["telegram"],
+      chatIdentities: ["telegram"],
+    })
+    expect(resolveOpenclawAgentNamespace({ channels: {} })).toMatchObject({ declared: false, identities: [], chatIdentities: [] })
+    expect(resolveOpenclawAgentNamespace(undefined)).toMatchObject({ declared: false, identities: [], chatIdentities: [] })
   })
 })

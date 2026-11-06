@@ -164,6 +164,7 @@ function harmonyComposition(config, { storage = memoryStorage(), fetchImpl = tel
 
 /** A Telegram notification channel: it is what makes `channels` declared. */
 const TELEGRAM_CHANNEL = { transport: "telegram", token: SECRET, chatId: "chat", instruction: "done", events: ["session.idle"] }
+const DISCORD_CHANNEL = { transport: "discord", token: SECRET, channelId: "discord-channel", instruction: "done", events: ["session.idle"] }
 
 describe("openclaw reply policy: telegram is a served identity with its own list", () => {
   test("#given a policy naming telegram #when resolved #then exactly those users are authorized once", () => {
@@ -410,5 +411,91 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
     expect(lines.filter((line) => !line.includes("reply listener"))).toEqual([])
     expect(storage.map.has(OPENCLAW_STATUS_KEY)).toBe(false)
     expect(native.status().authorization).toBeUndefined()
+  })
+
+  test("#given a malformed named Telegram channel #when composed #then only Telegram is closed and named", async () => {
+    const { native, lines, storage, fetchImpl } = harmonyComposition({
+      enabled: true,
+      channels: { telegram: "not-an-object" },
+      replyListener: telegramReplyListener(),
+    })
+
+    const ready = await native.ready
+
+    expect(ready).toEqual({ started: false, reason: "no-credentials" })
+    expect(fetchImpl.calls).toEqual([])
+    expect(lines.some((line) => line.includes("openclaw.channels.telegram"))).toBe(true)
+    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces).toMatchObject({
+      telegram: { state: "fatal", errorClass: "missing-authorized-authors" },
+      "channels.telegram": { state: "fatal", errorClass: "not-an-object" },
+    })
+    await native.dispose()
+  })
+
+  test("#given an A2A-only channel block #when a legacy Telegram listener runs #then chat stays on the legacy route", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, lines, prompts } = harmonyComposition(
+      {
+        enabled: true,
+        channels: { a2a: { enabled: true, peers: { alpha: { token: SECRET, url: "https://peer.test" } } } },
+        replyListener: telegramReplyListener(),
+      },
+      {
+        storage,
+        fetchImpl: telegramPort([{ update_id: 7, message: telegramMessage({ messageId: 31, userId: "someone-else", text: "a2a" }) }]),
+      },
+    )
+
+    const ready = await native.ready
+    await waitFor(() => prompts.length > 0, "A2A-only legacy Telegram injection")
+    await native.dispose()
+
+    expect(ready).toEqual({ started: true })
+    expect(prompts[0]).toEqual({ sessionID: "ses_tg", text: "[reply:telegram] a2a", delivery: "queue" })
+    expect(native.status().authorization).toBeUndefined()
+    expect(lines.filter((line) => /reply policy|stay off/.test(line))).toEqual([])
+  })
+
+  test("#given a Discord channel declaration #when a legacy Telegram listener runs #then Telegram stays on the legacy route", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, lines, prompts } = harmonyComposition(
+      { enabled: true, channels: { discord: DISCORD_CHANNEL }, replyListener: telegramReplyListener() },
+      {
+        storage,
+        fetchImpl: telegramPort([{ update_id: 8, message: telegramMessage({ messageId: 32, userId: "someone-else", text: "discord" }) }]),
+      },
+    )
+
+    const ready = await native.ready
+    await waitFor(() => prompts.length > 0, "Discord-only legacy Telegram injection")
+    await native.dispose()
+
+    expect(ready).toEqual({ started: true })
+    expect(prompts[0]).toEqual({ sessionID: "ses_tg", text: "[reply:telegram] discord", delivery: "queue" })
+    expect(native.status().authorization).toBeUndefined()
+    expect(lines.filter((line) => /reply policy|stay off/.test(line))).toEqual([])
+  })
+
+  test("#given an empty channel namespace #when a legacy Telegram listener runs #then chat stays indistinguishable from no namespace", async () => {
+    const storage = memoryStorage()
+    seedTelegramCorrelation(storage)
+    const { native, lines, prompts } = harmonyComposition(
+      { enabled: true, channels: {}, replyListener: telegramReplyListener() },
+      {
+        storage,
+        fetchImpl: telegramPort([{ update_id: 9, message: telegramMessage({ messageId: 33, userId: "someone-else", text: "empty" }) }]),
+      },
+    )
+
+    const ready = await native.ready
+    await waitFor(() => prompts.length > 0, "empty namespace legacy Telegram injection")
+    await native.dispose()
+
+    expect(ready).toEqual({ started: true })
+    expect(prompts[0]).toEqual({ sessionID: "ses_tg", text: "[reply:telegram] empty", delivery: "queue" })
+    expect(native.status().authorization).toBeUndefined()
+    expect(lines.filter((line) => /reply policy|stay off/.test(line))).toEqual([])
   })
 })

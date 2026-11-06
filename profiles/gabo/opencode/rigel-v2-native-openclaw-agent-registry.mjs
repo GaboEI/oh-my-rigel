@@ -124,19 +124,30 @@ export function isValidAgentMapping(value) {
  * is U1's seam, and routing through `normalizeOpenclawConfig` here would drop
  * `channels` and make the new namespace unreachable.
  *
- * `declared` is the only gate for building the agent core. `a2aEnabled` follows
- * the vendor rule that `configured` means "at least one peer": an `a2a` block
- * with `peers: {}` starts nothing.
+ * `declared` and `identities` report raw named entries, including malformed ones,
+ * so diagnostics never erase a declaration. Chat composition consumes
+ * `chatIdentities` instead: reserved `a2a` belongs to the agent key space and
+ * cannot govern a chat poller. `a2aEnabled` follows the vendor rule that
+ * `configured` means "at least one peer": an `a2a` block with `peers: {}`
+ * starts nothing.
  */
 export function resolveOpenclawAgentNamespace(rawConfig) {
   const channels = isPlainObject(rawConfig?.channels) ? rawConfig.channels : null
-  if (channels === null) return { declared: false, identities: [], peers: [], a2aEnabled: false }
-  const identities = Object.keys(channels).filter((key) => isPlainObject(channels[key]))
+  if (channels === null) return { declared: false, identities: [], chatIdentities: [], a2aDeclared: false, peers: [], a2aEnabled: false }
+  const identities = Object.keys(channels)
+  const chatIdentities = identities.flatMap((identity) => {
+    if (identity === "discord" || identity === "discord-bot") return ["discord-bot"]
+    if (identity === "telegram") return ["telegram"]
+    return []
+  })
+  const a2aDeclared = Object.hasOwn(channels, "a2a")
   const a2a = isPlainObject(channels.a2a) ? channels.a2a : null
   const peers = isPlainObject(a2a?.peers) ? Object.keys(a2a.peers).filter((name) => isPlainObject(a2a.peers[name])) : []
   return {
     declared: identities.length > 0,
     identities,
+    chatIdentities,
+    a2aDeclared,
     peers,
     a2aEnabled: Boolean(a2a && a2a.enabled === true && peers.length > 0),
   }
