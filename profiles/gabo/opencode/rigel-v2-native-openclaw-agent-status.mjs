@@ -41,6 +41,8 @@ export const OPENCLAW_STATUS_KEY = "rigel-v2/openclaw/status"
 export const OPENCLAW_STATUS_STATES = Object.freeze(["up", "degraded", "fatal", "unevaluated"])
 /** Severities the document distinguishes. `info` is used for transitions only. */
 export const OPENCLAW_STATUS_SEVERITIES = Object.freeze(["fatal", "degraded", "info"])
+/** The pre-split bare legacy row. Row 30 / U-P16: no producer writes it, so a persisted copy is retired. */
+export const OPENCLAW_RETIRED_OUTBOUND_SURFACE = "outbound"
 
 const LOG_PREFIX = "[oh-my-rigel]"
 
@@ -121,8 +123,22 @@ export function createOpenclawStatusDocument({ storage, now = () => Date.now(), 
    */
   function hydrate() {
     if (!canRead) return Promise.resolve()
-    if (hydration === undefined) hydration = readPersisted()
+    if (hydration === undefined) hydration = readPersisted().then(retireLegacyOutboundRow)
     return hydration
+  }
+
+  /**
+   * Row 30 / U-P16: the bare `outbound` row belonged to the single pre-split legacy
+   * route. Gateway deliveries now own `outbound:<gatewayName>`, so nothing writes the
+   * bare row again. A persisted copy is retired deterministically as `unevaluated`
+   * (never `up`), announced once, and persisted so the stored and rendered rows agree.
+   */
+  async function retireLegacyOutboundRow() {
+    const legacy = surfaces.get(OPENCLAW_RETIRED_OUTBOUND_SURFACE)
+    if (legacy === undefined || legacy.state === "unevaluated") return
+    retireSurface(legacy)
+    emit(OPENCLAW_RETIRED_OUTBOUND_SURFACE, "info", null, `openclaw surface retired: ${OPENCLAW_RETIRED_OUTBOUND_SURFACE}`)
+    await persist()
   }
 
   async function readPersisted() {

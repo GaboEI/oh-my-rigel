@@ -221,7 +221,8 @@ describe("openclaw outbound: a failed notification is reported, not swallowed", 
     await native.ready
     await native.handleEvent({ type: "session.idle", sessionID: "s1" })
     const report = await native.report()
-    expect(report.surfaces.outbound).toMatchObject({ state: "degraded", errorClass: "http-401", consecutiveFailures: 1 })
+    expect(report.surfaces["channels.alerts"]).toMatchObject({ state: "degraded", errorClass: "http-401", consecutiveFailures: 1 })
+    expect(report.surfaces.outbound).toBeUndefined()
     await native.dispose()
   })
 
@@ -283,7 +284,7 @@ describe("openclaw outbound: a transport timeout is its own class", () => {
     // then
     expect(result).toMatchObject({ success: false, error: "Request timed out" })
     expect(result.errorClass).toBe("timeout")
-    expect(report.surfaces.outbound).toMatchObject({ state: "degraded", errorClass: "timeout" })
+    expect(report.surfaces["outbound:h"]).toMatchObject({ state: "degraded", errorClass: "timeout" })
     await native.dispose()
   })
 
@@ -309,7 +310,7 @@ describe("openclaw outbound: a transport timeout is its own class", () => {
     // then
     expect(result).toMatchObject({ success: false, error: "Command timed out" })
     expect(result.errorClass).toBe("timeout")
-    expect(document.snapshot().surfaces.outbound).toMatchObject({ state: "degraded", errorClass: "timeout" })
+    expect(document.snapshot().surfaces["outbound:cmd"]).toMatchObject({ state: "degraded", errorClass: "timeout" })
   })
 
   test("#given the two transport timeout messages #when they are classed #then both are timeout and a real transport failure keeps its own class", () => {

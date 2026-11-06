@@ -38,8 +38,19 @@ import {
 } from "./rigel-v2-native-openclaw-core.mjs"
 import { dispatchGateway } from "./rigel-v2-native-openclaw-transport.mjs"
 
-/** Status-document surface this module reports under. */
-export const OPENCLAW_OUTBOUND_STATUS_SURFACE = "outbound"
+/**
+ * Status-document row of one legacy gateway delivery (row 30 / U-P16). The legacy
+ * configuration names no platform, so the stable identity is the gateway: a
+ * failure and a later success on the same gateway share one row.
+ */
+export function openclawOutboundSurfaceId(gatewayName) {
+  return `outbound:${gatewayName}`
+}
+
+/** Status-document row of one `channels.<name>` notification route (row 30 / U-P16). */
+export function openclawChannelSurfaceId(channelName) {
+  return `channels.${channelName}`
+}
 
 /**
  * Reduce a dispatch failure to a stable error CLASS, so the document dedups on
@@ -108,14 +119,14 @@ export function createOpenclawOutbound({
    * an `up` surface is a no-op inside the document, so the healthy legacy path
    * keeps its zero-write call sequence.
    */
-  async function reportOutcome(result) {
+  async function reportOutcome(result, surfaceId) {
     if (!statusDocument) return
-    if (result === null) return
+    if (result === null || typeof surfaceId !== "string") return
     if (result.success === true) {
-      await statusDocument.recordSuccess?.(OPENCLAW_OUTBOUND_STATUS_SURFACE)
+      await statusDocument.recordSuccess?.(surfaceId)
       return
     }
-    await statusDocument.recordFailure?.(OPENCLAW_OUTBOUND_STATUS_SURFACE, {
+    await statusDocument.recordFailure?.(surfaceId, {
       errorClass: openclawDispatchErrorClass(result),
       detail: typeof result.gateway === "string" && result.gateway.length > 0 ? `gateway ${result.gateway}` : null,
     })
@@ -155,9 +166,11 @@ export function createOpenclawOutbound({
     }
 
     let result = null
+    let legacySurface = null
     for (const hook of hooks) {
       const resolved = resolveGateway(config, hook)
       if (!resolved) continue
+      legacySurface = openclawOutboundSurfaceId(resolved.gatewayName)
       const variables = contextVariables(context, hook, timestamp)
       const interpolatedInstruction = interpolateInstruction(resolved.instruction, variables)
       variables.instruction = interpolatedInstruction
@@ -198,7 +211,7 @@ export function createOpenclawOutbound({
     if (rawEvent === "session.deleted") {
       await registry?.removeSession?.(sessionID)
     }
-    await reportOutcome(result)
+    await reportOutcome(result, legacySurface)
     if (debug && result !== null) {
       log(`[openclaw] wake ${rawEvent} -> ${result.gateway}: ${result.success ? "ok" : result.error ?? "failed"}`)
     }
@@ -231,7 +244,7 @@ export function createOpenclawOutbound({
         env,
       })
       notifications.push(delivered)
-      await reportOutcome(delivered)
+      await reportOutcome(delivered, openclawChannelSurfaceId(channel.name))
       if (delivered !== null && delivered.success === true && typeof delivered.messageId === "string" && typeof delivered.platform === "string" && rawEvent !== "session.deleted") {
         await registry?.register?.({
           sessionID,

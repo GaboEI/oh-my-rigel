@@ -44,7 +44,7 @@
 import { normalizeOpenclawConfig } from "./rigel-v2-native-openclaw-core.mjs"
 import { projectOpenclawEndpointIdentities } from "./rigel-v2-native-openclaw-identity.mjs"
 import { resolveOpenclawReplyListenerSecrets } from "./rigel-v2-native-openclaw-secrets.mjs"
-import { createOpenclawOutbound } from "./rigel-v2-native-openclaw-outbound.mjs"
+import { createOpenclawOutbound, openclawChannelSurfaceId } from "./rigel-v2-native-openclaw-outbound.mjs"
 import { createOpenclawInbound, createInternalPromptGate } from "./rigel-v2-native-openclaw-inbound.mjs"
 import { createOpenclawRegistry } from "./rigel-v2-native-openclaw-registry.mjs"
 import { createOpenclawAgentRegistry, resolveOpenclawAgentNamespace } from "./rigel-v2-native-openclaw-agent-registry.mjs"
@@ -320,7 +320,7 @@ export function createNativeOpenclaw({
   }
   for (const diagnostic of notifications.diagnostics) {
     setupFatals.push({
-      surface: `channels.${typeof diagnostic.path === "string" ? diagnostic.path.split(".")[2] : "unknown"}`,
+      surface: openclawChannelSurfaceId(typeof diagnostic.path === "string" ? diagnostic.path.split(".")[2] : "unknown"),
       errorClass: diagnostic.reason,
       detail: diagnostic.path,
     })
