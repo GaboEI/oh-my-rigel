@@ -256,8 +256,11 @@ describe("rigel-v2-user-install runtime manifest with default state root under H
     fs.mkdirSync(home, { recursive: true, mode: 0o700 })
     writeCleanConfig(configFile)
     const env = {
+      // `os.homedir()` reads USERPROFILE on Windows and ignores HOME, so a case
+      // that omits `--home` must scope both names to the same temp home.
       PATH: process.env.PATH,
       HOME: home,
+      USERPROFILE: home,
       XDG_CONFIG_HOME: path.join(base, "config"),
       XDG_STATE_HOME: path.join(home, ".local", "state"),
       XDG_CACHE_HOME: path.join(home, ".cache"),
@@ -394,7 +397,7 @@ describe("rigel-v2-user-install goal upgrade + rollback", () => {
       expect(upgrade.status, `upgrade failed: ${upgrade.stderr || upgrade.stdout}`).toBe(0)
       const entries = goalEntries(readConfig())
       expect(entries).toHaveLength(1)
-      expect(entries[0].package).toContain("/versions/2/")
+      expect(entries[0].package).toContain(path.join("versions", "2") + path.sep)
     }, 300_000)
 
     test("#when rolled back #then exactly one goal entry survives, repointed at the previous version and status is green", () => {
@@ -402,7 +405,7 @@ describe("rigel-v2-user-install goal upgrade + rollback", () => {
       expect(rollback.status, `rollback failed: ${rollback.stderr || rollback.stdout}`).toBe(0)
       const entries = goalEntries(readConfig())
       expect(entries).toHaveLength(1)
-      expect(entries[0].package).toContain("/versions/1/")
+      expect(entries[0].package).toContain(path.join("versions", "1") + path.sep)
       const emitted = JSON.parse(rollback.stdout)
       expect(emitted.status.pass).toBe(true)
     }, 300_000)

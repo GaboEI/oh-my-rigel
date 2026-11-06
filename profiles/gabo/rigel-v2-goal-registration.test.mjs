@@ -12,6 +12,7 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 
 import {
   RIGEL_GOAL_DEFAULTS,
@@ -271,7 +272,9 @@ describe("#given the goal state path", () => {
     const root = tempDir()
     const runtimeDir = path.join(root, "versions", "1", "runtime")
     fs.mkdirSync(runtimeDir, { recursive: true })
-    const runtimeUrl = `file://${path.join(runtimeDir, "index.js")}`
+    // `file://` + a Windows path (`file://C:\...`) is not a file URL: the drive
+    // letter becomes a host. `pathToFileURL` produces a URL on every host.
+    const runtimeUrl = pathToFileURL(path.join(runtimeDir, "index.js")).href
     const env = {}
     const installed = installGoalStatePath({ env, runtimeUrl })
     expect(installed).toBe(path.join(root, "goal-state", "goals.json"))

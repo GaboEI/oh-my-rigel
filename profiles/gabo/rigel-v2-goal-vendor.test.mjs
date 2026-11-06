@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import { createRequire } from "node:module"
 import path from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
+import { fileURLToPath } from "node:url"
 
 import { renderGoalVendorNotice, noticeHeadingFor } from "./goal-vendor-notice.mjs"
 import { digestOfDirectory, digestOfEntries, extractEntries, sha256Hex, sha512Base64 } from "./goal-vendor-tarball.mjs"
@@ -135,11 +135,13 @@ describe("#given the pinned goal artifact vendored in-tree", () => {
 
     test("#then materializing in a networkless child process works and the artifact specifiers resolve", () => {
       const runtimeDir = path.join(temporaryRoot, "runtime-offline")
+      // A plain path, not a `file://` URL: Bun on Windows refuses a file URL
+      // here ("preload not found file:///D:/...") and both runtimes accept a path.
       const preload = path.join(repoRoot, "profiles/gabo/goal-vendor-offline-preload.mjs")
       const vendorModule = path.join(repoRoot, "profiles/gabo/rigel-v2-goal-vendor.mjs")
       const offline = spawnSync(
         process.execPath,
-        ["--import", pathToFileURL(preload).href, vendorModule, "materialize", "--out", runtimeDir],
+        ["--import", preload, vendorModule, "materialize", "--out", runtimeDir],
         { cwd: repoRoot, encoding: "utf8", timeout: 240_000 },
       )
       expect(offline.status, `offline materialize failed: ${offline.stderr || offline.stdout}`).toBe(0)
@@ -159,7 +161,7 @@ describe("#given the pinned goal artifact vendored in-tree", () => {
         ].join("\n"),
       )
       const artifactDir = path.join(goalVendorTargetDir(runtimeDir), "node_modules", "@prevalentware", "opencode-goal-plugin")
-      const resolved = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, probe, artifactDir], {
+      const resolved = spawnSync(process.execPath, ["--import", preload, probe, artifactDir], {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 60_000,

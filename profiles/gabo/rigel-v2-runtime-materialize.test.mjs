@@ -205,7 +205,10 @@ describe("stageGoalVendor", () => {
     const shimDir = path.join(runtimeDir, "rigel-goal-engine")
     expect(goalEntries[0].package).toBe(shimDir)
     expect(fs.existsSync(path.join(shimDir, "server.js"))).toBe(true)
-    expect(fs.readFileSync(path.join(shimDir, "server.js"), "utf8")).toContain(result.goalVendor.engineEntry)
+    // The shim embeds the entry as a JS string literal, so on Windows the
+    // backslashes are escaped in the file text: compare against the literal JSON
+    // form that the generator writes on every host.
+    expect(fs.readFileSync(path.join(shimDir, "server.js"), "utf8")).toContain(JSON.stringify(result.goalVendor.engineEntry))
     expect(result.goalOptions).toEqual({
       auto_continue: true,
       defer_while_tasks_active: true,

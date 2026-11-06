@@ -9,10 +9,13 @@ import {
 } from "./rigel-v2-native-noninteractive.mjs"
 
 function event(command) { return { tool: "shell", input: { command } } }
-const prefix = buildEnvPrefix()
+// The guard prefixes a command with the prefix of the shell the HOST runs the
+// shell tool through, so the expectation is derived the same way instead of
+// assuming the unix `export ...;` shape on every platform.
+const prefix = buildEnvPrefix(NON_INTERACTIVE_ENV, detectCommandShellType())
 
 describe("native V2 non-interactive environment guard", () => {
-  test("prefixes git commands once with the v1 unix prefix", () => {
+  test("prefixes git commands once with the host shell prefix", () => {
     const value = event("git status --short")
     createNativeNonInteractiveEnvGuard().before(value)
     expect(value.input.command).toBe(`${prefix} git status --short`)

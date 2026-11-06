@@ -653,10 +653,15 @@ describe("tmux-viz claim directory hardening", () => {
   })
 
   test("#given a directory that is not private #when the guard inspects it #then it is refused", () => {
-    const open = join(sandbox, "open")
-    mkdirSync(open, { mode: 0o700 })
-    chmodSync(open, 0o777)
-    expect(isPrivateClaimDir(open)).toBe(false)
+    // World-accessibility is a POSIX mode bit. Windows has none, and the guard
+    // deliberately accepts any real, non-symlinked directory there (see
+    // `isPrivateClaimDir`), so that half only exists on a POSIX host.
+    if (process.platform !== "win32") {
+      const open = join(sandbox, "open")
+      mkdirSync(open, { mode: 0o700 })
+      chmodSync(open, 0o777)
+      expect(isPrivateClaimDir(open)).toBe(false)
+    }
 
     const file = join(sandbox, "not-a-dir")
     writeFileSync(file, "x")
@@ -675,7 +680,11 @@ describe("tmux-viz claim directory hardening", () => {
     mkdirSync(dir, { mode: 0o700 })
     const { uid } = lstatSync(dir)
     expect(isPrivateClaimDir(dir, { uid })).toBe(true)
-    expect(isPrivateClaimDir(dir, { uid: uid + 1 })).toBe(false)
+    // Ownership only exists where a uid does: on Windows the guard has no owner
+    // to compare and must not invent one.
+    if (process.platform !== "win32") {
+      expect(isPrivateClaimDir(dir, { uid: uid + 1 })).toBe(false)
+    }
   })
 
   test("#given a symlinked claim dir #when a process claims #then it refuses and never writes through the link", () => {
@@ -690,6 +699,9 @@ describe("tmux-viz claim directory hardening", () => {
   })
 
   test("#given a world-accessible claim dir #when a process claims #then it refuses and writes nothing", () => {
+    // See `isPrivateClaimDir`: POSIX mode bits are the signal, and Windows has
+    // no equivalent, so the refusal is only promised where the bits exist.
+    if (process.platform === "win32") return
     const open = join(sandbox, "world-open")
     mkdirSync(open, { mode: 0o700 })
     chmodSync(open, 0o777)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { homedir } from "node:os"
-import path from "node:path"
+import path, { resolve } from "node:path"
 
 import {
   CONTEXT7_MCP_NAME,
@@ -23,10 +23,15 @@ import {
   resolveRuntimeExecutable,
 } from "./rigel-v2-native-builtin-mcps.mjs"
 
-const REPO = "/repo"
+// Every fixture root is resolved before use: the module resolves the anchors it
+// is handed, and `/repo` is not an absolute path on Windows (it has no drive), so
+// a raw `join("/repo", ...)` key never matches what the module looks for.
+const REPO = resolve("/repo")
 // A root that owns nothing: used as the explicit self/repo anchor when a test
 // wants to prove a candidate is NOT resolved from that root.
-const EMPTY = "/empty-root"
+const EMPTY = resolve("/empty-root")
+const WORK = resolve("/work")
+const LABCFG = resolve("/labcfg")
 const DAEMON_DIST = path.join(REPO, "packages/lsp-daemon/dist/cli.js")
 const DAEMON_SOURCE = path.join(REPO, "packages/lsp-daemon/src/cli.ts")
 const TOOLS_DIST = path.join(REPO, "packages/lsp-tools-mcp/dist/cli.js")
@@ -115,12 +120,12 @@ describe("native builtin MCP port", () => {
       expect(config.type).toBe("local")
       expect(config.disabled).toBe(false)
       expect(config.command).toEqual(["/usr/bin/node", DAEMON_DIST, "mcp"])
-      expect(config.cwd).toBe("/work")
-      expect(config.environment.LSP_TOOLS_MCP_CWD).toBe("/work")
-      expect(config.environment.LSP_TOOLS_MCP_USER_CONFIG).toBe("/labcfg/lsp.json")
-      expect(config.environment.LSP_TOOLS_MCP_INSTALL_DECISIONS).toBe("/labcfg/lsp-install-decisions.json")
+      expect(config.cwd).toBe(WORK)
+      expect(config.environment.LSP_TOOLS_MCP_CWD).toBe(WORK)
+      expect(config.environment.LSP_TOOLS_MCP_USER_CONFIG).toBe(resolve(LABCFG, "lsp.json"))
+      expect(config.environment.LSP_TOOLS_MCP_INSTALL_DECISIONS).toBe(resolve(LABCFG, "lsp-install-decisions.json"))
       expect(config.environment.LSP_TOOLS_MCP_PROJECT_CONFIG).toBe(
-        [".opencode/lsp.json", ".omo/lsp.json", ".omo/lsp-client.json"].map((entry) => path.join("/work", entry)).join(path.delimiter),
+        [".opencode/lsp.json", ".omo/lsp.json", ".omo/lsp-client.json"].map((entry) => resolve(WORK, entry)).join(path.delimiter),
       )
     })
   })
@@ -160,7 +165,7 @@ describe("native builtin MCP port", () => {
 
   describe("#given createLspMcpConfig #when the deployment owns a self-contained dist #then it resolves without the source root", () => {
     test("#then the deployment dist is selected even though repoRoot has no LSP tree", () => {
-      const deployRoot = "/deploy/runtime"
+      const deployRoot = resolve("/deploy/runtime")
       const deployDist = path.join(deployRoot, "packages/lsp-daemon/dist/cli.js")
       const fsx = layoutAt(deployRoot, { dist: true })
       const config = createLspMcpConfig({ selfRoot: deployRoot, repoRoot: EMPTY, cwd: "/work", configDir: "/labcfg", exists: fsx.exists, readFile: fsx.readFile, resolveExecutable: available })
@@ -318,8 +323,8 @@ describe("native builtin MCP port", () => {
 
   describe("#given resolveOpenCodeConfigDir #when resolving the config dir #then it stays on the isolated roots", () => {
     test("#then OPENCODE_CONFIG_DIR wins over XDG and XDG wins over the home default", () => {
-      expect(resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: "/lab/config/opencode", XDG_CONFIG_HOME: "/lab/config" })).toBe("/lab/config/opencode")
-      expect(resolveOpenCodeConfigDir({ XDG_CONFIG_HOME: "/lab/config" })).toBe(path.join("/lab/config", "opencode"))
+      expect(resolveOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: "/lab/config/opencode", XDG_CONFIG_HOME: "/lab/config" })).toBe(resolve("/lab/config/opencode"))
+      expect(resolveOpenCodeConfigDir({ XDG_CONFIG_HOME: "/lab/config" })).toBe(resolve("/lab/config", "opencode"))
       expect(resolveOpenCodeConfigDir({})).toBe(path.join(homedir(), ".config", "opencode"))
     })
   })

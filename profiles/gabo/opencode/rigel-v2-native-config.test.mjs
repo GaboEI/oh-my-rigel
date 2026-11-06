@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import {
   buildMcpPolicyEntry,
   deriveNativeGates,
@@ -335,9 +335,12 @@ describe("#given a symlinked project .omo directory", () => {
 
 describe("#given an injected file system", () => {
   test("#when the view is resolved #then no real disk is read", () => {
-    // given
+    // given: the injected file system is keyed by the paths the resolver itself
+    // computes (`path.resolve` / `join` over the injected HOME), so the fixture
+    // matches on every host instead of only where `/` is the separator.
+    const virtualHome = resolve("/virtual")
     const files = new Map([
-      ["/virtual/.omo/omo.jsonc", `{ "[opencode]": { "monitor": { "enabled": true }, "disabled_tools": ["x"] } }`],
+      [join(virtualHome, ".omo", "omo.jsonc"), `{ "[opencode]": { "monitor": { "enabled": true }, "disabled_tools": ["x"] } }`],
     ])
     const fileSystem = {
       existsSync: (path) => files.has(path),
@@ -350,8 +353,8 @@ describe("#given an injected file system", () => {
     }
     // when
     const view = resolveNativePluginConfig({
-      directory: "/virtual/project",
-      env: { HOME: "/virtual", USERPROFILE: "/virtual" },
+      directory: join(virtualHome, "project"),
+      env: { HOME: virtualHome, USERPROFILE: virtualHome },
       fileSystem,
     })
     // then
@@ -670,7 +673,7 @@ describe("#given the live on-disk OmO config", () => {
     const fixture = makeFixture()
     const source = liveRead(fixture)
     expect(source.state).toBe("absent")
-    expect(source.path.endsWith(".omo/omo.jsonc")).toBe(true)
+    expect(source.path.endsWith(join(".omo", "omo.jsonc"))).toBe(true)
   })
 
   test("#when the config is invalid JSON #then the source is an error, never a silent {}", () => {

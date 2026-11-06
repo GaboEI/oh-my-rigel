@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { join, resolve as resolvePath } from "node:path"
 
 import * as config from "./rigel-v2-native-config.mjs"
 import { buildConditionalToolDefinitions } from "./rigel-v2-native-conditional-tools.mjs"
@@ -29,10 +30,14 @@ function memoryFileSystem(files) {
   }
 }
 
-const HOME = "/home/rigeltest"
-const PROJECT = `${HOME}/proj`
-const USER_CONFIG = `${HOME}/.omo/omo.jsonc`
-const PROJECT_CONFIG = `${PROJECT}/.omo/omo.jsonc`
+// The chain is resolved with the host `path` rules (the runtime uses `join` /
+// `resolve`), so the fixture's keys are built the same way: a hard-coded
+// `/home/rigeltest/.omo/omo.jsonc` never matches on Windows, where the runtime
+// looks for `\home\rigeltest\.omo\omo.jsonc` and finds nothing.
+const HOME = resolvePath("/home/rigeltest")
+const PROJECT = join(HOME, "proj")
+const USER_CONFIG = join(HOME, ".omo", "omo.jsonc")
+const PROJECT_CONFIG = join(PROJECT, ".omo", "omo.jsonc")
 const ENV = { HOME }
 const GATE_KEYS = ["monitor", "goal", "task_system", "team_mode", "interactive_bash", "hashline_edit", "preemptive_compaction"]
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { buildSite } from "./build.mjs"
@@ -92,7 +92,11 @@ describe("#given the moved site #when the legacy /oh-my-rigel/ base path is requ
 
     // when
     const unknownStub = join(outPath, "oh-my-rigel", "does-not-exist", "index.html")
-    const realPages = collectFiles(outPath).filter((file) => file.endsWith(".html") && !file.includes("/oh-my-rigel/"))
+    // The legacy stubs live under `<out>/oh-my-rigel/`, matched with POSIX
+    // separators regardless of the host that collected them.
+    const realPages = collectFiles(outPath)
+      .map((file) => file.split(sep).join("/"))
+      .filter((file) => file.endsWith(".html") && !file.includes("/oh-my-rigel/"))
 
     // then
     expect(existsSync(unknownStub)).toBe(false)

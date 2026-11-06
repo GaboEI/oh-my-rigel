@@ -17,7 +17,6 @@ import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { runMutation } from "./test-support/mutation-harness.mjs"
-import { resolveProactiveAgentModels } from "./rigel-v2-native-agents.mjs"
 
 const OPENCODE_DIR = import.meta.dir
 const AGENTS_FILE = join(OPENCODE_DIR, "rigel-v2-native-agents.mjs")
@@ -49,11 +48,16 @@ const registrationCarriesFallbackChain = {
   name: "buildExplicitAgentModels carries the user fallback_models chain into registration",
   run: async ({ load }) => {
     const module = await load()
+    // The registration side is loaded through the harness too, never through a
+    // static import: a module this file imported statically is served from the
+    // loader cache for its mutants on Windows, which would make the mutation
+    // invisible and the contract green no matter what it changed.
+    const agents = await load(AGENTS_FILE)
     const explicit = module.buildExplicitAgentModels({
       "Sisyphus-Junior": { model: "kimi-for-coding/kimi-x", fallback_models: ["openai/gpt-6-luna-fast"] },
     })
     const inventory = [{ providerID: "openai", id: "gpt-6-luna-fast", enabled: true }]
-    const resolved = resolveProactiveAgentModels(
+    const resolved = agents.resolveProactiveAgentModels(
       { "Sisyphus-Junior": { name: "Sisyphus-Junior", mode: "subagent" } },
       inventory,
       explicit,

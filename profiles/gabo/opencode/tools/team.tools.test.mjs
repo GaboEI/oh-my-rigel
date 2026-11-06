@@ -345,7 +345,7 @@ describe("row 55: team_create must spawn real member sessions", () => {
     await tools.team_create.execute({ team_name: "builders", members: [{ name: "scout", agent: "explore", prompt: "a" }] })
     // then: the seam is told where to bind the member BEFORE its first prompt, and the
     // tool does not bind it afterwards (a post-prompt bind is too late for that turn)
-    expect(seen[0].worktreePath).toBe("/repo/.omo/team-worktrees/builders/scout")
+    expect(seen[0].worktreePath).toBe(path.join("/repo", ".omo", "team-worktrees", "builders", "scout"))
     expect(typeof seen[0].bindSession).toBe("function")
     expect(bound).toEqual([])
   })
