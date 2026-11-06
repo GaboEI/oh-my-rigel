@@ -146,6 +146,7 @@ describe("openclaw reply policy: the new namespace's authorization is a named li
   test("#given a declared policy that cannot authorize anybody #when resolved #then each mistake is one named diagnostic and no author", () => {
     const cases = [
       ["a non-object block", "nope", "openclaw.replyPolicy", "not-an-object"],
+      ["an empty namespace", {}, "openclaw.replyPolicy.discord-bot", "missing-authorized-authors"],
       ["an unknown key", { "discord-bot": { allowedAuthors: ["u1"], prefix: "x" } }, "openclaw.replyPolicy.discord-bot.prefix", "unknown-key"],
       ["a missing list", { "discord-bot": {} }, "openclaw.replyPolicy.discord-bot.allowedAuthors", "missing-authorized-authors"],
       ["an empty list", { "discord-bot": { allowedAuthors: [] } }, "openclaw.replyPolicy.discord-bot.allowedAuthors", "missing-authorized-authors"],
@@ -161,18 +162,15 @@ describe("openclaw reply policy: the new namespace's authorization is a named li
     }
   })
 
-  test("#given an empty policy namespace #when resolved #then it declares no governed identity", () => {
-    const policy = resolveOpenclawReplyPolicy({})
-
-    expect(policy).toEqual({ declared: true, identities: [], diagnostics: [] })
-  })
-
-  test("#given a policy naming no served identity #when resolved #then it does not manufacture another surface's diagnostic", () => {
-    // §5.2 rule 2: an unsupported identity is a configuration error, but it cannot
-    // govern Discord or Telegram by implication.
+  test("#given a policy naming no served identity #when resolved #then the missing Discord authorization is reported too", () => {
+    // §U7 made `telegram` a served identity, so the unsupported case uses one this
+    // runtime really does not serve. The Discord fallback still fires.
     const policy = resolveOpenclawReplyPolicy({ "slack-bot": { allowedAuthors: ["u1"] } })
 
-    expect(policy.diagnostics.map((diagnostic) => diagnostic.reason)).toEqual(["unsupported-identity"])
+    expect(policy.diagnostics.map((diagnostic) => diagnostic.reason)).toEqual([
+      "unsupported-identity",
+      "missing-authorized-authors",
+    ])
   })
 
   test("#given a rejected policy #when described #then the line names the path and never an author id", () => {

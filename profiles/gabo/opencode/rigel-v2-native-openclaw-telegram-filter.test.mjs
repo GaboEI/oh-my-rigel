@@ -366,7 +366,7 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
     await native.dispose()
   })
 
-  test("#given a legacy telegram replyListener plus replyPolicy without channels #when the list is absent then restored #then polling stays closed then resumes while Discord remains legacy", async () => {
+  test("#given a legacy telegram replyListener plus replyPolicy without channels #when the list is absent then restored #then polling stays closed then resumes", async () => {
     const replyListener = {
       ...telegramReplyListener(),
       discordBotToken: SECRET,
@@ -380,8 +380,10 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
       replyListener,
     }, { fetchImpl: closedFetch })
 
-    expect(await closed.ready).toEqual({ started: true })
-    expect(closed.inbound.status().platforms).toMatchObject({ discord: true, telegram: false })
+    // Row 28: an empty-namespace policy reports the Discord diagnostic and starts nothing,
+    // so the closed Telegram route is asserted through the absent poller, not a started listener.
+    expect(await closed.ready).toEqual({ started: false, reason: "no-credentials" })
+    expect(closed.inbound.status().platforms.telegram).toBe(false)
     expect(closedFetchImpl.calls.filter((call) => call.url.includes("/getUpdates"))).toEqual([])
     await closed.dispose()
 
@@ -405,10 +407,10 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
     await resumed.dispose()
   })
 
-  test("#given a legacy telegram listener and a replyPolicy naming only Discord #when composed #then Telegram stays on its chat-only route", async () => {
+  test("#given a legacy telegram listener and a replyPolicy naming only Discord #when composed #then Telegram stays closed and the intruder is never injected", async () => {
     const storage = memoryStorage()
     seedTelegramCorrelation(storage)
-    const { native, lines, fetchImpl, prompts } = harmonyComposition({
+    const { native, fetchImpl, prompts } = harmonyComposition({
       enabled: true,
       replyPolicy: { "discord-bot": { allowedAuthors: [AUTHORIZED_USER] } },
       replyListener: telegramReplyListener(),
@@ -417,12 +419,14 @@ describe("openclaw composition: the new namespace requires a Telegram user list"
       fetchImpl: telegramPort([{ update_id: 11, message: telegramMessage({ messageId: 35, userId: INTRUDER, text: "legacy" }) }]),
     })
 
-    expect(await native.ready).toEqual({ started: true })
-    await waitFor(() => prompts.length > 0, "Telegram legacy reply without Telegram policy")
-    expect(native.inbound.status().platforms.telegram).toBe(true)
-    expect(fetchImpl.calls.some((call) => call.url.includes("/getUpdates"))).toBe(true)
-    expect(prompts).toEqual([{ sessionID: "ses_tg", text: "[reply:telegram] legacy", delivery: "queue" }])
-    expect(lines.filter((line) => line.includes("Telegram replies stay off"))).toEqual([])
+    expect(await native.ready).toEqual({ started: false, reason: "no-credentials" })
+    expect(native.inbound.status().platforms.telegram).toBe(false)
+    expect(fetchImpl.calls.filter((call) => call.url.includes("/getUpdates"))).toEqual([])
+    expect(prompts).toEqual([])
+    expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces.telegram).toMatchObject({
+      state: "fatal",
+      errorClass: "missing-authorized-authors",
+    })
     await native.dispose()
   })
 

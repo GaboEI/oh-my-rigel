@@ -241,12 +241,7 @@ export function createNativeOpenclaw({
   ])
   const discordReplyPolicyGoverned = replyPolicyIdentities.has("discord-bot")
   const discordNamespaceGoverned = channelChatIdentities.has("discord-bot") || discordReplyPolicyGoverned
-  // Each new-namespace trigger governs only its named identity. Either a Telegram
-  // channel or a Telegram reply policy makes the inbound authorization explicit;
-  // a declaration for Discord never cross-flips Telegram into or out of legacy.
-  const telegramChannelGoverned = channelChatIdentities.has("telegram")
-  const telegramReplyPolicyGoverned = replyPolicyIdentities.has("telegram")
-  const telegramNamespaceGoverned = telegramChannelGoverned || telegramReplyPolicyGoverned
+  const telegramNamespaceGoverned = channelChatIdentities.has("telegram") || replyPolicyIdentities.has("telegram") || replyPolicy.declared
 
   // §U6: a named Discord policy replaces the legacy list. A Discord notification
   // channel still requires the existing legacy list, while Telegram policy cannot
@@ -259,9 +254,10 @@ export function createNativeOpenclaw({
     && !discordAuthorized
     && !reportedIdentities.has("discord-bot")
 
-  // §U7: either named Telegram trigger requires an explicit user list. A missing
-  // Telegram list keeps the poller closed; no unrelated declaration can change the
-  // legacy chat-only route for Telegram.
+  // §U7: a Telegram-owned new channel or policy requires an explicit user list.
+  // Any declared reply policy also keeps Telegram on the secure route: dropping
+  // that requirement when a Discord policy exists would restore the legacy
+  // chat-only poller, which is an unauthorized permissive transition.
   const telegramAuthorization = enabled && telegramNamespaceGoverned ? authorizeTelegramAuthors(replyPolicy) : undefined
   const unauthorizedTelegramInNewNamespace = telegramAuthorization !== undefined
     && hasTelegramInbound
@@ -284,7 +280,7 @@ export function createNativeOpenclaw({
     authorizationReports.push({
       surface: "telegram",
       detail: "openclaw.replyPolicy.telegram.allowedAuthors",
-      line: telegramReplyPolicyGoverned
+      line: replyPolicyIdentities.has("telegram") || replyPolicy.declared
         ? "[oh-my-rigel] Native V2 openclaw Telegram replies stay off: openclaw.replyPolicy.telegram.allowedAuthors is not declared, so no user is authorized"
         : "[oh-my-rigel] Native V2 openclaw Telegram replies stay off: openclaw.channels.telegram is declared but openclaw.replyPolicy.telegram.allowedAuthors is not, so no user is authorized",
     })
@@ -412,8 +408,8 @@ export function createNativeOpenclaw({
     // §U6: only a named Discord reply policy replaces the legacy author list.
     // A Discord notification channel retains the pinned legacy authorization path.
     ...(discordReplyPolicyGoverned ? { discordAuthorization } : {}),
-    // §U7: undefined preserves the legacy chat-only route; only a named Telegram
-    // policy supplies its user authorization and can close that route.
+    // §U7: undefined preserves the legacy chat-only route; every declared reply
+    // policy remains a security boundary that prevents reopening it.
     ...(telegramAuthorization === undefined ? {} : { telegramAuthorization }),
     ...(typeof env?.RIGEL_OPENCLAW_DISCORD_API_BASE === "string"
       ? { discordApiBase: env.RIGEL_OPENCLAW_DISCORD_API_BASE }
@@ -512,7 +508,7 @@ export function createNativeOpenclaw({
     if (replyPolicyIdentities.has("discord-bot")) {
       authorization.discord = { source: discordAuthorization.source, explicit: discordAuthorization.explicit }
     }
-    if (telegramReplyPolicyGoverned && telegramAuthorization !== undefined && hasTelegramInbound) {
+    if (replyPolicy.declared && telegramAuthorization !== undefined && hasTelegramInbound) {
       authorization.telegram = {
         source: telegramAuthorization.source,
         explicit: telegramAuthorization.explicit,

@@ -78,9 +78,9 @@ export function describeOpenclawReplyPolicyDiagnostic(diagnostic) {
  * Resolve the raw `openclaw.replyPolicy` block into the identities it actually
  * authorizes plus one diagnostic per rejected block.
  *
- * `declared` records the key's presence for diagnostics, but governance stays at
- * the identity level: a policy can report only the identity it names and never
- * manufacture authorization state for another inbound surface.
+ * `declared` is true whenever the key exists, even when every block is invalid:
+ * that is what makes the absence of authorization REPORTABLE instead of
+ * indistinguishable from a configuration that never mentioned the namespace.
  *
  * @param {unknown} rawPolicy raw `openclaw.replyPolicy` from the live chain
  * @returns {{ declared: boolean, identities: Array<{ identity: string, allowedAuthors: string[] }>, diagnostics: Array<{ path: string, reason: string, identity: string|null }> }}
@@ -124,6 +124,18 @@ export function resolveOpenclawReplyPolicy(rawPolicy) {
     identities.push({ identity, allowedAuthors: [...new Set(authors)] })
   }
 
+  // Declaring the block without naming the served identity IS the absence of
+  // authorization, so it is reported rather than treated as an empty namespace.
+  //
+  // Kept Discord-scoped on purpose. It answers "the policy mentioned the
+  // namespace but authorized nobody at all", which §U6 owns for Discord; whether a
+  // specific INBOUND surface is configured is knowledge this pure resolver does
+  // not have, and inventing a `telegram` diagnostic here would report a disabled
+  // surface on installations that never configured Telegram at all. The
+  // composition reports the Telegram surface by its credentials (§U7).
+  if (identities.length === 0 && !diagnostics.some((diagnostic) => diagnostic.identity === "discord-bot")) {
+    diagnostics.push({ path: "openclaw.replyPolicy.discord-bot", reason: "missing-authorized-authors", identity: "discord-bot" })
+  }
 
   return { declared: true, identities, diagnostics }
 }
