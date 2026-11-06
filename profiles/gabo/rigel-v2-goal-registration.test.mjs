@@ -254,7 +254,9 @@ describe("#given the two-slot family registration", () => {
 
 describe("#given the goal state path", () => {
   test("#when resolved #then it lives inside the state root and is never the V1 path", () => {
-    const root = "/var/lib/oh-my-rigel"
+    // Resolved before use: the module resolves the root it is given, and a
+    // drive-less `/var/...` grows a drive on Windows (`D:\var\...`).
+    const root = path.resolve("/var/lib/oh-my-rigel")
     const resolved = resolveGoalStatePath(root)
     expect(resolved).toBe(path.join(root, "goal-state", "goals.json"))
     expect(isV1GoalStatePath(resolved)).toBe(false)
@@ -279,8 +281,11 @@ describe("#given the goal state path", () => {
     const installed = installGoalStatePath({ env, runtimeUrl })
     expect(installed).toBe(path.join(root, "goal-state", "goals.json"))
     expect(env.OPENCODE_GOAL_STATE_PATH).toBe(installed)
-    // A source load (not a deployment path) leaves the environment untouched.
-    expect(installGoalStatePath({ env: {}, runtimeUrl: "file:///repo/profiles/gabo/opencode/index.js" })).toBeUndefined()
+    // A source load (not a deployment path) leaves the environment untouched. The
+    // URL is built from a real path: a drive-less `file:///repo/...` is not a
+    // resolvable file URL on Windows.
+    const sourceLoadUrl = pathToFileURL(path.join(root, "source", "opencode", "index.js")).href
+    expect(installGoalStatePath({ env: {}, runtimeUrl: sourceLoadUrl })).toBeUndefined()
     // An existing V1 value is refused.
     expect(() => installGoalStatePath({ env: { OPENCODE_GOAL_STATE_PATH: "/home/u/.local/share/opencode-goal-plugin/goals.json" }, runtimeUrl })).toThrow(/escapes|V1/)
   })

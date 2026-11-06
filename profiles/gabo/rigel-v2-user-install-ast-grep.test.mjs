@@ -189,9 +189,14 @@ describe("#given an install that provisions the pinned ast-grep sg", () => {
         RIGEL_V2_SG_ASSET_SHA256: second.sha256,
         RIGEL_V2_FAIL_AT: "provision:after-astgrep",
       })
-      expect(refreshed.result.status).not.toBe(0)
+      expect(refreshed.result.status, refreshed.result.stderr || refreshed.result.stdout).not.toBe(0)
       expect(fs.readFileSync(binary).equals(bytesA)).toBe(true)
-      expect(fs.statSync(binary).mode & 0o111).not.toBe(0)
+      // The POSIX execute bits are part of "the prior binary is restored": the
+      // provisioned file must stay runnable, not merely byte-identical. Windows
+      // carries executability in the extension, so there is no bit to assert.
+      if (process.platform !== "win32") {
+        expect(fs.statSync(binary).mode & 0o111).not.toBe(0)
+      }
     })
   }, INSTALL_TIMEOUT)
 
