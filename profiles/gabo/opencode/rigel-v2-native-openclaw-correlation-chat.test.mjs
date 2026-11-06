@@ -17,8 +17,10 @@ import { createOpenclawRegistry, OPENCLAW_REGISTRY_MAX_AGE_MS, OPENCLAW_REGISTRY
  *     still resolvable (the legacy/migration identity);
  *   - a Discord correlation is identified by `(platform, messageId)` exactly as
  *     before (snowflake ids are unique platform-wide);
- *   - two chats reusing one `message_id` never cross-route, in memory or across a
- *     restart;
+ *   - two chats reusing one `message_id` never cross-route while both have scoped
+ *     correlations;
+ *   - a chat-less residual can answer a foreign chat only while its 24 h TTL is
+ *     fresh;
  *   - a chat component that is not a string is refused instead of stored in a
  *     form that can never resolve.
  *
@@ -201,6 +203,21 @@ describe("openclaw telegram correlation identity", () => {
     expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_B)?.sessionID).toBe("ses_legacy")
   })
 
+  test("#given a scoped record and a chat-less residual inside the 24 h TTL #when its own and a foreign chat look up #then the scoped record wins and the residual expires", async () => {
+    let clock = Date.parse("2026-06-01T00:00:00.000Z")
+    const registry = createOpenclawRegistry({ now: () => clock })
+    const createdAt = new Date(clock - OPENCLAW_REGISTRY_MAX_AGE_MS).toISOString()
+
+    await registry.register(mapping({ channelId: undefined, sessionID: "ses_legacy", createdAt }))
+    await registry.register(mapping({ channelId: CHAT_A, sessionID: SESSION_A, createdAt: new Date(clock).toISOString() }))
+
+    expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe(SESSION_A)
+    expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_B)?.sessionID).toBe("ses_legacy")
+
+    clock += 1
+    expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_B)).toBeNull()
+  })
+
   test("#given a malformed chat component #when it is registered or hydrated #then it is refused", async () => {
     const registry = createOpenclawRegistry({})
 
@@ -226,6 +243,30 @@ describe("openclaw telegram correlation identity", () => {
     expect(reader.size()).toBe(2)
     expect(reader.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe(SESSION_A)
     expect(reader.lookup("telegram", SHARED_MESSAGE_ID, CHAT_B)?.sessionID).toBe(SESSION_B)
+  })
+
+  test("#given one page with two readable records #when hydration runs #then it scans exactly one page and indexes the stated record count", async () => {
+    let scans = 0
+    const entries = [
+      { key: LEGACY_TELEGRAM_KEY, value: mapping({ channelId: undefined, sessionID: "ses_legacy" }) },
+      { key: `${PREFIX}scoped-chat-b`, value: mapping({ channelId: CHAT_B, sessionID: SESSION_B }) },
+    ]
+    const storage = {
+      scan: async ({ prefix }) => {
+        scans += 1
+        expect(prefix).toBe(PREFIX)
+        return { entries, nextCursor: "a-second-page-must-not-be-read" }
+      },
+    }
+    const registry = createOpenclawRegistry({ storage })
+
+    await registry.hydrate()
+
+    expect(scans).toBe(1)
+    expect(entries).toHaveLength(2)
+    expect(registry.size()).toBe(2)
+    expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_A)?.sessionID).toBe("ses_legacy")
+    expect(registry.lookup("telegram", SHARED_MESSAGE_ID, CHAT_B)?.sessionID).toBe(SESSION_B)
   })
 
   test("#given a stale scoped record and a fresh legacy one #when the owning chat looks up #then the stale one is evicted and the legacy survives", async () => {

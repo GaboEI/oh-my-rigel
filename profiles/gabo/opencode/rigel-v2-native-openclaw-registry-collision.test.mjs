@@ -254,6 +254,18 @@ describe("openclaw registry chat-scoped and chat-less coexistence", () => {
   })
 })
 
+describe("openclaw registry prune lifecycle boundary", () => {
+  test("#given the production registry module #when prune call sites are inspected #then no production caller schedules destructive reclamation", async () => {
+    const source = await Bun.file(new URL("./rigel-v2-native-openclaw-registry.mjs", import.meta.url)).text()
+    const executable = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "")
+    const declaration = executable.indexOf("async function prune()")
+
+    expect(declaration).toBeGreaterThanOrEqual(0)
+    expect(executable.slice(0, declaration)).not.toMatch(/\bprune\s*\(/)
+    expect(executable.slice(declaration + "async function prune()".length)).not.toMatch(/\bprune\s*\(/)
+  })
+})
+
 function immediateSleep() {
   return new Promise((resolve) => setImmediate(resolve))
 }
