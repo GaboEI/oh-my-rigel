@@ -309,7 +309,7 @@ describe("OpenClaw secret references", () => {
 })
 
 describe("OpenClaw channel credential audit", () => {
-  test("#given notification channels #when audited for installation #then their tokens are classified by path and a2a peers are left alone", () => {
+  test("#given notification channels and consumed A2A peer leaves #when audited for installation #then the manifest-warning seam classifies only credential paths without values", () => {
     // given
     const openclaw = {
       enabled: true,
@@ -317,7 +317,13 @@ describe("OpenClaw channel credential audit", () => {
         alerts: { transport: "discord", token: "env:DISCORD_BOT_TOKEN", channelId: "c1" },
         ops: { transport: "telegram", token: "plain-tg-token", chatId: "42" },
         broken: { transport: "telegram", token: { secret: "nope" }, chatId: "42" },
-        a2a: { enabled: true, peers: { alpha: { token: "env:A2A_TOKEN" } } },
+        a2a: {
+          enabled: true,
+          peers: {
+            alpha: { token: "plain-a2a-token", outboundToken: "plain-a2a-outbound-token", url: "https://alpha.example/a2a" },
+            bravo: { token: "env:A2A_TOKEN", outboundToken: { env: "A2A_OUTBOUND_TOKEN" }, url: "https://bravo.example/a2a" },
+          },
+        },
       },
     }
 
@@ -326,10 +332,22 @@ describe("OpenClaw channel credential audit", () => {
 
     // then
     expect(audit).toEqual({
-      references: ["openclaw.channels.alerts.token"],
-      plaintext: ["openclaw.channels.ops.token"],
+      references: [
+        "openclaw.channels.alerts.token",
+        "openclaw.channels.a2a.peers.bravo.token",
+        "openclaw.channels.a2a.peers.bravo.outboundToken",
+      ],
+      plaintext: [
+        "openclaw.channels.ops.token",
+        "openclaw.channels.a2a.peers.alpha.token",
+        "openclaw.channels.a2a.peers.alpha.outboundToken",
+      ],
       invalid: ["openclaw.channels.broken.token"],
     })
     expect(JSON.stringify(audit)).not.toContain("plain-tg-token")
+    expect(JSON.stringify(audit)).not.toContain("plain-a2a-token")
+    expect(JSON.stringify(audit)).not.toContain("plain-a2a-outbound-token")
+    expect(JSON.stringify(audit)).not.toContain("https://alpha.example/a2a")
+    expect(JSON.stringify(audit)).not.toContain("https://bravo.example/a2a")
   })
 })
