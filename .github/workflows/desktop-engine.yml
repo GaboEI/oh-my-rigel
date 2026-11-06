@@ -2,7 +2,7 @@ name: Desktop engine
 
 on:
   push:
-    branches: [master, dev]
+    branches: [v2-mirror]
     paths:
       - "crates/**"
       - "packages/senpi-desktop-*/**"
@@ -18,7 +18,7 @@ on:
       - ".github/workflows/publish.yml"
       - ".github/workflows/desktop-engine.yml"
   pull_request:
-    branches: [master, dev]
+    branches: [v2-mirror]
     paths:
       - "crates/**"
       - "packages/senpi-desktop-*/**"
