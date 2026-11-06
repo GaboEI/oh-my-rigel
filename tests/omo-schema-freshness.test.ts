@@ -13,6 +13,7 @@ type JsonSchemaNode = {
   readonly required?: readonly string[]
   readonly anyOf?: readonly JsonSchemaNode[]
   readonly properties?: Readonly<Record<string, JsonSchemaNode>>
+  readonly additionalProperties?: JsonSchemaNode
 }
 
 function extractSchemaExample(markdown: string): unknown {
@@ -78,5 +79,26 @@ describe("omo schema freshness", () => {
     expect(replyListener?.required ?? []).toEqual([])
     expect(discordBotToken?.anyOf?.map((branch) => branch.type)).toEqual(["string", "object"])
     expect(discordBotToken?.anyOf?.[1]?.required).toEqual(["env"])
+  })
+
+  test("#given the generated schema #when the strict OpenCode OpenClaw node is inspected #then namespace nodes are optional and token fields retain the decided string shape", () => {
+    // given
+    const schema = createOmoJsonSchema() as { readonly properties: Readonly<Record<string, JsonSchemaNode>> }
+    const profiles = schema.properties.profiles
+    const openCode = profiles?.additionalProperties?.properties?.["[opencode]"]
+    const openclaw = openCode?.properties?.openclaw
+    const replyListener = openclaw?.properties?.replyListener
+    const discordBotToken = replyListener?.properties?.discordBotToken
+
+    // when
+    const required = openclaw?.required ?? []
+
+    // then
+    expect(openclaw?.properties?.channels).toBeDefined()
+    expect(openclaw?.properties?.replyPolicy).toBeDefined()
+    expect(required).not.toContain("channels")
+    expect(required).not.toContain("replyPolicy")
+    expect(replyListener?.required ?? []).toEqual([])
+    expect(discordBotToken?.type).toBe("string")
   })
 })

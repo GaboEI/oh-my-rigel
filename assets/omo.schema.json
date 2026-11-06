@@ -11890,7 +11890,6 @@
                   "type": "string"
                 },
                 "authorizedDiscordUserIds": {
-                  "default": [],
                   "type": "array",
                   "items": {
                     "type": "string"
@@ -11903,30 +11902,86 @@
                   "type": "string"
                 },
                 "pollIntervalMs": {
-                  "default": 3000,
                   "type": "number"
                 },
                 "rateLimitPerMinute": {
-                  "default": 10,
                   "type": "number"
                 },
                 "maxMessageLength": {
-                  "default": 500,
                   "type": "number"
                 },
                 "includePrefix": {
-                  "default": true,
                   "type": "boolean"
                 }
               },
-              "required": [
-                "authorizedDiscordUserIds",
-                "pollIntervalMs",
-                "rateLimitPerMinute",
-                "maxMessageLength",
-                "includePrefix"
-              ],
               "additionalProperties": false
+            },
+            "channels": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "transport": {
+                    "type": "string",
+                    "enum": [
+                      "discord",
+                      "telegram"
+                    ]
+                  },
+                  "token": {
+                    "type": "string"
+                  },
+                  "channelId": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  },
+                  "chatId": {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "events": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "session.created",
+                        "session.deleted",
+                        "session.idle"
+                      ]
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "replyPolicy": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "allowedAuthors": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
             }
           },
           "required": [
@@ -30298,7 +30353,6 @@
                         "type": "string"
                       },
                       "authorizedDiscordUserIds": {
-                        "default": [],
                         "type": "array",
                         "items": {
                           "type": "string"
@@ -30311,30 +30365,86 @@
                         "type": "string"
                       },
                       "pollIntervalMs": {
-                        "default": 3000,
                         "type": "number"
                       },
                       "rateLimitPerMinute": {
-                        "default": 10,
                         "type": "number"
                       },
                       "maxMessageLength": {
-                        "default": 500,
                         "type": "number"
                       },
                       "includePrefix": {
-                        "default": true,
                         "type": "boolean"
                       }
                     },
-                    "required": [
-                      "authorizedDiscordUserIds",
-                      "pollIntervalMs",
-                      "rateLimitPerMinute",
-                      "maxMessageLength",
-                      "includePrefix"
-                    ],
                     "additionalProperties": false
+                  },
+                  "channels": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "transport": {
+                          "type": "string",
+                          "enum": [
+                            "discord",
+                            "telegram"
+                          ]
+                        },
+                        "token": {
+                          "type": "string"
+                        },
+                        "channelId": {
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "chatId": {
+                          "type": [
+                            "string",
+                            "number"
+                          ]
+                        },
+                        "instruction": {
+                          "type": "string"
+                        },
+                        "events": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "session.created",
+                              "session.deleted",
+                              "session.idle"
+                            ]
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "replyPolicy": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "allowedAuthors": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [

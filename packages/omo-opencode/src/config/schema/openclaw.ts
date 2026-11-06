@@ -27,15 +27,28 @@ export const OpenClawHookSchema = z.object({
 export const OpenClawReplyListenerConfigSchema = z.object({
   discordBotToken: z.string().optional(),
   discordChannelId: z.string().optional(),
-  authorizedDiscordUserIds: z.array(z.string()).default([]),
+  authorizedDiscordUserIds: z.array(z.string()).optional(),
 
   telegramBotToken: z.string().optional(),
   telegramChatId: z.string().optional(),
 
-  pollIntervalMs: z.number().default(3000),
-  rateLimitPerMinute: z.number().default(10),
-  maxMessageLength: z.number().default(500),
-  includePrefix: z.boolean().default(true),
+  pollIntervalMs: z.number().optional(),
+  rateLimitPerMinute: z.number().optional(),
+  maxMessageLength: z.number().optional(),
+  includePrefix: z.boolean().optional(),
+})
+
+const OpenClawChannelSchema = z.object({
+  transport: z.enum(["discord", "telegram"]).optional(),
+  token: z.string().optional(),
+  channelId: z.union([z.string(), z.number()]).optional(),
+  chatId: z.union([z.string(), z.number()]).optional(),
+  instruction: z.string().optional(),
+  events: z.array(z.enum(["session.created", "session.deleted", "session.idle"])).optional(),
+})
+
+const OpenClawReplyPolicySchema = z.object({
+  allowedAuthors: z.array(z.string()).min(1).optional(),
 })
 
 export const OpenClawConfigSchema = z.object({
@@ -47,6 +60,8 @@ export const OpenClawConfigSchema = z.object({
 
   // Inbound Configuration (Reply Listener)
   replyListener: OpenClawReplyListenerConfigSchema.optional(),
+  channels: z.record(z.string(), OpenClawChannelSchema).optional(),
+  replyPolicy: z.record(z.string(), OpenClawReplyPolicySchema).optional(),
 })
 
 export type OpenClawConfig = z.infer<typeof OpenClawConfigSchema> & CoreOpenClawConfig
