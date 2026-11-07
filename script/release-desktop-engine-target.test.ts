@@ -12,6 +12,10 @@ import {
 } from "./release-desktop-engine-target"
 import { buildRuntimeManifest, RELEASE_BINARY_TARGETS, resolveExpectedSidecarRelPaths, stageSidecarPayload } from "./build-omo-binary"
 
+// Copying the full sidecar payload precedes the fail-closed throw, so the duration tracks disk and
+// antivirus load on the Windows runners rather than the assertion itself.
+const SIDECAR_STAGING_TEST_TIMEOUT_MS = process.platform === "win32" ? 180_000 : 60_000
+
 describe("desktop engine target fixture", () => {
   test("all twelve targets resolve from the fixture with explicit unavailable entries", () => {
     // Given the release fixture and binary matrix.
@@ -135,5 +139,5 @@ describe("compiled desktop engine staging", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  }, 60_000)
+  }, SIDECAR_STAGING_TEST_TIMEOUT_MS)
 })
