@@ -14,6 +14,7 @@ interface CiMode {
   readonly generatedReleasePush: boolean
   readonly webOnly: boolean
   readonly runHeavy: boolean
+  readonly windowsMatrix: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -61,14 +62,16 @@ function classify(
   const generatedReleasePush = parsed["generatedReleasePush"]
   const webOnly = parsed["webOnly"]
   const runHeavy = parsed["runHeavy"]
+  const windowsMatrix = parsed["windowsMatrix"]
   if (
     typeof generatedReleasePush !== "boolean" ||
     typeof webOnly !== "boolean" ||
-    typeof runHeavy !== "boolean"
+    typeof runHeavy !== "boolean" ||
+    typeof windowsMatrix !== "boolean"
   ) {
     throw new Error("classifier output must contain boolean CI mode fields")
   }
-  return { generatedReleasePush, webOnly, runHeavy }
+  return { generatedReleasePush, webOnly, runHeavy, windowsMatrix }
 }
 
 describe("CI fast-path classifier", () => {
@@ -82,42 +85,72 @@ describe("CI fast-path classifier", () => {
       event: "pull_request",
       message: "release: v5.0.0-beta.8",
       paths: ["package.json"],
-      expected: { generatedReleasePush: false, webOnly: false, runHeavy: true },
+      expected: {
+        generatedReleasePush: false,
+        webOnly: false,
+        runHeavy: true,
+        windowsMatrix: true,
+      },
     },
     {
       name: "ordinary source push",
       event: "push",
       message: "fix(core): preserve validation",
       paths: ["packages/model-core/src/index.ts"],
-      expected: { generatedReleasePush: false, webOnly: false, runHeavy: true },
+      expected: {
+        generatedReleasePush: false,
+        webOnly: false,
+        runHeavy: true,
+        windowsMatrix: true,
+      },
     },
     {
       name: "generated release merge push",
       event: "push",
       message: "Merge pull request #6955 from code-yeongyu/release/v5.0.0-beta.8-source-state",
       paths: ["package.json", "bun.lock"],
-      expected: { generatedReleasePush: true, webOnly: false, runHeavy: false },
+      expected: {
+        generatedReleasePush: true,
+        webOnly: false,
+        runHeavy: false,
+        windowsMatrix: false,
+      },
     },
     {
       name: "direct release commit",
       event: "push",
       message: "release: v5.0.0-beta.8",
       paths: ["package.json"],
-      expected: { generatedReleasePush: false, webOnly: false, runHeavy: true },
+      expected: {
+        generatedReleasePush: false,
+        webOnly: false,
+        runHeavy: true,
+        windowsMatrix: true,
+      },
     },
     {
       name: "web-only pull request",
       event: "pull_request",
       message: "feat(web): update landing page",
       paths: ["packages/web/app/page.tsx", "docs/guide/install.md"],
-      expected: { generatedReleasePush: false, webOnly: true, runHeavy: false },
+      expected: {
+        generatedReleasePush: false,
+        webOnly: true,
+        runHeavy: false,
+        windowsMatrix: false,
+      },
     },
     {
       name: "mixed web and root change",
       event: "pull_request",
       message: "feat: update web and runtime",
       paths: ["packages/web/app/page.tsx", "packages/model-core/src/index.ts"],
-      expected: { generatedReleasePush: false, webOnly: false, runHeavy: true },
+      expected: {
+        generatedReleasePush: false,
+        webOnly: false,
+        runHeavy: true,
+        windowsMatrix: false,
+      },
     },
   ])("$name", ({ event, message, paths, expected }) => {
     expect(classify(event, message, paths)).toEqual(expected)
@@ -126,13 +159,23 @@ describe("CI fast-path classifier", () => {
   test("fails closed when a release-looking push is not a real merge commit", () => {
     const message = "Merge pull request #6955 from code-yeongyu/release/v5.0.0-beta.8-source-state"
     const mode = classify("push", message, ["package.json"], true, 1)
-    expect(mode).toEqual({ generatedReleasePush: false, webOnly: false, runHeavy: true })
+    expect(mode).toEqual({
+      generatedReleasePush: false,
+      webOnly: false,
+      runHeavy: true,
+      windowsMatrix: true,
+    })
   })
 
   test("fails closed when a release-looking merge push has no available diff", () => {
     const message = "Merge pull request #6955 from code-yeongyu/release/v5.0.0-beta.8-source-state"
     const mode = classify("push", message, ["package.json"], false, 2)
-    expect(mode).toEqual({ generatedReleasePush: false, webOnly: false, runHeavy: true })
+    expect(mode).toEqual({
+      generatedReleasePush: false,
+      webOnly: false,
+      runHeavy: true,
+      windowsMatrix: true,
+    })
   })
 
   test("fails closed when the diff is unavailable or empty", () => {
@@ -140,11 +183,13 @@ describe("CI fast-path classifier", () => {
       generatedReleasePush: false,
       webOnly: false,
       runHeavy: true,
+      windowsMatrix: true,
     })
     expect(classify("push", "fix: empty diff", [])).toEqual({
       generatedReleasePush: false,
       webOnly: false,
       runHeavy: true,
+      windowsMatrix: true,
     })
   })
 })

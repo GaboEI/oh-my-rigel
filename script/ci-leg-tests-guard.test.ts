@@ -14,6 +14,7 @@ interface LegInput {
   readonly os: string
   readonly runHeavy: string
   readonly fullMatrix: string
+  readonly windowsMatrix: string
   readonly runtimeTouching: string
   readonly jobStatus?: string
 }
@@ -48,6 +49,8 @@ function runLeg(input: LegInput): LegResult {
       input.runHeavy,
       "--full-matrix",
       input.fullMatrix,
+      "--windows-matrix",
+      input.windowsMatrix,
       "--runtime-touching",
       input.runtimeTouching,
     ],
@@ -63,6 +66,7 @@ describe("a leg that ran its tests", () => {
       os: "windows-latest",
       runHeavy: "true",
       fullMatrix: "true",
+      windowsMatrix: "true",
       runtimeTouching: "true",
     })
 
@@ -77,6 +81,7 @@ describe("a leg that ran its tests", () => {
       os: "macos-latest",
       runHeavy: "true",
       fullMatrix: "true",
+      windowsMatrix: "false",
       runtimeTouching: "true",
       jobStatus: "failure",
     })
@@ -87,12 +92,13 @@ describe("a leg that ran its tests", () => {
 })
 
 describe("a leg that skipped tests the change needed", () => {
-  test("#given a runtime change whose Windows tests were all skipped #then the check fails and names the label", () => {
+  test("#given a Windows-specific change whose Windows tests were all skipped #then the check fails and names the label", () => {
     const result = runLeg({
       outcomes: ["skipped", "skipped", "skipped", "skipped", "skipped"],
       os: "windows-latest",
       runHeavy: "true",
       fullMatrix: "false",
+      windowsMatrix: "true",
       runtimeTouching: "true",
     })
 
@@ -107,11 +113,26 @@ describe("a leg that skipped tests the change needed", () => {
       os: "macos-latest",
       runHeavy: "true",
       fullMatrix: "true",
+      windowsMatrix: "false",
       runtimeTouching: "false",
     })
 
     expect(result.status).toBe(1)
     expect(result.stdout).toContain("tests not run")
+  })
+
+  test("#given a runtime change that is not Windows-specific #then the macOS leg is still required", () => {
+    const result = runLeg({
+      outcomes: ["skipped", "skipped"],
+      os: "macos-latest",
+      runHeavy: "true",
+      fullMatrix: "false",
+      windowsMatrix: "false",
+      runtimeTouching: "true",
+    })
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain("tests not run: add ci:full-matrix")
   })
 
   test("#given the ubuntu leg of a heavy run skipped its tests #then the check fails", () => {
@@ -120,6 +141,7 @@ describe("a leg that skipped tests the change needed", () => {
       os: "ubuntu-latest",
       runHeavy: "true",
       fullMatrix: "false",
+      windowsMatrix: "false",
       runtimeTouching: "false",
     })
 
@@ -132,10 +154,25 @@ describe("a leg that skipped tests the change needed", () => {
       os: "windows-latest",
       runHeavy: "",
       fullMatrix: "",
+      windowsMatrix: "",
       runtimeTouching: "",
     })
 
     expect(result.status).toBe(1)
+  })
+
+  test("#given an empty windows_matrix output #then a skipped Windows leg fails closed", () => {
+    const result = runLeg({
+      outcomes: ["skipped", "skipped"],
+      os: "windows-latest",
+      runHeavy: "true",
+      fullMatrix: "true",
+      windowsMatrix: "",
+      runtimeTouching: "true",
+    })
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain("tests not run")
   })
 
   test("#given an earlier setup step failed before the tests #then the check fails with that reason", () => {
@@ -144,6 +181,7 @@ describe("a leg that skipped tests the change needed", () => {
       os: "windows-latest",
       runHeavy: "true",
       fullMatrix: "true",
+      windowsMatrix: "true",
       runtimeTouching: "true",
       jobStatus: "failure",
     })
@@ -154,17 +192,34 @@ describe("a leg that skipped tests the change needed", () => {
 })
 
 describe("a leg that skipped tests on purpose", () => {
+  test("#given a change with no Windows-specific path on a Windows leg #then the leg passes and names the reason", () => {
+    const result = runLeg({
+      outcomes: ["skipped", "skipped", "skipped"],
+      os: "windows-latest",
+      runHeavy: "true",
+      fullMatrix: "false",
+      windowsMatrix: "false",
+      runtimeTouching: "true",
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("::notice title=tests intentionally not run::")
+    expect(result.summary).toContain("tests intentionally not run on windows-latest")
+    expect(result.summary).toContain("no Windows-specific path changed")
+    expect(result.summary).toContain("ci:full-matrix")
+  })
+
   test("#given a docs-only change on a Windows leg #then the leg passes and says tests were intentionally not run", () => {
     const result = runLeg({
       outcomes: ["skipped", "skipped", "skipped"],
       os: "windows-latest",
       runHeavy: "true",
       fullMatrix: "false",
+      windowsMatrix: "false",
       runtimeTouching: "false",
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("::notice title=tests intentionally not run::")
     expect(result.summary).toContain("tests intentionally not run on windows-latest")
   })
 
@@ -174,6 +229,7 @@ describe("a leg that skipped tests on purpose", () => {
       os: "ubuntu-latest",
       runHeavy: "false",
       fullMatrix: "false",
+      windowsMatrix: "false",
       runtimeTouching: "false",
     })
 
@@ -187,6 +243,7 @@ describe("a leg that skipped tests on purpose", () => {
       os: "windows-latest",
       runHeavy: "false",
       fullMatrix: "true",
+      windowsMatrix: "false",
       runtimeTouching: "true",
     })
 
