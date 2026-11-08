@@ -191,9 +191,15 @@ export async function resolveCategory(client, location, categoryName, options = 
 /**
  * Normalize one user category chain entry into the `{ providers, model, variant }`
  * shape `resolveFallbackModel` walks. A bare string is `provider/model` (or a
- * bare id); an object may carry `model`, `variant`, and `providers`. A user
- * entry with no provider list is left provider-less so the resolver matches the
- * id on any provider, which is the V1 user-chain behaviour.
+ * bare id); an object may carry `model`, `variant`, and `providers`.
+ *
+ * Both forms name a provider the same way: a `model` string containing "/" is
+ * parsed with `parseModel`, so `{ model: "anthropic/claude-opus-5-5" }` yields
+ * providers `["anthropic"]` and model `"claude-opus-5-5"`. An explicit
+ * `providers` array / `providerID` on the object overrides the prefix. A model
+ * without "/" keeps its id verbatim, and an entry that names no provider at all
+ * stays provider-less so the resolver matches the id on any provider, which is
+ * the V1 user-chain behaviour.
  */
 export function normalizeUserChainEntry(entry) {
   if (typeof entry === "string") {
@@ -201,12 +207,17 @@ export function normalizeUserChainEntry(entry) {
     return parsed ? { providers: parsed.providerID ? [parsed.providerID] : [], model: parsed.id, ...(parsed.variant ? { variant: parsed.variant } : {}) } : undefined
   }
   if (!entry || typeof entry !== "object") return undefined
-  const model = typeof entry.model === "string" ? entry.model : undefined
-  if (!model) return undefined
-  const providers = Array.isArray(entry.providers)
+  const raw = typeof entry.model === "string" ? entry.model : undefined
+  if (!raw) return undefined
+  const parsed = parseModel(raw)
+  const declaredProviders = Array.isArray(entry.providers)
     ? entry.providers.filter((providerID) => typeof providerID === "string" && providerID)
     : (typeof entry.providerID === "string" && entry.providerID ? [entry.providerID] : [])
-  return { providers, model, ...(typeof entry.variant === "string" && entry.variant ? { variant: entry.variant } : {}) }
+  const providers = declaredProviders.length > 0
+    ? declaredProviders
+    : (parsed?.providerID ? [parsed.providerID] : [])
+  const variant = typeof entry.variant === "string" && entry.variant ? entry.variant : parsed?.variant
+  return { providers, model: parsed?.id ?? raw, ...(variant ? { variant } : {}) }
 }
 
 /**
