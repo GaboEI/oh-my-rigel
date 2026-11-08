@@ -111,21 +111,39 @@ function isPlatformSensitivePath(path) {
 // deliberately NOT Windows-specific: the v2-mirror push still runs the full
 // matrix, so a Windows regression surfaces after merge. A web-only or generated
 // release push (runHeavy=false) never needs Windows at all.
+//
+// The native Rust/desktop surface is Windows-relevant even when a file name
+// says nothing about the platform: crates/ and packages/senpi-desktop-* build
+// the engine the Windows binary embeds, and a directory segment may name the
+// platform (crates/senpi-desktop-backend-win32/src/input/native.rs,
+// src/windows/foo.ts) where the basename does not. desktop-engine.yml also
+// covers those paths, but a skipped Windows leg here must still be honest.
 const windowsSpecificRootFiles = new Set(["package.json", "bun.lock"])
 const windowsSpecificRootBunfig = /^bunfig[^/]*\.toml$/
 const windowsSpecificScript = /^script\/ci-[^/]*\.(?:mjs|ts)$/
 const windowsSpecificDirectories = [
+  "crates/",
+  "packages/senpi-desktop-",
   "packages/senpi-task/",
   "packages/omo-senpi/",
   ".github/scripts/",
   "packages/omo-codex/src/install/",
 ]
 
+// A directory segment names the platform without naming it in the file itself.
+function hasPlatformDirectorySegment(path) {
+  const segments = path.toLowerCase().split("/")
+  return segments
+    .slice(0, -1)
+    .some((segment) => segment.includes("windows") || segment.includes("win32"))
+}
+
 function isWindowsSpecificPath(path) {
   if (isPlatformSensitivePath(path)) return true
   if (windowsSpecificRootFiles.has(path)) return true
   if (windowsSpecificRootBunfig.test(path)) return true
   if (windowsSpecificScript.test(path)) return true
+  if (hasPlatformDirectorySegment(path)) return true
   return windowsSpecificDirectories.some((directory) => path.startsWith(directory))
 }
 

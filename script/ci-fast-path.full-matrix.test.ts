@@ -115,6 +115,7 @@ describe("full-matrix classification", () => {
     test.each([
       ["the fork's native V2 profile", "profiles/gabo/opencode/rigel-v2-native-categories.mjs"],
       ["a package prompt shipped from src", "packages/omo-opencode/src/agents/prompts/README.md"],
+      ["an OpenCode adapter source file", "packages/omo-opencode/src/x.ts"],
       ["a root build script", "script/build.ts"],
       ["a core package source file", "packages/model-core/src/index.ts"],
     ])("#then %s still runs macOS and ubuntu but not Windows", (_name, changedPath) => {
@@ -148,6 +149,14 @@ describe("full-matrix classification", () => {
       ["a powershell script", "script/qa/run-smoke.ps1"],
       ["a file whose basename names windows", "packages/utils/src/spawn-windows.ts"],
       ["a file whose basename names win32", "packages/utils/src/spawn-win32.ts"],
+      [
+        "a win32 desktop backend crate (the review finding)",
+        "crates/senpi-desktop-backend-win32/src/input/native.rs",
+      ],
+      ["a platform-neutral desktop crate", "crates/senpi-desktop-core/src/lib.rs"],
+      ["a desktop engine package", "packages/senpi-desktop-engine/src/x.ts"],
+      ["a windows directory segment", "src/windows/foo.ts"],
+      ["a win32 directory segment", "packages/utils/src/win32/spawn.ts"],
     ])("#then %s runs the Windows leg", (_name, changedPath) => {
       // given / when
       const mode = classify({
