@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { availableCategoryNames, mergeCategories, resolveCategory } from "./rigel-v2-native-categories.mjs"
+import { availableCategoryNames, mergeCategories, normalizeUserChain, normalizeUserChainEntry, resolveCategory } from "./rigel-v2-native-categories.mjs"
 
 test("exports the complete upstream builtin category set", () => {
   expect(availableCategoryNames()).toEqual([
@@ -135,4 +135,95 @@ test("an explicit user model with no reachable model names the user model in the
   }, { directory: "/project" }, "quick", {
     userCategories: { quick: { model: "anthropic/claude-opus-5-5" } },
   })).rejects.toThrow('was pinned to the user model(s) (anthropic/claude-opus-5-5)')
+})
+
+// An OBJECT chain entry carries the same provider-scoped identity a string does:
+// `{ model: "anthropic/claude-opus-5-5" }` must resolve to the anthropic
+// provider, not to a provider-less rung the resolver silently drops.
+test("normalizeUserChainEntry parses a provider-prefixed object model", () => {
+  expect(normalizeUserChainEntry({ model: "anthropic/claude-opus-5-5", reasoning: "medium" }))
+    .toEqual({ providers: ["anthropic"], model: "claude-opus-5-5" })
+})
+
+test("an object entry as the FIRST user chain rung is the selected model", async () => {
+  const result = await resolveCategory({
+    model: { list: async () => ({ data: [
+      { providerID: "anthropic", id: "claude-opus-5-5", enabled: true },
+      { providerID: "openai", id: "gpt-6-luna-fast", enabled: true },
+      { providerID: "opencode-go", id: "deepseek-flash", enabled: true },
+    ] }) },
+  }, { directory: "/project" }, "quick", {
+    userCategories: { quick: { models: [
+      { model: "anthropic/claude-opus-5-5", reasoning: "medium" },
+      "openai/gpt-6-luna-fast",
+      "opencode-go/deepseek-flash",
+    ] } },
+  })
+  expect(result.model).toEqual({ providerID: "anthropic", id: "claude-opus-5-5" })
+})
+
+test("an object entry in SECOND position is picked when the head is unavailable", async () => {
+  const result = await resolveCategory({
+    model: { list: async () => ({ data: [
+      { providerID: "anthropic", id: "claude-opus-5-5", enabled: true },
+    ] }) },
+  }, { directory: "/project" }, "quick", {
+    userCategories: { quick: { models: ["openai/gpt-6-luna-fast", { model: "anthropic/claude-opus-5-5" }] } },
+  })
+  expect(result.model).toEqual({ providerID: "anthropic", id: "claude-opus-5-5" })
+})
+
+test("an object entry in LAST position is picked when every earlier rung is unavailable", async () => {
+  const result = await resolveCategory({
+    model: { list: async () => ({ data: [
+      { providerID: "anthropic", id: "claude-opus-5-5", enabled: true },
+    ] }) },
+  }, { directory: "/project" }, "quick", {
+    userCategories: { quick: { models: [
+      "openai/gpt-6-luna-fast",
+      "opencode-go/deepseek-flash",
+      { model: "anthropic/claude-opus-5-5" },
+    ] } },
+  })
+  expect(result.model).toEqual({ providerID: "anthropic", id: "claude-opus-5-5" })
+})
+
+test("an object-only chain does not throw when its model is the only one available", async () => {
+  const result = await resolveCategory({
+    model: { list: async () => ({ data: [
+      { providerID: "anthropic", id: "claude-opus-5-5", enabled: true },
+    ] }) },
+  }, { directory: "/project" }, "quick", {
+    userCategories: { quick: { models: [{ model: "anthropic/claude-opus-5-5", reasoning: "medium" }] } },
+  })
+  expect(result.model).toEqual({ providerID: "anthropic", id: "claude-opus-5-5" })
+  expect(result.explicit).toBe(true)
+})
+
+test("an explicit providers list in an object entry wins over the model prefix", async () => {
+  expect(normalizeUserChainEntry({ model: "anthropic/claude-opus-5-5", providers: ["deepseek"] }))
+    .toEqual({ providers: ["deepseek"], model: "claude-opus-5-5" })
+  // Behavioural proof: the prefix provider is never consulted when the entry
+  // declares its own provider list.
+  const result = await resolveCategory({
+    model: { list: async () => ({ data: [
+      { providerID: "deepseek", id: "claude-opus-5-5", enabled: true },
+    ] }) },
+  }, { directory: "/project" }, "quick", {
+    userCategories: { quick: { models: [{ model: "anthropic/claude-opus-5-5", providers: ["deepseek"] }] } },
+  })
+  expect(result.model).toEqual({ providerID: "deepseek", id: "claude-opus-5-5" })
+})
+
+test("a bare object model without a prefix keeps its provider-less shape", () => {
+  expect(normalizeUserChainEntry({ model: "claude-opus-5-5" }))
+    .toEqual({ providers: [], model: "claude-opus-5-5" })
+})
+
+test("fallback_models normalizes an object entry like a string one", () => {
+  expect(normalizeUserChain([{ model: "anthropic/claude-opus-5-5", reasoning: "medium" }, "openai/gpt-6-luna-fast(low)"]))
+    .toEqual([
+      { providers: ["anthropic"], model: "claude-opus-5-5" },
+      { providers: ["openai"], model: "gpt-6-luna-fast", variant: "low" },
+    ])
 })
