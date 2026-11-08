@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test"
 import { agentOverrideChain, agentOverrideFor, categoryIsExplicit, resolveAgentDelegationModel, resolveAuthoritativeAgentOverrides, resolveEffectiveChain } from "./rigel-v2-native-explicit-chain.mjs"
 import { categoryChain } from "./rigel-v2-native-model-chains.mjs"
+import { readAgentOverridesFromConfig } from "./rigel-v2-native-config.mjs"
 
 // Upstream 5a9bb74a4: an explicit user model suppresses the built-in chain.
 
@@ -214,4 +215,41 @@ test("resolveAgentDelegationModel: an unreadable inventory keeps the configured 
 
 test("resolveAgentDelegationModel: a bare-id pin with an unreadable inventory keeps the configured head", () => {
   expect(resolveAgentDelegationModel({ model: "not-a-provider-ref" }, undefined)).toEqual({ id: "not-a-provider-ref" })
+})
+
+// An agent JSON override that names an OBJECT rung keeps its provider scope. The
+// live config read hoists `models[0]` into `model` and moves the rest into
+// `fallback_models`, so an object written in the second position arrives as a
+// `fallback_models` object entry and must still resolve to its own provider.
+test("agentOverrideChain: an object rung in the SECOND position keeps its provider", () => {
+  const agentOverrides = readAgentOverridesFromConfig({
+    oracle: { models: ["openai/gpt-6-astra", { model: "anthropic/claude-opus-5-5", reasoning: "medium" }] },
+  })
+  expect(agentOverrideChain(agentOverrides.oracle)).toEqual([
+    { providers: ["openai"], model: "gpt-6-astra" },
+    { providers: ["anthropic"], model: "claude-opus-5-5" },
+  ])
+})
+
+test("agentOverrideChain: an object in fallback_models keeps its provider", () => {
+  const agentOverrides = readAgentOverridesFromConfig({
+    oracle: {
+      model: "openai/gpt-6-astra",
+      fallback_models: [{ model: "anthropic/claude-opus-5-5", reasoning: "medium" }],
+    },
+  })
+  expect(agentOverrideChain(agentOverrides.oracle)).toEqual([
+    { providers: ["openai"], model: "gpt-6-astra" },
+    { providers: ["anthropic"], model: "claude-opus-5-5" },
+  ])
+})
+
+// The dropped rung is not cosmetic: with the head unavailable the delegation
+// model must be the object rung instead of falling through to the configured head.
+test("resolveAgentDelegationModel: an unavailable head falls through to an object rung", () => {
+  const agentOverrides = readAgentOverridesFromConfig({
+    oracle: { models: ["openai/gpt-6-astra", { model: "anthropic/claude-opus-5-5" }] },
+  })
+  expect(resolveAgentDelegationModel(agentOverrides.oracle, [{ providerID: "anthropic", id: "claude-opus-5-5", enabled: true }]))
+    .toEqual({ providerID: "anthropic", id: "claude-opus-5-5" })
 })
