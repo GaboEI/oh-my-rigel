@@ -9,8 +9,9 @@ import { load } from "js-yaml"
 const classifierPath = new URL("./ci-fast-path.mjs", import.meta.url)
 const ciWorkflowPath = new URL("../.github/workflows/ci.yml", import.meta.url)
 
-const UBUNTU_OR_FULL_MATRIX =
-  "(matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')"
+// Windows follows the narrower windows_matrix decision; macOS keeps full_matrix.
+const OS_MATRIX_CLAUSE =
+  "(matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))"
 
 interface FullMatrixMode {
   readonly generatedReleasePush: boolean
@@ -18,6 +19,7 @@ interface FullMatrixMode {
   readonly runHeavy: boolean
   readonly fullMatrix: boolean
   readonly runtimeTouching: boolean
+  readonly windowsMatrix: boolean
 }
 
 interface ClassifyInput {
@@ -65,16 +67,20 @@ function classify(input: ClassifyInput): FullMatrixMode {
   const runHeavy = parsed["runHeavy"]
   const fullMatrix = parsed["fullMatrix"]
   const runtimeTouching = parsed["runtimeTouching"]
+  const windowsMatrix = parsed["windowsMatrix"]
   if (
     typeof generatedReleasePush !== "boolean" ||
     typeof webOnly !== "boolean" ||
     typeof runHeavy !== "boolean" ||
     typeof fullMatrix !== "boolean" ||
-    typeof runtimeTouching !== "boolean"
+    typeof runtimeTouching !== "boolean" ||
+    typeof windowsMatrix !== "boolean"
   ) {
-    throw new Error("classifier output must contain boolean CI mode fields including fullMatrix")
+    throw new Error(
+      "classifier output must contain boolean CI mode fields including fullMatrix and windowsMatrix",
+    )
   }
-  return { generatedReleasePush, webOnly, runHeavy, fullMatrix, runtimeTouching }
+  return { generatedReleasePush, webOnly, runHeavy, fullMatrix, runtimeTouching, windowsMatrix }
 }
 
 function workflowJobs(): Record<string, unknown> {
@@ -101,6 +107,67 @@ describe("full-matrix classification", () => {
 
       // then
       expect(mode.fullMatrix).toBe(true)
+      expect(mode.windowsMatrix).toBe(true)
+    })
+  })
+
+  describe("#given a pull request that touches only harness-neutral JavaScript", () => {
+    test.each([
+      ["the fork's native V2 profile", "profiles/gabo/opencode/rigel-v2-native-categories.mjs"],
+      ["a package prompt shipped from src", "packages/omo-opencode/src/agents/prompts/README.md"],
+      ["an OpenCode adapter source file", "packages/omo-opencode/src/x.ts"],
+      ["a root build script", "script/build.ts"],
+      ["a core package source file", "packages/model-core/src/index.ts"],
+    ])("#then %s still runs macOS and ubuntu but not Windows", (_name, changedPath) => {
+      // given / when
+      const mode = classify({
+        eventName: "pull_request",
+        headRef: "feature/js-only",
+        changedPaths: ["README.md", changedPath],
+      })
+
+      // then
+      expect(mode.runtimeTouching).toBe(true)
+      expect(mode.fullMatrix).toBe(true)
+      expect(mode.windowsMatrix).toBe(false)
+    })
+  })
+
+  describe("#given a pull request that touches a Windows-specific path", () => {
+    test.each([
+      ["the Senpi task engine", "packages/senpi-task/src/runners/rpc/exit-mapping.ts"],
+      ["the Senpi adapter", "packages/omo-senpi/src/components/agent-home/index.ts"],
+      ["a CI helper script", ".github/scripts/write-job-summary.sh"],
+      ["the root lockfile", "bun.lock"],
+      ["the root manifest", "package.json"],
+      ["a root bunfig", "bunfig.root.toml"],
+      ["the Windows shard-2 bunfig", "bunfig.win2.parallel.windows.toml"],
+      ["the classifier itself", "script/ci-fast-path.mjs"],
+      ["a guard test", "script/ci-leg-tests-guard.test.ts"],
+      ["the CI workflow", ".github/workflows/ci.yml"],
+      ["the Codex installer", "packages/omo-codex/src/install/install-codex.ts"],
+      ["a powershell script", "script/qa/run-smoke.ps1"],
+      ["a file whose basename names windows", "packages/utils/src/spawn-windows.ts"],
+      ["a file whose basename names win32", "packages/utils/src/spawn-win32.ts"],
+      [
+        "a win32 desktop backend crate (the review finding)",
+        "crates/senpi-desktop-backend-win32/src/input/native.rs",
+      ],
+      ["a platform-neutral desktop crate", "crates/senpi-desktop-core/src/lib.rs"],
+      ["a desktop engine package", "packages/senpi-desktop-engine/src/x.ts"],
+      ["a windows directory segment", "src/windows/foo.ts"],
+      ["a win32 directory segment", "packages/utils/src/win32/spawn.ts"],
+    ])("#then %s runs the Windows leg", (_name, changedPath) => {
+      // given / when
+      const mode = classify({
+        eventName: "pull_request",
+        headRef: "feature/windows-relevant",
+        changedPaths: ["README.md", changedPath],
+      })
+
+      // then
+      expect(mode.fullMatrix).toBe(true)
+      expect(mode.windowsMatrix).toBe(true)
     })
   })
 
@@ -149,6 +216,7 @@ describe("full-matrix classification", () => {
       // then
       expect(mode.runtimeTouching).toBe(false)
       expect(mode.fullMatrix).toBe(false)
+      expect(mode.windowsMatrix).toBe(false)
       expect(mode.runHeavy).toBe(true)
     })
 
@@ -163,7 +231,22 @@ describe("full-matrix classification", () => {
       // then
       expect(mode.runtimeTouching).toBe(false)
       expect(mode.fullMatrix).toBe(false)
+      expect(mode.windowsMatrix).toBe(false)
       expect(mode.runHeavy).toBe(false)
+    })
+
+    test("#then a web-only change never needs Windows", () => {
+      // given / when
+      const mode = classify({
+        eventName: "pull_request",
+        headRef: "feature/web-only",
+        changedPaths: ["packages/web/app/page.tsx"],
+      })
+
+      // then
+      expect(mode.webOnly).toBe(true)
+      expect(mode.runHeavy).toBe(false)
+      expect(mode.windowsMatrix).toBe(false)
     })
   })
 
@@ -181,6 +264,7 @@ describe("full-matrix classification", () => {
 
       // then
       expect(mode.fullMatrix).toBe(true)
+      expect(mode.windowsMatrix).toBe(true)
     })
   })
 
@@ -196,6 +280,7 @@ describe("full-matrix classification", () => {
 
       // then
       expect(mode.fullMatrix).toBe(true)
+      expect(mode.windowsMatrix).toBe(true)
     })
   })
 
@@ -221,6 +306,7 @@ describe("full-matrix classification", () => {
 
       // then
       expect(mode.fullMatrix).toBe(true)
+      expect(mode.windowsMatrix).toBe(true)
     })
   })
 
@@ -235,6 +321,24 @@ describe("full-matrix classification", () => {
 
       // then
       expect(mode.fullMatrix).toBe(true)
+      expect(mode.windowsMatrix).toBe(true)
+    })
+  })
+
+  describe("#given a generated release merge push", () => {
+    test("#then the skipped legs never need Windows", () => {
+      // given / when
+      const mode = classify({
+        eventName: "push",
+        message: "Merge pull request #6955 from code-yeongyu/release/v5.0.0-beta.8-source-state",
+        mergeParents: 2,
+        changedPaths: ["package.json", "bun.lock"],
+      })
+
+      // then
+      expect(mode.generatedReleasePush).toBe(true)
+      expect(mode.runHeavy).toBe(false)
+      expect(mode.windowsMatrix).toBe(false)
     })
   })
 })
@@ -254,6 +358,8 @@ describe("full-matrix workflow wiring", () => {
 
       // then
       expect(String(outputs["full_matrix"])).toContain("steps.classify.outputs.full_matrix")
+      expect(String(outputs["windows_matrix"])).toContain("steps.classify.outputs.windows_matrix")
+      expect(String(classifyStep["run"])).toContain('windows_matrix=\\(.windowsMatrix)')
       expect(String(env["HEAD_REF"])).toContain("github.head_ref")
       expect(String(env["PR_LABELS"])).toContain("github.event.pull_request.labels")
       expect(String(classifyStep["run"])).toContain("--head-ref")
@@ -278,7 +384,7 @@ describe("full-matrix workflow wiring", () => {
 
   describe("#given the OS matrix jobs", () => {
     test.each(["test", "codex-compatibility", "senpi-compatibility"])(
-      "#then every heavy step in %s is ubuntu-first",
+      "#then every heavy step in %s is ubuntu-first and gates Windows on windows_matrix",
       (jobName) => {
         // given
         const heavySteps = jobSteps(jobName).filter((step) =>
@@ -289,18 +395,71 @@ describe("full-matrix workflow wiring", () => {
         expect(heavySteps.length).toBeGreaterThan(0)
         for (const step of heavySteps) {
           const condition = String(step["if"])
-          const ubuntuFirst =
-            condition.includes(UBUNTU_OR_FULL_MATRIX) ||
+          const ubuntuOnly =
             // A step already pinned to ubuntu can never reach a non-ubuntu leg.
             condition.includes("matrix.os == 'ubuntu-latest' &&") ||
             condition.endsWith("matrix.os == 'ubuntu-latest'")
+          const ubuntuFirst = condition.includes(OS_MATRIX_CLAUSE) || ubuntuOnly
           expect({ step: step["name"] ?? step["uses"], ubuntuFirst }).toEqual({
             step: step["name"] ?? step["uses"],
             ubuntuFirst: true,
           })
+          if (!ubuntuOnly) {
+            const windowsGated = condition.includes(
+              "needs.ci-mode.outputs.windows_matrix == 'true'",
+            )
+            expect({ step: step["name"] ?? step["uses"], windowsGated }).toEqual({
+              step: step["name"] ?? step["uses"],
+              windowsGated: true,
+            })
+          }
         }
       },
     )
+
+    test("#then native-binary-parity runs its Windows leg only for a Windows-specific change", () => {
+      // given
+      const heavySteps = jobSteps("native-binary-parity").filter((step) =>
+        String(step["if"] ?? "").includes("run_heavy"),
+      )
+
+      // then
+      expect(heavySteps.length).toBeGreaterThan(0)
+      for (const step of heavySteps) {
+        const condition = String(step["if"])
+        const windowsGated = condition.includes(
+          "(matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')",
+        )
+        expect({ step: step["name"] ?? step["uses"], windowsGated }).toEqual({
+          step: step["name"] ?? step["uses"],
+          windowsGated: true,
+        })
+      }
+    })
+
+    test("#then every leg guard receives the Windows matrix decision", () => {
+      // given
+      const guardedJobs = [
+        "test",
+        "codex-compatibility",
+        "senpi-compatibility",
+        "rigel-compatibility",
+        "native-binary-parity",
+      ]
+
+      for (const jobName of guardedJobs) {
+        const guard = jobSteps(jobName).find((step) =>
+          String(step["run"] ?? "").includes("script/ci-leg-tests-guard.mjs"),
+        )
+        if (guard === undefined) throw new Error(`${jobName} must run the leg guard`)
+        const env = guard["env"]
+        if (!isRecord(env)) throw new Error(`${jobName} guard must define env`)
+
+        // then
+        expect(String(env["WINDOWS_MATRIX"])).toContain("needs.ci-mode.outputs.windows_matrix")
+        expect(String(guard["run"])).toContain('--windows-matrix "$WINDOWS_MATRIX"')
+      }
+    })
 
     test.each(["test", "codex-compatibility", "senpi-compatibility"])(
       "#then checkout and summary steps in %s stay unconditional",

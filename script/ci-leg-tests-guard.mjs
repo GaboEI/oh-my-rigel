@@ -10,7 +10,15 @@ import { pathToFileURL } from "node:url"
 
 const ranOutcomes = new Set(["success", "failure", "cancelled"])
 
-export function judgeLeg({ outcomes, os, runHeavy, fullMatrix, runtimeTouching, jobStatus }) {
+export function judgeLeg({
+  outcomes,
+  os,
+  runHeavy,
+  fullMatrix,
+  windowsMatrix,
+  runtimeTouching,
+  jobStatus,
+}) {
   if (outcomes.some((outcome) => ranOutcomes.has(outcome))) {
     return { exitCode: 0, level: "none", message: `Tests ran on ${os}.` }
   }
@@ -23,7 +31,16 @@ export function judgeLeg({ outcomes, os, runHeavy, fullMatrix, runtimeTouching, 
   }
   // run_heavy=false is the classifier's deliberate skip (web-only change or a
   // generated release merge, whose version bumps still touch runtime paths).
-  const required = runHeavy && (runtimeTouching || os === "ubuntu-latest" || fullMatrix)
+  // Ubuntu always proves the change. A Windows leg is required only when the
+  // diff is Windows-specific (or the matrix was forced), and macOS keeps the
+  // original runtime-touching rule.
+  const requiredByPlatform =
+    os === "ubuntu-latest"
+      ? true
+      : os === "windows-latest"
+        ? windowsMatrix
+        : runtimeTouching || fullMatrix
+  const required = runHeavy && requiredByPlatform
   if (required) {
     return {
       exitCode: 1,
@@ -32,7 +49,9 @@ export function judgeLeg({ outcomes, os, runHeavy, fullMatrix, runtimeTouching, 
     }
   }
   const message = runHeavy
-    ? `tests intentionally not run on ${os}: no runtime path changed, so only ubuntu runs the tests. Add the ci:full-matrix label to run them here.`
+    ? os === "windows-latest"
+      ? `tests intentionally not run on ${os}: no Windows-specific path changed, so only ubuntu runs the tests. Add the ci:full-matrix label to run them here.`
+      : `tests intentionally not run on ${os}: no runtime path changed, so only ubuntu runs the tests. Add the ci:full-matrix label to run them here.`
     : `tests intentionally not run on ${os}: the change is web or docs only, or a generated release merge, so no leg runs the heavy tests.`
   return { exitCode: 0, level: "notice", message }
 }
@@ -75,6 +94,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
     os: required(values, "os"),
     runHeavy: flag("run-heavy"),
     fullMatrix: flag("full-matrix"),
+    windowsMatrix: flag("windows-matrix"),
     runtimeTouching: flag("runtime-touching"),
     jobStatus: required(values, "job-status"),
   })
