@@ -23,6 +23,7 @@ jobs:
       web_only: ${{ steps.classify.outputs.web_only }}
       run_heavy: ${{ steps.classify.outputs.run_heavy }}
       full_matrix: ${{ steps.classify.outputs.full_matrix }}
+      windows_matrix: ${{ steps.classify.outputs.windows_matrix }}
       runtime_touching: ${{ steps.classify.outputs.runtime_touching }}
     steps:
       - uses: actions/checkout@v7
@@ -65,6 +66,7 @@ jobs:
           jq -r '"web_only=\(.webOnly)"' <<< "$MODE_JSON" >> "$GITHUB_OUTPUT"
           jq -r '"run_heavy=\(.runHeavy)"' <<< "$MODE_JSON" >> "$GITHUB_OUTPUT"
           jq -r '"full_matrix=\(.fullMatrix)"' <<< "$MODE_JSON" >> "$GITHUB_OUTPUT"
+          jq -r '"windows_matrix=\(.windowsMatrix)"' <<< "$MODE_JSON" >> "$GITHUB_OUTPUT"
           jq -r '"runtime_touching=\(.runtimeTouching)"' <<< "$MODE_JSON" >> "$GITHUB_OUTPUT"
           jq . <<< "$MODE_JSON"
 
@@ -80,6 +82,7 @@ jobs:
             - Run heavy validation: `${{ steps.classify.outputs.run_heavy || 'unknown' }}`.
             - Runtime-touching change: `${{ steps.classify.outputs.runtime_touching || 'unknown' }}` (true runs every OS leg; only web, docs, and repository-metadata changes stay ubuntu-only).
             - Full 3-OS matrix: `${{ steps.classify.outputs.full_matrix || 'unknown' }}` (false keeps heavy work on ubuntu and every skipped leg says so; add the `ci:full-matrix` label to force it).
+            - Windows matrix: `${{ steps.classify.outputs.windows_matrix || 'unknown' }}` (true runs the Windows legs for a Windows-specific change; false keeps Windows off pull requests and every skipped Windows leg says so; add the `ci:full-matrix` label to force it).
           JOB_SUMMARY_NEXT: Classification failures default to heavy validation on the full matrix; inspect the changed-path diff and event metadata.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
 
@@ -169,12 +172,12 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           node-version: "24"
 
       - uses: oven-sh/setup-bun@v2
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           # and 1.3.12 hangs on windows-latest in the ast-grep install-script
           # timeout race.
@@ -182,17 +185,17 @@ jobs:
 
 
       - uses: actions/cache@v6
-        if: runner.os != 'Windows' && needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: runner.os != 'Windows' && needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.4.2-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun install --frozen-lockfile
 
       - name: Remove stale self-package test copies
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun run script/remove-stale-self-package-tests.ts
 
       # The full install runs the root `prepare` (`bun run build`), whose
@@ -200,7 +203,7 @@ jobs:
       # packages/lsp-daemon, so its node_modules and dist exist before the tests.
       - name: Run vendored lsp-daemon tests
         id: lsp-daemon-tests
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: npm test
         working-directory: packages/lsp-daemon
 
@@ -212,12 +215,12 @@ jobs:
       # module state between files. Job-level sharding is the parallelism.
       - name: Run tests
         id: root-tests-posix-1
-        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os != 'Windows' && matrix.shard == '1/2' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os != 'Windows' && matrix.shard == '1/2' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun test --timeout 20000 packages/omo-opencode packages/memory-core
 
       - name: Run tests with Windows telemetry
         id: root-tests-windows-1
-        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os == 'Windows' && matrix.shard == '1/2' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os == 'Windows' && matrix.shard == '1/2' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         shell: pwsh
         env:
           WINDOWS_TEST_SHARD: ${{ matrix.shard }}
@@ -230,7 +233,7 @@ jobs:
 
       - name: Run tests
         id: root-tests-posix-2
-        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os != 'Windows' && matrix.shard == '2/2' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os != 'Windows' && matrix.shard == '2/2' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: |
           bun test --timeout 20000 packages/senpi-task/src/runners/rpc-process.windows.test.ts packages/senpi-task/src/__adversarial__/chaos-bench.test.ts packages/omo-codex/src/install/install-codex-legacy-agent-purge.test.ts script/codex-installer-version.test.ts packages/shared-skills/provenance-gate.test.ts packages/omo-codex/src/install/install-codex-mcp-manifest.test.ts packages/senpi-task/src/dag/scheduler.test.ts packages/omo-native/test/payload.test.ts script/build-omo-binary.test.ts packages/senpi-task/src/team/member-extension/residency.test.ts script/omob-refresh.test.ts script/release-version.test.ts packages/senpi-task/src/store/record-lock.test.ts packages/senpi-task/src/store/record-lock-reap-window.test.ts packages/senpi-task/src/runners/rpc-host/durable-json.test.ts
           bun --config=bunfig.win2.parallel.toml test --timeout 20000
@@ -239,7 +242,7 @@ jobs:
       # tests observe sh instead of the native PowerShell/cmd execution path.
       - name: Run tests
         id: root-tests-windows-2
-        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os == 'Windows' && matrix.shard == '2/2' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os == 'Windows' && matrix.shard == '2/2' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         shell: pwsh
         env:
           WINDOWS_TEST_SHARD: ${{ matrix.shard }}
@@ -266,7 +269,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Upload Windows post-test telemetry
-        if: always() && runner.os == 'Windows' && needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: always() && runner.os == 'Windows' && needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -285,8 +288,9 @@ jobs:
           TEST_OUTCOMES: ${{ steps.lsp-daemon-tests.outcome }} ${{ steps.root-tests-posix-1.outcome }} ${{ steps.root-tests-windows-1.outcome }} ${{ steps.root-tests-posix-2.outcome }} ${{ steps.root-tests-windows-2.outcome }}
           RUN_HEAVY: ${{ needs.ci-mode.outputs.run_heavy }}
           FULL_MATRIX: ${{ needs.ci-mode.outputs.full_matrix }}
+          WINDOWS_MATRIX: ${{ needs.ci-mode.outputs.windows_matrix }}
           RUNTIME_TOUCHING: ${{ needs.ci-mode.outputs.runtime_touching }}
-        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
+        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --windows-matrix "$WINDOWS_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
 
       - name: Write job summary
         if: always()
@@ -361,34 +365,34 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           node-version: "24"
 
       - uses: oven-sh/setup-bun@v2
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           bun-version: "1.4.2"
 
       - uses: actions/cache@v6
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.4.2-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Run full Codex compatibility suite
         id: codex-full-tests
-        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'full' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'full' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun run test:codex
 
 
       - name: Run omo-codex component checks and tests
         id: codex-component-tests
-        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'full' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'full' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         shell: bash
         run: |
           set -uo pipefail
@@ -408,7 +412,7 @@ jobs:
           done
           exit $status
       - name: Build Codex platform smoke prerequisites
-        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'platform' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'platform' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: |
           bun run build:codex-install
           bun run build:git-bash-mcp
@@ -419,7 +423,7 @@ jobs:
 
       - name: Run Codex platform smoke tests (.mjs via node --test)
         id: codex-smoke-node-tests
-        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'platform' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'platform' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: >-
           node --test
           packages/omo-codex/scripts/install-local.test.mjs
@@ -431,7 +435,7 @@ jobs:
 
       - name: Run Codex platform smoke tests (.ts via bun test)
         id: codex-smoke-bun-tests
-        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'platform' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.suite == 'platform' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun test packages/omo-opencode/src/cli/cli-installer.platform.test.ts
 
       # A leg whose test steps were all skipped must never look like a pass.
@@ -444,8 +448,9 @@ jobs:
           TEST_OUTCOMES: ${{ steps.codex-full-tests.outcome }} ${{ steps.codex-component-tests.outcome }} ${{ steps.codex-smoke-node-tests.outcome }} ${{ steps.codex-smoke-bun-tests.outcome }}
           RUN_HEAVY: ${{ needs.ci-mode.outputs.run_heavy }}
           FULL_MATRIX: ${{ needs.ci-mode.outputs.full_matrix }}
+          WINDOWS_MATRIX: ${{ needs.ci-mode.outputs.windows_matrix }}
           RUNTIME_TOUCHING: ${{ needs.ci-mode.outputs.runtime_touching }}
-        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
+        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --windows-matrix "$WINDOWS_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
 
       - name: Write job summary
         if: always()
@@ -471,27 +476,27 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           node-version: "24"
 
       - uses: oven-sh/setup-bun@v2
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           bun-version: "1.4.2"
 
       - uses: actions/cache@v6
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.4.2-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Remove stale self-package test copies
-        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         run: bun run script/remove-stale-self-package-tests.ts
 
       # Linux only: digestBuildSources hashes repo-relative paths (build-extension.mjs:140,143),
@@ -509,7 +514,7 @@ jobs:
 
       - name: Run Senpi compatibility tests
         id: senpi-tests-posix
-        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os != 'Windows' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os != 'Windows' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         shell: bash
         run: |
           set -euo pipefail
@@ -524,7 +529,7 @@ jobs:
 
       - name: Run Senpi compatibility tests with Windows telemetry
         id: senpi-tests-windows
-        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os == 'Windows' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: needs.ci-mode.outputs.run_heavy == 'true' && runner.os == 'Windows' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         shell: pwsh
         env:
           WINDOWS_TEST_SHARD: senpi-compatibility
@@ -549,7 +554,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Upload Windows Senpi telemetry
-        if: always() && runner.os == 'Windows' && needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || needs.ci-mode.outputs.full_matrix == 'true')
+        if: always() && runner.os == 'Windows' && needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os == 'ubuntu-latest' || (matrix.os == 'windows-latest' && needs.ci-mode.outputs.windows_matrix == 'true') || (matrix.os == 'macos-latest' && needs.ci-mode.outputs.full_matrix == 'true'))
         continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
@@ -568,8 +573,9 @@ jobs:
           TEST_OUTCOMES: ${{ steps.senpi-tests-posix.outcome }} ${{ steps.senpi-tests-windows.outcome }}
           RUN_HEAVY: ${{ needs.ci-mode.outputs.run_heavy }}
           FULL_MATRIX: ${{ needs.ci-mode.outputs.full_matrix }}
+          WINDOWS_MATRIX: ${{ needs.ci-mode.outputs.windows_matrix }}
           RUNTIME_TOUCHING: ${{ needs.ci-mode.outputs.runtime_touching }}
-        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
+        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --windows-matrix "$WINDOWS_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
 
       - name: Write job summary
         if: always()
@@ -629,8 +635,9 @@ jobs:
           TEST_OUTCOMES: ${{ steps.rigel-tests.outcome }}
           RUN_HEAVY: ${{ needs.ci-mode.outputs.run_heavy }}
           FULL_MATRIX: ${{ needs.ci-mode.outputs.full_matrix }}
+          WINDOWS_MATRIX: ${{ needs.ci-mode.outputs.windows_matrix }}
           RUNTIME_TOUCHING: ${{ needs.ci-mode.outputs.runtime_touching }}
-        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
+        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --windows-matrix "$WINDOWS_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
 
       - name: Write job summary
         if: always()
@@ -889,27 +896,28 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
-        if: needs.ci-mode.outputs.run_heavy == 'true'
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')
         with:
           node-version: "24"
 
       - uses: oven-sh/setup-bun@v2
-        if: needs.ci-mode.outputs.run_heavy == 'true'
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')
         with:
           bun-version: "1.4.2"
 
       - uses: actions/cache@v6
-        if: needs.ci-mode.outputs.run_heavy == 'true'
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-1.4.2-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
-        if: needs.ci-mode.outputs.run_heavy == 'true'
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')
         run: bun install --frozen-lockfile
 
       - name: Build the desktop engine the binary embeds
-        if: needs.ci-mode.outputs.run_heavy == 'true'
+        id: parity-engine
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
@@ -920,14 +928,16 @@ jobs:
           cargo build --release -p senpi-desktop-engine --locked --target ${{ matrix.rust-target }}
 
       - name: Build the standalone binary and the npm launcher payload
-        if: needs.ci-mode.outputs.run_heavy == 'true'
+        id: parity-binary
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')
         run: |
           version=$(jq -r .version packages/omo-native/package.json)
           bun script/build-omo-binary.ts --target ${{ matrix.target }} --omo-version "$version" --omo-ai-version "$version" --out-dir .omo/parity-binary
           if [ "${{ matrix.compare-npm }}" = "true" ]; then bun run build:omo-native; fi
 
       - name: Compare the binary with the npm launcher
-        if: needs.ci-mode.outputs.run_heavy == 'true' && matrix.compare-npm
+        id: parity-compare
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true') && matrix.compare-npm
         run: |
           bun script/qa/omo-native-parity-smoke.mjs \
             --binary .omo/parity-binary/${{ matrix.binary }} \
@@ -935,20 +945,35 @@ jobs:
             --evidence-dir .omo/parity-evidence
 
       - name: Run the binary from an empty download folder twice
-        if: needs.ci-mode.outputs.run_heavy == 'true' && !matrix.compare-npm
+        id: parity-binary-runs
+        if: needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true') && !matrix.compare-npm
         run: |
           bun script/qa/omo-native-parity-smoke.mjs \
             --binary .omo/parity-binary/${{ matrix.binary }} \
             --evidence-dir .omo/parity-evidence
 
       - name: Upload parity runs
-        if: failure() && needs.ci-mode.outputs.run_heavy == 'true'
+        if: failure() && needs.ci-mode.outputs.run_heavy == 'true' && (matrix.os != 'windows-latest' || needs.ci-mode.outputs.windows_matrix == 'true')
         uses: actions/upload-artifact@v7
         with:
           name: native-binary-parity-runs-${{ matrix.target }}
           path: .omo/parity-evidence
           retention-days: 7
           if-no-files-found: ignore
+
+      # A leg whose steps were all skipped must never look like a pass.
+      - name: Check that this leg ran its tests
+        if: always()
+        shell: bash
+        env:
+          LEG_OS: ${{ matrix.os }}
+          LEG_JOB_STATUS: ${{ job.status }}
+          TEST_OUTCOMES: ${{ steps.parity-engine.outcome }} ${{ steps.parity-binary.outcome }} ${{ steps.parity-compare.outcome }} ${{ steps.parity-binary-runs.outcome }}
+          RUN_HEAVY: ${{ needs.ci-mode.outputs.run_heavy }}
+          FULL_MATRIX: ${{ needs.ci-mode.outputs.full_matrix }}
+          WINDOWS_MATRIX: ${{ needs.ci-mode.outputs.windows_matrix }}
+          RUNTIME_TOUCHING: ${{ needs.ci-mode.outputs.runtime_touching }}
+        run: node script/ci-leg-tests-guard.mjs --os "$LEG_OS" --job-status "$LEG_JOB_STATUS" --outcomes "$TEST_OUTCOMES" --run-heavy "$RUN_HEAVY" --full-matrix "$FULL_MATRIX" --windows-matrix "$WINDOWS_MATRIX" --runtime-touching "$RUNTIME_TOUCHING"
 
       - name: Write job summary
         if: always()

@@ -105,6 +105,48 @@ function isPlatformSensitivePath(path) {
   return basename.includes("windows") || basename.includes("win32")
 }
 
+// Windows runs on a pull request only for a change that can alter what a
+// Windows runner observes, or that changes the Windows skip decision itself.
+// Everything else, including profiles/gabo/** and every other pure-JS path, is
+// deliberately NOT Windows-specific: the v2-mirror push still runs the full
+// matrix, so a Windows regression surfaces after merge. A web-only or generated
+// release push (runHeavy=false) never needs Windows at all.
+//
+// The native Rust/desktop surface is Windows-relevant even when a file name
+// says nothing about the platform: crates/ and packages/senpi-desktop-* build
+// the engine the Windows binary embeds, and a directory segment may name the
+// platform (crates/senpi-desktop-backend-win32/src/input/native.rs,
+// src/windows/foo.ts) where the basename does not. desktop-engine.yml also
+// covers those paths, but a skipped Windows leg here must still be honest.
+const windowsSpecificRootFiles = new Set(["package.json", "bun.lock"])
+const windowsSpecificRootBunfig = /^bunfig[^/]*\.toml$/
+const windowsSpecificScript = /^script\/ci-[^/]*\.(?:mjs|ts)$/
+const windowsSpecificDirectories = [
+  "crates/",
+  "packages/senpi-desktop-",
+  "packages/senpi-task/",
+  "packages/omo-senpi/",
+  ".github/scripts/",
+  "packages/omo-codex/src/install/",
+]
+
+// A directory segment names the platform without naming it in the file itself.
+function hasPlatformDirectorySegment(path) {
+  const segments = path.toLowerCase().split("/")
+  return segments
+    .slice(0, -1)
+    .some((segment) => segment.includes("windows") || segment.includes("win32"))
+}
+
+function isWindowsSpecificPath(path) {
+  if (isPlatformSensitivePath(path)) return true
+  if (windowsSpecificRootFiles.has(path)) return true
+  if (windowsSpecificRootBunfig.test(path)) return true
+  if (windowsSpecificScript.test(path)) return true
+  if (hasPlatformDirectorySegment(path)) return true
+  return windowsSpecificDirectories.some((directory) => path.startsWith(directory))
+}
+
 export function classifyCiMode({
   eventName,
   headCommitMessage,
@@ -125,6 +167,7 @@ export function classifyCiMode({
     generatedReleaseMerge.test(subject)
   const webOnly = diffAvailable && changedPaths.length > 0 && changedPaths.every(isWebPath)
   const runtimeTouching = !diffAvailable || changedPaths.some(isRuntimePath)
+  const runHeavy = !(generatedReleasePush || webOnly)
   // Ubuntu-first is a pull-request optimization only for changes no test can
   // observe, and it fails open: any event we cannot fully inspect keeps all
   // three operating systems.
@@ -134,13 +177,22 @@ export function classifyCiMode({
     releaseStateHeadRef.test(headRef) ||
     labels.includes(fullMatrixLabel) ||
     changedPaths.some(isPlatformSensitivePath)
+  // Windows keeps the narrower rule above: macOS still depends on fullMatrix.
+  const windowsMatrix =
+    runHeavy &&
+    (eventName === "push" ||
+      !diffAvailable ||
+      releaseStateHeadRef.test(headRef) ||
+      labels.includes(fullMatrixLabel) ||
+      changedPaths.some(isWindowsSpecificPath))
 
   return {
     generatedReleasePush,
     webOnly,
-    runHeavy: !(generatedReleasePush || webOnly),
+    runHeavy,
     fullMatrix,
     runtimeTouching,
+    windowsMatrix,
   }
 }
 
