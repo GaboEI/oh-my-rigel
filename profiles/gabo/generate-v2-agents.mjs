@@ -128,9 +128,23 @@ try {
   const disabledAgentKeys = new Set((pluginView.disabled?.agents ?? []).map((id) => canonicalAgentKey(id)))
   const selection = selectionPath ? JSON.parse(fs.readFileSync(selectionPath, "utf8")) : null
   const selected = {}
+  const unavailableDisabledIds = []
   for (const id of selection?.orchestratedAgentIds ?? Object.keys(allAgents)) {
-    if (disabledAgentKeys.has(canonicalAgentKey(id))) continue
-    if (!allAgents[id]) throw new Error(`OmO did not generate the required agent: ${id}`)
+    // V1 `disabled_agents` no longer DELETES a definition here. The runtime
+    // filters the roster with the live denylist, so a definition kept in the
+    // manifest is what makes "remove it from disabled_agents" work without a
+    // reinstall. This generator bakes against the ambient HOME and cannot
+    // neutralize the denylist, so when the pipeline produced no record the agent
+    // is recorded as unavailable instead of failing the whole generation; the
+    // install path (build-target-agent-manifest.mjs) materializes every base
+    // definition by baking a disposable copy without the key.
+    if (!allAgents[id]) {
+      if (disabledAgentKeys.has(canonicalAgentKey(id))) {
+        unavailableDisabledIds.push(id)
+        continue
+      }
+      throw new Error(`OmO did not generate the required agent: ${id}`)
+    }
     selected[id] = allAgents[id]
   }
   for (const id of selection?.optionalAgentIds ?? []) {
@@ -248,7 +262,7 @@ try {
   }
   fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true })
   fs.writeFileSync(outputPath, `// Generated; do not edit.\nexport default ${JSON.stringify(materialized, null, 2)}\n`)
-  console.log(JSON.stringify({ defaultAgent: materialized.defaultAgent, agentCount: Object.keys(selected).length, output: path.resolve(outputPath) }))
+  console.log(JSON.stringify({ defaultAgent: materialized.defaultAgent, agentCount: Object.keys(selected).length, unavailableDisabledIds, output: path.resolve(outputPath) }))
 } finally {
   await hooks.dispose?.()
 }

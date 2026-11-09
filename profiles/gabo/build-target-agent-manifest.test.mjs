@@ -214,6 +214,43 @@ describe("build-target-agent-manifest", () => {
     })
   })
 
+  describe("#given a profile that disables an orchestrated agent", () => {
+    describe("#when the manifest is generated", () => {
+      test.skipIf(!hasDist)("#then the definition is retained and the denylist is recorded for the runtime", async () => {
+        // given: an install whose live profile disables a CORE agent
+        const disabledSandbox = path.join(scratch, "disabled-agent-sandbox")
+        const disabledHome = path.join(disabledSandbox, "home")
+        fs.mkdirSync(path.join(disabledHome, ".omo"), { recursive: true })
+        fs.writeFileSync(
+          path.join(disabledHome, ".omo", "omo.jsonc"),
+          JSON.stringify({ profiles: { gabo: { "[opencode]": { disabled_agents: ["oracle"] } } } }),
+        )
+        const disabledInputPath = path.join(scratch, "disabled-agent-input.json")
+        fs.writeFileSync(disabledInputPath, JSON.stringify({}))
+        const { buildTargetAgentManifest } = await import("./build-target-agent-manifest.mjs")
+
+        // when
+        const built = await buildTargetAgentManifest({
+          inputPath: disabledInputPath,
+          outputPath: path.join(scratch, "target-agent-manifest-disabled-agent.mjs"),
+          selectionPath,
+          judgePath,
+          profileRoot: disabledHome,
+          sandbox: disabledSandbox,
+          keepSandbox: true,
+        })
+
+        // then: the manifest keeps the DEFINITION, so removing the name from
+        // `disabled_agents` registers the agent without a reinstall, while the
+        // recorded denylist keeps the runtime from registering it today.
+        expect(built.manifest.metadata.global.disabled.agents).toContain("oracle")
+        expect(built.report.disabledAgentIds).toContain("oracle")
+        expect(built.manifest.agents["oracle"]).toBeDefined()
+        expect(built.report.unavailableDisabledIds).toEqual([])
+      }, 120_000)
+    })
+  })
+
   describe("#given an OpenClaw credential written as a reference", () => {
     describe("#when the manifest is generated", () => {
       test.skipIf(!hasDist)("#then the manifest carries the reference verbatim and never a resolved value", async () => {

@@ -4,13 +4,18 @@
  * These pin the observable behavior Phase 3 gates depend on: which layer wins,
  * how disabled denylists union, how legacy keys migrate, how invalid values
  * degrade, and that pollution keys and unknown top-level keys never reach the
- * plugin view. A separate parity test pins the port against the real OmO loader.
+ * plugin view. The declaration-presence section pins the separate contract that
+ * answers "did a layer author this key?" without reading a materialized default.
+ * A separate parity test pins the port against the real OmO loader.
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import {
+  NATIVE_DISABLED_LIST_POLICY,
+  NATIVE_MONITOR_DEFAULTS,
+  NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT,
   buildMcpPolicyEntry,
   deriveNativeGates,
   readAgentOverridesFromConfig,
@@ -20,8 +25,12 @@ import {
   readNativeMcpBuiltinsPolicy,
   readNativeMcpPolicy,
   readNativePreemptiveThreshold,
+  resolveNativeDisabledLists,
+  resolveNativeMcpEnvAllowlist,
   resolveNativePluginConfig,
+  resolveNativePreemptiveThreshold,
 } from "./rigel-v2-native-config.mjs"
+import { PREEMPTIVE_COMPACTION_THRESHOLD } from "./rigel-v2-native-preemptive-compaction.mjs"
 
 const created = []
 
@@ -214,6 +223,11 @@ describe("#given a legacy ralph_loop block", () => {
     // then
     expect(migratedView.goal).toEqual({ enabled: true, auto_start: false, default_max_iterations: 42 })
     expect(explicitView.goal).toEqual({ enabled: false, auto_start: false, default_max_iterations: 9 })
+    // Presence names the legacy key the file wrote; the synthesized `goal` is a
+    // migration product, never a declaration the file made.
+    expect(migratedView.declarations.ralph_loop.state).toBe("declared")
+    expect(migratedView.declarations.goal.state).toBe("undeclared")
+    expect(explicitView.declarations.goal.state).toBe("declared")
   })
 })
 
@@ -299,6 +313,8 @@ describe("#given a JSONC file", () => {
     // then
     expect(view.monitor.enabled).toBe(true)
     expect(view.disabled.tools).toEqual(["a", "b"])
+    expect(declaredState(view, "monitor.enabled")).toBe("declared")
+    expect(declaredState(view, "disabled_tools")).toBe("declared")
   })
 })
 
@@ -484,6 +500,87 @@ describe("#given the T34 preemptive compaction gate", () => {
   })
 })
 
+describe("#given the T34 threshold resolves from the live chain", () => {
+  const manifestWith = (threshold) => ({
+    metadata: { global: threshold === undefined ? {} : { preemptiveCompactionThreshold: threshold } },
+  })
+  const resolveThreshold = (fixture, manifest) => resolveNativePreemptiveThreshold({
+    manifest,
+    directory: fixture.project,
+    env: { HOME: fixture.home, USERPROFILE: fixture.home },
+  })
+
+  test("#when no layer declares it #then the installed manifest value is kept and no default is invented", () => {
+    // given
+    const fixture = makeFixture()
+    // when
+    const baked = resolveThreshold(fixture, manifestWith(0.42))
+    const absent = resolveThreshold(fixture, manifestWith(undefined))
+    // then
+    expect(baked.state).toBe("undeclared")
+    expect(baked.value).toBe(0.42)
+    expect(baked.diagnostics).toEqual([])
+    // Neither source carries one: the documented V1 default applies.
+    expect(absent.state).toBe("undeclared")
+    expect(absent.value).toBe(NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT)
+  })
+
+  test("#when a layer declares a valid threshold #then it wins and only a disagreement is reported", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeProject(`{ "[opencode]": { "experimental": { "preemptive_compaction_threshold": 0.5 } } }`)
+    // when
+    const drift = resolveThreshold(fixture, manifestWith(0.42))
+    const agree = resolveThreshold(fixture, manifestWith(0.5))
+    // then
+    expect(drift.state).toBe("declared")
+    expect(drift.value).toBe(0.5)
+    expect(drift.diagnostics).toHaveLength(1)
+    expect(drift.diagnostics[0]).toContain("0.5")
+    expect(drift.diagnostics[0]).toContain("0.42")
+    expect(agree.value).toBe(0.5)
+    expect(agree.diagnostics).toEqual([])
+  })
+
+  test("#when the boundary is declared #then 1 is accepted while 0 and above 1 fall closed", () => {
+    // given
+    const fixture = makeFixture()
+    // when / then
+    fixture.writeUser(`{ "[opencode]": { "experimental": { "preemptive_compaction_threshold": 1 } } }`)
+    expect(resolveThreshold(fixture, manifestWith(0.42))).toMatchObject({ state: "declared", value: 1 })
+
+    fixture.writeUser(`{ "[opencode]": { "experimental": { "preemptive_compaction_threshold": 0 } } }`)
+    const zero = resolveThreshold(fixture, manifestWith(0.42))
+    expect(zero.state).toBe("error")
+    expect(zero.value).toBe(NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT)
+    expect(zero.diagnostics).toHaveLength(1)
+
+    fixture.writeUser(`{ "[opencode]": { "experimental": { "preemptive_compaction_threshold": 1.5 } } }`)
+    const above = resolveThreshold(fixture, manifestWith(0.42))
+    expect(above.state).toBe("error")
+    expect(above.value).toBe(NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT)
+  })
+
+  test("#when a layer cannot be parsed #then the threshold fails closed instead of using the manifest", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeProject(`{ "[opencode]": { "experimental": { `)
+    // when
+    const resolution = resolveThreshold(fixture, manifestWith(0.42))
+    // then
+    expect(resolution.state).toBe("error")
+    expect(resolution.value).toBe(NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("0.78")
+  })
+
+  test("#then the duplicated default stays equal to the runtime constant", () => {
+    // The config module cannot import the pure compaction port, so the two copies
+    // of the V1 threshold are pinned equal here instead of drifting apart.
+    expect(NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT).toBe(PREEMPTIVE_COMPACTION_THRESHOLD)
+  })
+})
+
 describe("#given the tier-2 MCP policy", () => {
   test("#when the manifest carries the mcp block #then readNativeMcpPolicy normalizes it", () => {
     // given
@@ -573,6 +670,9 @@ describe("#given the tier-2 MCP policy", () => {
       // then: the user-only security rule holds; disabled_mcps unions normally
       expect(view.mcp_env_allowlist).toEqual(["USER_VAR"])
       expect(view.disabled_mcps).toEqual(["context7"])
+      // The project placement is refused by SCOPE, so it is not a declaration.
+      expect(view.declarations.mcp_env_allowlist.state).toBe("declared")
+      expect(view.declarations.mcp_env_allowlist.sources).toHaveLength(1)
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }
@@ -753,5 +853,613 @@ describe("#given the live on-disk OmO config", () => {
     const source = liveRead(fixture)
     expect(source.state).toBe("absent")
     expect(source.categories).toBeUndefined()
+  })
+})
+
+// --- Phase 1: declaration-presence contract ---
+// A resolved value cannot express "the user wrote `false`": the projection fills
+// absent collections with `[]`/`{}` and the section validators materialize their
+// schema defaults. `declarations` is the per-key presence record a later live
+// authority reads INSTEAD of the value, so these cases pin the tri-state and the
+// two error classes (a refused value vs an unreadable file).
+const declaredState = (view, key) => view.declarations[key]?.state
+
+describe("#given no layer authors a tracked key", () => {
+  test("#when the view is resolved #then every tracked key is undeclared and no load failure is reported", () => {
+    // given
+    const fixture = makeFixture()
+    // when
+    const view = fixture.resolve()
+    // then
+    for (const key of [
+      "monitor", "monitor.enabled", "goal.enabled", "experimental.task_system",
+      "team_mode.enabled", "team_mode.tmux_visualization", "hashline_edit",
+      "openclaw", "agents", "categories", "disabled_tools", "mcp_env_allowlist",
+    ]) {
+      expect(declaredState(view, key)).toBe("undeclared")
+    }
+    expect(view.loadFailures).toEqual([])
+  })
+})
+
+describe("#given explicit false, zero, empty list and empty object", () => {
+  test("#when the view is resolved #then each is declared while the value stays the authored one", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{
+      "[opencode]": {
+        "monitor": { "enabled": false },
+        "experimental": { "task_system": false },
+        "team_mode": { "enabled": false, "tmux_visualization": false },
+        "disabled_tools": [],
+      },
+      "categories": { "quick": { "temperature": 0 } },
+      "openclaw": {},
+      "mcp_env_allowlist": [],
+    }`)
+    // when
+    const view = fixture.resolve()
+    // then: no default is mistaken for a declaration and no declaration is
+    // mistaken for absence, which is the whole point of the contract.
+    expect(view.monitor.enabled).toBe(false)
+    expect(view.experimental.task_system).toBe(false)
+    expect(view.team_mode).toEqual({ enabled: false, tmux_visualization: false })
+    expect(view.disabled.tools).toEqual([])
+    expect(view.categories).toEqual({ quick: { temperature: 0 } })
+    expect(view.openclaw).toEqual({})
+    expect(view.mcp_env_allowlist).toEqual([])
+    for (const key of [
+      "monitor.enabled", "experimental.task_system", "team_mode.enabled",
+      "team_mode.tmux_visualization", "disabled_tools",
+      "categories.quick.temperature", "openclaw", "mcp_env_allowlist",
+    ]) {
+      expect(declaredState(view, key)).toBe("declared")
+    }
+  })
+})
+
+describe("#given a declared section that omits a leaf", () => {
+  test("#when the section is authored #then the block is declared and the omitted leaf is not", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "monitor": { "live_mode_enabled": true } } }`)
+    // when
+    const view = fixture.resolve()
+    // then: the materialized `enabled: false` is a view default, never a declaration.
+    expect(view.monitor.enabled).toBe(false)
+    expect(declaredState(view, "monitor")).toBe("declared")
+    expect(declaredState(view, "monitor.live_mode_enabled")).toBe("declared")
+    expect(declaredState(view, "monitor.enabled")).toBe("undeclared")
+  })
+})
+
+describe("#given an authored value the schema refuses", () => {
+  test("#when leaves and blocks are invalid #then presence is error while the safe value survives", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{
+      "[opencode]": {
+        "monitor": { "enabled": "yes" },
+        "team_mode": { "enabled": "yes", "tmux_visualization": "yes" },
+        "categories": { "quick": { "model": 7 } },
+        "disabled_tools": "nope",
+      },
+      "openclaw": 7,
+      "mcp_env_allowlist": "nope",
+    }`)
+    // when
+    const view = fixture.resolve()
+    // then: the block survives with its documented safe value, the refused leaves
+    // do not, and the refusal is reported instead of collapsing into undeclared.
+    expect(view.monitor).toEqual({ ...NATIVE_MONITOR_DEFAULTS })
+    expect(view.team_mode).toEqual({})
+    expect(view.categories).toEqual({ quick: {} })
+    expect(view.disabled.tools).toEqual([])
+    expect(view.openclaw).toBeUndefined()
+    expect(view.mcp_env_allowlist).toEqual([])
+    expect(declaredState(view, "monitor")).toBe("declared")
+    expect(declaredState(view, "monitor.enabled")).toBe("error")
+    expect(declaredState(view, "team_mode.enabled")).toBe("error")
+    expect(declaredState(view, "team_mode.tmux_visualization")).toBe("error")
+    expect(declaredState(view, "categories.quick.model")).toBe("error")
+    expect(declaredState(view, "disabled_tools")).toBe("error")
+    expect(declaredState(view, "openclaw")).toBe("error")
+    expect(declaredState(view, "mcp_env_allowlist")).toBe("error")
+    expect(view.declarations["monitor.enabled"].sources).toHaveLength(1)
+    expect(view.declarations["monitor.enabled"].sources[0].at).toBe("[opencode].monitor.enabled")
+  })
+})
+
+describe("#given a legacy ralph_loop block the schema refuses", () => {
+  test("#when the block is not an object #then presence is error and the parser stays silent", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "ralph_loop": 7 } }`)
+    // when
+    const view = fixture.resolve()
+    // then: `declared` means the authored value SURVIVED validation. The legacy
+    // block is still dropped without a diagnostic, but presence must not report
+    // a refusal as a declaration a later authority could trust.
+    expect(view.goal).toBeUndefined()
+    expect(declaredState(view, "ralph_loop")).toBe("error")
+    expect(declaredState(view, "goal")).toBe("undeclared")
+    expect(view.diagnostics).toEqual([])
+  })
+})
+
+describe("#given a refused section above an accepted one", () => {
+  test("#when the nearer layer's section is not an object #then the accepted declaration and value survive", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "monitor": { "enabled": true } } }`)
+    fixture.writeProject(`{ "[opencode]": { "monitor": 7 } }`)
+    // when
+    const view = fixture.resolve()
+    // then: the parser drops the refused section, so the earlier one is still the
+    // resolved value AND still the declaration that owns it.
+    expect(view.monitor.enabled).toBe(true)
+    expect(declaredState(view, "monitor")).toBe("declared")
+    expect(declaredState(view, "monitor.enabled")).toBe("declared")
+    expect(view.diagnostics.some((line) => line.includes("monitor ignored (invalid value)"))).toBe(true)
+  })
+})
+
+describe("#given a later layer that re-declares a section", () => {
+  test("#when the nearer section omits a leaf #then that leaf's declaration is reset and the default returns", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "monitor": { "enabled": true, "live_mode_enabled": true } } }`)
+    fixture.writeProject(`{ "[opencode]": { "monitor": { "live_mode_enabled": true } } }`)
+    // when
+    const view = fixture.resolve()
+    // then: the whole-section replacement drops the earlier leaf, so only the
+    // leaf the nearer section repeats stays declared.
+    expect(view.monitor.enabled).toBe(false)
+    expect(declaredState(view, "monitor.live_mode_enabled")).toBe("declared")
+    expect(declaredState(view, "monitor.enabled")).toBe("undeclared")
+  })
+})
+
+describe("#given union and merge keys authored in several layers", () => {
+  test("#when the view is resolved #then presence is declared with every authoring source", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{
+      "[opencode]": { "disabled_tools": ["t1"] },
+      "categories": { "quick": { "model": "top-quick" } },
+    }`)
+    fixture.writeProject(`{
+      "[opencode]": { "disabled_tools": ["t2"], "categories": { "quick": { "top_p": 0.5 } } },
+    }`)
+    // when
+    const view = fixture.resolve()
+    // then
+    expect(view.disabled.tools).toEqual(["t1", "t2"])
+    expect(view.categories.quick).toEqual({ model: "top-quick", top_p: 0.5 })
+    expect(declaredState(view, "disabled_tools")).toBe("declared")
+    expect(view.declarations.disabled_tools.sources).toHaveLength(2)
+    expect(declaredState(view, "categories.quick")).toBe("declared")
+    expect(view.declarations["categories.quick"].sources).toHaveLength(2)
+  })
+})
+
+describe("#given a key declared inside the selected profile", () => {
+  test("#when the view is resolved #then the source names the file and the exact placement", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "profiles": { "gabo": { "[opencode]": { "team_mode": { "tmux_visualization": true } } } } }`)
+    // when
+    const view = fixture.resolve({ OMO_PROFILE: "gabo" })
+    // then
+    expect(view.team_mode.tmux_visualization).toBe(true)
+    expect(view.declarations["team_mode.tmux_visualization"]).toEqual({
+      state: "declared",
+      sources: [{
+        path: join(fixture.home, ".omo", "omo.jsonc"),
+        at: "profiles.gabo.[opencode].team_mode.tmux_visualization",
+      }],
+    })
+  })
+})
+
+describe("#given an unreadable layer", () => {
+  test("#when the only file is broken JSONC #then the failure is reported and nothing is declared", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "monitor": { "enabled": true } }`)
+    // when
+    const view = fixture.resolve()
+    // then: the broken file is NOT read as "no layer declared anything", so no
+    // sensitive surface may treat the undeclared records as authoritative.
+    expect(view.monitor).toBeUndefined()
+    expect(view.loadFailures).toHaveLength(1)
+    expect(view.loadFailures[0].scope).toBe("user")
+    expect(view.loadFailures[0].reason).toBe("invalid JSON")
+    expect(Object.values(view.declarations).every((entry) => entry.state === "undeclared")).toBe(true)
+    expect(view.diagnostics.some((line) => line.includes("invalid JSON"))).toBe(true)
+  })
+
+  test("#when a project layer is broken beside a valid user layer #then the user declaration survives and the failure is still reported", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "monitor": { "enabled": true } } }`)
+    fixture.writeProject(`{ "[opencode]": `)
+    // when
+    const view = fixture.resolve()
+    // then
+    expect(view.monitor.enabled).toBe(true)
+    expect(declaredState(view, "monitor.enabled")).toBe("declared")
+    expect(view.loadFailures).toHaveLength(1)
+    expect(view.loadFailures[0].scope).toBe("project")
+  })
+
+  test("#when the file parses to a non-object root #then the structural failure carries its own reason", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`null`)
+    // when
+    const view = fixture.resolve()
+    // then: a parse that succeeds but yields no object is a DIFFERENT failure
+    // class from broken JSON, and neither is "the chain declared nothing", so a
+    // reader can tell a syntax failure from a structural one.
+    expect(view.loadFailures).toHaveLength(1)
+    expect(view.loadFailures[0]).toMatchObject({ scope: "user", reason: "layer root is not an object" })
+    expect(view.sources.find((source) => source.scope === "user").loaded).toBe(false)
+    expect(view.monitor).toBeUndefined()
+    expect(declaredState(view, "monitor.enabled")).toBe("undeclared")
+    expect(view.diagnostics.some((line) => line.includes("layer ignored (not an object)"))).toBe(true)
+  })
+})
+
+// --- Phase 4: live authority for the `disabled_*` denylists ---
+// A denylist is a PROTECTION, so its fail-closed direction is the opposite of a
+// boolean gate's: an unconfirmed read must KEEP the installed list instead of
+// dropping it. These cases pin that direction, the explicit-empty reactivation,
+// the layer/placement fold, and the two lists the parser used to lose.
+const DISABLED_LIST_BAKED = Object.freeze({
+  tools: ["baked_tool"],
+  agents: ["baked_agent"],
+  skills: ["baked_skill"],
+  hooks: ["think-mode"],
+  commands: ["baked_command"],
+})
+
+function disabledManifest(disabled = DISABLED_LIST_BAKED, mcps = ["context7"]) {
+  return { metadata: { global: { disabled: { ...disabled }, mcp: { disabled: [...mcps] } } } }
+}
+
+function resolveLists(fixture, manifest, env = {}) {
+  return resolveNativeDisabledLists({
+    manifest,
+    directory: fixture.project,
+    env: { HOME: fixture.home, USERPROFILE: fixture.home, ...env },
+  })
+}
+
+describe("#given no layer authors a disabled denylist", () => {
+  test("#when the lists are resolved #then every installed denylist is preserved silently", () => {
+    // given
+    const fixture = makeFixture()
+    // when
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then
+    expect(resolved.lists.tools).toEqual(["baked_tool"])
+    expect(resolved.lists.agents).toEqual(["baked_agent"])
+    expect(resolved.lists.skills).toEqual(["baked_skill"])
+    expect(resolved.lists.hooks).toEqual(["think-mode"])
+    expect(resolved.lists.commands).toEqual(["baked_command"])
+    expect(resolved.lists.mcps).toEqual(["context7"])
+    expect(resolved.diagnostics).toEqual([])
+  })
+})
+
+describe("#given a live declaration replaces an installed denylist", () => {
+  test("#when the declaration is non-empty #then the live list wins and the drift is reported once", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_agents": ["oracle", "momus"] } }`)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then
+    expect(resolved.lists.agents).toEqual(["oracle", "momus"])
+    // The lists the live chain did not declare keep the installed value.
+    expect(resolved.lists.tools).toEqual(["baked_tool"])
+    expect(resolved.diagnostics).toHaveLength(1)
+    expect(resolved.diagnostics[0]).toContain("disabled_agents")
+    expect(resolved.diagnostics[0]).toContain("Reinstall to resync the manifest")
+  })
+
+  test("#when the declaration is an explicit empty list #then every installed entry is released", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_agents": [] } }`)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then: an authored `[]` is a declaration, never absence. This is the
+    // reactivate-without-reinstalling contract.
+    expect(resolved.lists.agents).toEqual([])
+    expect(resolved.diagnostics).toHaveLength(1)
+    expect(resolved.diagnostics[0]).toContain("Reinstall to resync the manifest")
+  })
+})
+
+describe("#given an unconfirmed declaration", () => {
+  test("#when the value is refused by the schema #then the installed denylist is kept instead of dropped", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_agents": "oracle" } }`)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then: a refusal must never be read as "the user disabled nothing", so the
+    // protection survives and the failure is named.
+    expect(resolved.lists.agents).toEqual(["baked_agent"])
+    expect(resolved.diagnostics.some((line) => line.includes("disabled_agents") && line.includes("kept the installed denylist"))).toBe(true)
+  })
+
+  test("#when a layer cannot be parsed #then every live list keeps its installed value and reports once", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_agents": [] }`)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then
+    expect(resolved.lists).toEqual({ ...DISABLED_LIST_BAKED, mcps: ["context7"] })
+    for (const name of ["tools", "agents", "skills", "hooks", "commands"]) {
+      expect(resolved.diagnostics.some((line) => line.includes(name) && line.includes("kept the installed denylist"))).toBe(true)
+    }
+  })
+})
+
+describe("#given the user and project layers both declare a denylist", () => {
+  test("#when the view is resolved #then the lists union across layers and placements", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{
+      "[opencode]": { "disabled_tools": ["t1"] },
+      "profiles": { "gabo": { "[opencode]": { "disabled_tools": ["t2"] } } },
+    }`)
+    fixture.writeProject(`{ "[opencode]": { "disabled_tools": ["t3"] } }`)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest(), { OMO_PROFILE: "gabo" })
+    // then: the fold is placement-major (root, then [opencode], then
+    // profiles.<p>.[opencode]) and unions inside each placement.
+    expect(resolved.lists.tools).toEqual(["t1", "t3", "t2"])
+  })
+})
+
+describe("#given a disabled_hooks declaration in the [opencode] block", () => {
+  test("#when the view is resolved #then the list survives the parser and the resolver reads it live", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_hooks": ["think-mode"] } }`)
+    // when
+    const view = fixture.resolve()
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then: `disabled_hooks` is a plugin key with a real runtime consumer
+    // (think-mode), so dropping it from the view silently re-enabled the hook.
+    expect(view.disabled.hooks).toEqual(["think-mode"])
+    expect(declaredState(view, "disabled_hooks")).toBe("declared")
+    expect(resolved.lists.hooks).toEqual(["think-mode"])
+  })
+})
+
+// --- Phase 5: live authority for MCP blocking ---
+// `disabled_mcps` is the ONE denylist with a SCOPE contract: a user declaration
+// is the baseline (including the explicit empty release), a project layer may
+// only ADD a deny, and an unconfirmed read keeps every installed deny.
+// `mcp_env_allowlist` is a GRANT list, so its fail-closed direction is the
+// opposite of a denylist's: an unconfirmed read grants NOTHING.
+const MCP_BAKED_DISABLED = Object.freeze(["context7"])
+const MCP_BAKED_ALLOWLIST = Object.freeze(["BAKED_VAR"])
+
+function mcpManifest({ disabled = MCP_BAKED_DISABLED, envAllowlist = MCP_BAKED_ALLOWLIST } = {}) {
+  return { metadata: { global: { mcp: { disabled: [...disabled], envAllowlist: [...envAllowlist] } } } }
+}
+
+function resolveAllowlist(fixture, manifest, env = {}) {
+  return resolveNativeMcpEnvAllowlist({
+    manifest,
+    directory: fixture.project,
+    env: { HOME: fixture.home, USERPROFILE: fixture.home, ...env },
+  })
+}
+
+describe("#given a live disabled_mcps declaration", () => {
+  test("#when no layer authors the key #then the installed deny is preserved silently", () => {
+    // given
+    const fixture = makeFixture()
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then: the MCP kill switch is live now, with its own scope rule, but an
+    // untouched install behaves exactly as the baked one did.
+    expect(NATIVE_DISABLED_LIST_POLICY.mcps).toBe("live-harden-only")
+    expect(resolved.lists.mcps).toEqual(["context7"])
+    expect(resolved.diagnostics).toEqual([])
+  })
+
+  test("#when a USER layer declares a list #then it replaces the installed deny", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": ["ssh"] } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then
+    expect(resolved.lists.mcps).toEqual(["ssh"])
+    expect(resolved.diagnostics).toHaveLength(1)
+    expect(resolved.diagnostics[0]).toContain("disabled_mcps")
+    expect(resolved.diagnostics[0]).toContain("Reinstall to resync the manifest")
+  })
+
+  test("#when the USER declares an explicit empty list #then every installed deny is released", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": [] } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then: the user is the only scope allowed to release a protection
+    expect(resolved.lists.mcps).toEqual([])
+  })
+
+  test("#when only a PROJECT layer declares a list #then it hardens the installed deny", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeProject(`{ "[opencode]": { "disabled_mcps": ["ssh"] } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then: a project may add a deny, and it can never release the installed one
+    expect(resolved.lists.mcps).toEqual(["context7", "ssh"])
+  })
+
+  test("#when a PROJECT layer declares an empty list #then the installed and user denies survive", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": ["context7"] } }`)
+    fixture.writeProject(`{ "[opencode]": { "disabled_mcps": [] } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then: `[]` from a project is "this project adds no deny", never a release
+    expect(resolved.lists.mcps).toEqual(["context7"])
+  })
+
+  test("#when a PROJECT adds a deny beside a USER declaration #then both are enforced", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": ["ssh"] } }`)
+    fixture.writeProject(`{ "[opencode]": { "disabled_mcps": ["obsidian"] } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then: the user list is the baseline and the project entry hardens it
+    expect(resolved.lists.mcps).toEqual(["ssh", "obsidian"])
+  })
+
+  test("#when the USER declares through the profile block the shipped profile uses #then the release is honored", () => {
+    // given: `profiles.<p>.[opencode]` is where the shipped profile declares the
+    // key, so a release there MUST count as a user declaration
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "profiles": { "gabo": { "[opencode]": { "disabled_mcps": [] } } } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest(), { OMO_PROFILE: "gabo" })
+    // then
+    expect(resolved.lists.mcps).toEqual([])
+    expect(resolved.diagnostics.some((line) => line.includes("disabled_mcps"))).toBe(true)
+  })
+
+  test("#when the USER releases everything and a PROJECT adds a deny #then the project deny still applies", () => {    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": [] } }`)
+    fixture.writeProject(`{ "[opencode]": { "disabled_mcps": ["ssh"] } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then
+    expect(resolved.lists.mcps).toEqual(["ssh"])
+  })
+})
+
+describe("#given an unconfirmed disabled_mcps declaration", () => {
+  test("#when a USER value is refused by the schema #then the installed deny is kept", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": "ssh" } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then: an unconfirmed deny must keep denying, never release the protection
+    expect(resolved.lists.mcps).toEqual(["context7"])
+    expect(resolved.diagnostics.some((line) => line.includes("disabled_mcps") && line.includes("kept the installed denylist"))).toBe(true)
+  })
+
+  test("#when a PROJECT value is refused by the schema #then the installed deny is kept and the refusal is named", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeProject(`{ "[opencode]": { "disabled_mcps": 7 } }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then
+    expect(resolved.lists.mcps).toEqual(["context7"])
+    expect(resolved.diagnostics.some((line) => line.includes("project") && line.includes("refused by the schema"))).toBe(true)
+  })
+
+  test("#when the layer cannot be parsed #then the installed deny is kept", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": [] }`)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then
+    expect(resolved.lists.mcps).toEqual(["context7"])
+    expect(resolved.diagnostics.some((line) => line.includes("disabled_mcps") && line.includes("kept the installed denylist"))).toBe(true)
+  })
+})
+
+describe("#given the user-only mcp_env_allowlist", () => {
+  test("#when a USER layer declares a list #then the live user list is authoritative", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "mcp_env_allowlist": ["USER_VAR"] } }`)
+    // when
+    const resolved = resolveAllowlist(fixture, mcpManifest())
+    // then
+    expect(resolved.state).toBe("declared")
+    expect(resolved.allowlist).toEqual(["USER_VAR"])
+    expect(resolved.diagnostics).toHaveLength(1)
+    expect(resolved.diagnostics[0]).toContain("mcp_env_allowlist")
+  })
+
+  test("#when the USER declares an explicit empty list #then no reference may expand", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "mcp_env_allowlist": [] }`)
+    // when
+    const resolved = resolveAllowlist(fixture, mcpManifest())
+    // then: `[]` is a declaration, never absence
+    expect(resolved.allowlist).toEqual([])
+  })
+
+  test("#when no layer declares it #then the installed allowlist is kept", () => {
+    // given
+    const fixture = makeFixture()
+    // when
+    const resolved = resolveAllowlist(fixture, mcpManifest())
+    // then: an install that never edited anything behaves exactly as before
+    expect(resolved.state).toBe("undeclared")
+    expect(resolved.allowlist).toEqual(["BAKED_VAR"])
+    expect(resolved.diagnostics).toEqual([])
+  })
+
+  test("#when a USER value is refused by the schema #then the allowlist fails closed to empty", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "mcp_env_allowlist": "USER_VAR" } }`)
+    // when
+    const resolved = resolveAllowlist(fixture, mcpManifest())
+    // then: a grant list that cannot be confirmed grants nothing. `.mcp.json` can
+    // live in a project directory, so resurrecting the installed grants here is
+    // exactly the leak the allowlist exists to stop.
+    expect(resolved.state).toBe("error")
+    expect(resolved.allowlist).toEqual([])
+    expect(resolved.diagnostics.some((line) => line.includes("mcp_env_allowlist") && line.includes("fail-closed"))).toBe(true)
+  })
+
+  test("#when a layer cannot be parsed #then the allowlist fails closed to empty", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "mcp_env_allowlist": ["USER_VAR"] `)
+    // when
+    const resolved = resolveAllowlist(fixture, mcpManifest())
+    // then
+    expect(resolved.state).toBe("error")
+    expect(resolved.allowlist).toEqual([])
+    expect(resolved.diagnostics.some((line) => line.includes("fail-closed"))).toBe(true)
+  })
+
+  test("#when only a PROJECT layer declares it #then the installed allowlist is kept and no grant is added", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeProject(`{ "[opencode]": { "mcp_env_allowlist": ["PROJECT_VAR"] } }`)
+    // when
+    const resolved = resolveAllowlist(fixture, mcpManifest())
+    // then: the fold refuses a project placement by SCOPE, so it is not a
+    // declaration and it can never extend the grant set.
+    expect(resolved.state).toBe("undeclared")
+    expect(resolved.allowlist).toEqual(["BAKED_VAR"])
   })
 })

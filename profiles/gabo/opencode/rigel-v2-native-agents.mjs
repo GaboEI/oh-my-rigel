@@ -327,7 +327,15 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
       })
       registered.push(id)
     }
-    if (typeof manifest.defaultAgent === "string" && agents[manifest.defaultAgent]) editor.default(manifest.defaultAgent)
+    // The host default must never point at an agent this roster filtered out: a
+    // disabled Sisyphus would otherwise leave the default unroutable. V1 parity:
+    // registration only ever exposes ENABLED agents, so a disabled default agent
+    // leaves the host default untouched instead of naming a missing id.
+    if (typeof manifest.defaultAgent === "string"
+      && agents[manifest.defaultAgent]
+      && !disabled.has(canonicalAgentId(manifest.defaultAgent))) {
+      editor.default(manifest.defaultAgent)
+    }
   })
   await agentDomain.reload()
   return registered

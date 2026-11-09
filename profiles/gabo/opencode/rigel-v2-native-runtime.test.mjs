@@ -15,6 +15,7 @@ import { gptEditGuidanceBlock } from "./rigel-v2-native-gpt-edit-guidance.mjs"
 import { CONTINUATION_PROMPT_MARKER } from "./rigel-v2-native-request-steps.mjs"
 import { OPENCLAW_STATUS_KEY, createOpenclawStatusDocument } from "./rigel-v2-native-openclaw-agent-status.mjs"
 import { createNativeOpenclaw } from "./rigel-v2-native-openclaw.mjs"
+import { TASK_TOOL_NAMES } from "./tools/task.tools.mjs"
 
 // Deterministic event feed for the reactive-fallback tests. The generator
 // blocks until an event is pushed, and signals consumption only AFTER the
@@ -143,6 +144,41 @@ test("withLiveAgentConfig restores HOME (test isolation invariant)", async () =>
     expect(process.env.HOME).not.toBe(original)
   })
   expect(process.env.HOME).toBe(original)
+})
+
+// The safe gates (`hashline_edit`, `experimental.task_system`) resolve LIVE, so a
+// declaration in `~/.omo/omo.jsonc` turns the family on without a reinstall. The
+// source manifest bakes both OFF, so a registration here can only come from the
+// live chain: this is the setup-boundary proof the gate-policy suite backs.
+test("native runtime registers the hashline and task families from a LIVE declaration", async () => {
+  const added = []
+  const storage = new Map()
+  const context = {
+    ...editorCaptureContext().context,
+    storage: {
+      async get(key) { return storage.get(key) },
+      async set(key, value) { storage.set(key, value) },
+      async remove(key) { storage.delete(key) },
+    },
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (definition) => { if (definition?.name) added.push(definition.name) }, get: () => undefined })
+        return { dispose() {} }
+      },
+    },
+  }
+  // given: one live declaration per migrated gate, in the plugin placement
+  await withLiveOmoConfig({ "[opencode]": { hashline_edit: true, experimental: { task_system: true } } }, async () => {
+    // when
+    const dispose = await plugin.setup(context)
+    try {
+      // then
+      expect(added, "hashline_edit must register from the live declaration").toContain("hashline_edit")
+      for (const name of TASK_TOOL_NAMES) expect(added, name).toContain(name)
+    } finally {
+      await dispose()
+    }
+  })
 })
 
 test("native runtime uses the V2 setup context, not context.client", async () => {
@@ -3142,4 +3178,273 @@ test("#given openclaw disabled #when a persisted channel fatal exists #then it i
   expect(row.state).toBe("unevaluated")
   expect(storage.map.get(OPENCLAW_STATUS_KEY).surfaces["channels.alerts"].state).toBe("unevaluated")
   await disabled.dispose()
+})
+// Phase 4: the `disabled_*` denylists resolve from the LIVE chain at setup, so a
+// user can disable or re-enable an agent by editing `~/.omo/omo.jsonc` without a
+// reinstall. The manifest below BAKES the opposite decision in each direction, so
+// the roster can only follow the live list.
+async function withAgentManifest(manifest, run) {
+  const original = {
+    agents: nativeManifest.agents,
+    defaultAgent: nativeManifest.defaultAgent,
+    metadata: nativeManifest.metadata,
+  }
+  nativeManifest.agents = manifest.agents
+  nativeManifest.defaultAgent = manifest.defaultAgent
+  nativeManifest.metadata = manifest.metadata
+  try {
+    return await run()
+  } finally {
+    nativeManifest.agents = original.agents
+    nativeManifest.defaultAgent = original.defaultAgent
+    if (original.metadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = original.metadata
+  }
+}
+
+function agentCaptureContext() {
+  const updated = []
+  return {
+    updated,
+    context: {
+      ...editorCaptureContext().context,
+      agent: {
+        list: async () => ({ data: [] }),
+        transform: async (callback) => {
+          callback({
+            update(id, apply) {
+              apply({ request: { headers: {}, body: {} }, permissions: [] })
+              updated.push(id)
+            },
+            default() {},
+          })
+          return { dispose() {} }
+        },
+        reload: async () => {},
+      },
+    },
+  }
+}
+
+const PHASE4_MANIFEST = Object.freeze({
+  defaultAgent: "oracle",
+  agents: {
+    oracle: { name: "Oracle", mode: "subagent" },
+    explore: { name: "Explore", mode: "subagent" },
+  },
+})
+
+test("native runtime re-enables an agent the manifest baked as disabled when the live list releases it", async () => {
+  // given: the installed manifest disables oracle, the live chain declares an
+  // explicit empty list (the reactivate-without-reinstalling contract)
+  const manifest = { ...PHASE4_MANIFEST, metadata: { global: { disabled: { agents: ["oracle"] } } } }
+  await withAgentManifest(manifest, async () => {
+    await withLiveOmoConfig({ "[opencode]": { disabled_agents: [] } }, async () => {
+      // when
+      const { context, updated } = agentCaptureContext()
+      const dispose = await plugin.setup(context)
+      try {
+        // then
+        expect(updated).toContain("oracle")
+        expect(updated).toContain("explore")
+      } finally {
+        await dispose()
+      }
+    })
+  })
+})
+
+test("native runtime drops an agent the manifest baked as enabled when the live list disables it", async () => {
+  // given: the installed manifest disables nothing, the live chain names oracle
+  const manifest = { ...PHASE4_MANIFEST, metadata: { global: { disabled: { agents: [] } } } }
+  await withAgentManifest(manifest, async () => {
+    await withLiveOmoConfig({ "[opencode]": { disabled_agents: ["oracle"] } }, async () => {
+      // when
+      const { context, updated } = agentCaptureContext()
+      const dispose = await plugin.setup(context)
+      try {
+        // then
+        expect(updated).toEqual(["explore"])
+      } finally {
+        await dispose()
+      }
+    })
+  })
+})
+
+// Phase 5: MCP blocking is LIVE and SCOPE-AWARE, and the user-only env allowlist
+// is enforced by the real tier-2 loader. Each manifest below BAKES the opposite
+// decision, so the observable can only come from the live `omo.jsonc` chain.
+const MCP_RUNTIME_POLICY = Object.freeze({ retained: ["grep_app", "context7"], builtinsDisabled: [] })
+
+// A disposable HOME + project pair: the runtime reads the live chain from HOME and
+// the tier-2 loader reads `.mcp.json` from the project directory, so both are
+// sandboxed and the developer's real files are never consulted.
+async function withMcpSandbox(run) {
+  const sandbox = mkdtempSync(join(tmpdir(), "rigel-mcp-authority-"))
+  // The project MUST live inside the sandbox HOME: the layer walk climbs from the
+  // working directory up to HOME, so a sibling project directory would let it
+  // discover unrelated `.omo` layers above the temp root.
+  const home = join(sandbox, "home")
+  const project = join(home, "project")
+  mkdirSync(join(home, ".omo"), { recursive: true })
+  mkdirSync(join(project, ".omo"), { recursive: true })
+  const previousHome = process.env.HOME
+  process.env.HOME = home
+  try {
+    return await run({
+      home,
+      project,
+      writeUser: (config) => writeFileSync(join(home, ".omo", "omo.jsonc"), `${JSON.stringify(config, null, 2)}\n`),
+      writeProjectConfig: (config) => writeFileSync(join(project, ".omo", "omo.jsonc"), `${JSON.stringify(config, null, 2)}\n`),
+      writeProjectMcp: (config) => writeFileSync(join(project, ".mcp.json"), `${JSON.stringify(config, null, 2)}\n`),
+    })
+  } finally {
+    process.env.HOME = previousHome
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+}
+
+// Captures what the runtime registers on the official V2 `mcp.transform` surface,
+// which is the only seam both MCP consumers (tier-1 builtins, tier-2 `.mcp.json`)
+// write through.
+function mcpCaptureContext(directory, home) {
+  const set = []
+  const context = {
+    ...editorCaptureContext().context,
+    location: { directory },
+    options: { skillsHome: home, skillsEnv: {} },
+    mcp: {
+      transform: async (callback) => {
+        callback({
+          list: () => [],
+          get: () => undefined,
+          set: (name, config) => set.push([name, config]),
+        })
+        return { dispose() {} }
+      },
+    },
+  }
+  return { context, set, names: () => set.map(([name]) => name) }
+}
+
+function mcpManifestWith(global) {
+  return { ...PHASE4_MANIFEST, metadata: { global: { mcpPolicy: MCP_RUNTIME_POLICY, ...global } } }
+}
+
+test("native runtime releases a manifest-baked MCP deny when the live user list is empty", async () => {
+  // given: the manifest bakes context7 as denied, the user declares `[]`
+  await withAgentManifest(mcpManifestWith({ mcp: { disabled: ["context7"], envAllowlist: [] } }), async () => {
+    await withMcpSandbox(async ({ home, project, writeUser }) => {
+      writeUser({ "[opencode]": { disabled_mcps: [] } })
+      const { context, names } = mcpCaptureContext(project, home)
+      // when
+      const dispose = await plugin.setup(context)
+      try {
+        // then: the only release path is an explicit USER declaration
+        expect(names()).toContain("context7")
+      } finally {
+        await dispose()
+      }
+    })
+  })
+})
+
+test("native runtime suppresses an MCP the live user list denies", async () => {
+  // given: the manifest bakes nothing denied, the user names context7
+  await withAgentManifest(mcpManifestWith({ mcp: { disabled: [], envAllowlist: [] } }), async () => {
+    await withMcpSandbox(async ({ home, project, writeUser }) => {
+      writeUser({ "[opencode]": { disabled_mcps: ["context7"] } })
+      const { context, set, names } = mcpCaptureContext(project, home)
+      // when
+      const dispose = await plugin.setup(context)
+      try {
+        // then: registration still happens (a positive control, so the absence
+        // below cannot pass for "nothing registered at all") and the denied
+        // server is never handed to the host
+        expect(names()).toContain("grep_app")
+        expect(names()).not.toContain("context7")
+        expect(set.some(([name]) => name === "context7")).toBe(false)
+      } finally {
+        await dispose()
+      }
+    })
+  })
+})
+
+test("native runtime lets a project layer harden MCP blocking but never undo a user release", async () => {
+  // given: the user releases every deny, a project layer adds context7
+  await withAgentManifest(mcpManifestWith({ mcp: { disabled: [], envAllowlist: [] } }), async () => {
+    await withMcpSandbox(async ({ home, project, writeUser, writeProjectConfig }) => {
+      writeUser({ "[opencode]": { disabled_mcps: [] } })
+      writeProjectConfig({ "[opencode]": { disabled_mcps: ["context7"] } })
+      const { context, names } = mcpCaptureContext(project, home)
+      // when
+      const dispose = await plugin.setup(context)
+      try {
+        // then: hardening wins over the user's release, so the project deny applies
+        // while the other retained builtin still registers
+        expect(names()).toContain("grep_app")
+        expect(names()).not.toContain("context7")
+      } finally {
+        await dispose()
+      }
+    })
+  })
+})
+
+test("native runtime refuses to expand an MCP env reference the live allowlist does not grant", async () => {
+  // given: a project `.mcp.json` references an ambient secret, the user declares `[]`
+  await withAgentManifest(mcpManifestWith({ mcp: { disabled: [], envAllowlist: ["QA_PHASE5_TOKEN"] } }), async () => {
+    await withMcpSandbox(async ({ home, project, writeUser, writeProjectMcp }) => {
+      writeUser({ mcp_env_allowlist: [] })
+      writeProjectMcp({ mcpServers: { helper: { command: "node", args: ["helper.js"], env: { TOKEN: "${QA_PHASE5_TOKEN}", FALLBACK: "${QA_PHASE5_TOKEN:-closed}" } } } })
+      const previous = process.env.QA_PHASE5_TOKEN
+      process.env.QA_PHASE5_TOKEN = "secret-value"
+      const { context, set } = mcpCaptureContext(project, home)
+      try {
+        // when
+        const dispose = await plugin.setup(context)
+        try {
+          // then: the explicit empty user allowlist releases the installed grant
+          const helper = set.find(([name]) => name === "helper")?.[1]
+          expect(helper?.command).toEqual(["node", "helper.js"])
+          expect(helper?.environment?.TOKEN).toBe("")
+          expect(helper?.environment?.FALLBACK).toBe("closed")
+        } finally {
+          await dispose()
+        }
+      } finally {
+        if (previous === undefined) delete process.env.QA_PHASE5_TOKEN
+        else process.env.QA_PHASE5_TOKEN = previous
+      }
+    })
+  })
+})
+
+test("native runtime expands an MCP env reference the live user allowlist grants", async () => {
+  // given: the same reference, granted by the live user allowlist
+  await withAgentManifest(mcpManifestWith({ mcp: { disabled: [], envAllowlist: [] } }), async () => {
+    await withMcpSandbox(async ({ home, project, writeUser, writeProjectMcp }) => {
+      writeUser({ mcp_env_allowlist: ["QA_PHASE5_TOKEN"] })
+      writeProjectMcp({ mcpServers: { helper: { command: "node", args: ["helper.js"], env: { TOKEN: "${QA_PHASE5_TOKEN}" } } } })
+      const previous = process.env.QA_PHASE5_TOKEN
+      process.env.QA_PHASE5_TOKEN = "secret-value"
+      const { context, set } = mcpCaptureContext(project, home)
+      try {
+        // when
+        const dispose = await plugin.setup(context)
+        try {
+          // then
+          const helper = set.find(([name]) => name === "helper")?.[1]
+          expect(helper?.environment?.TOKEN).toBe("secret-value")
+        } finally {
+          await dispose()
+        }
+      } finally {
+        if (previous === undefined) delete process.env.QA_PHASE5_TOKEN
+        else process.env.QA_PHASE5_TOKEN = previous
+      }
+    })
+  })
 })

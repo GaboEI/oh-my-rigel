@@ -38,7 +38,7 @@ import { createNativeWebFetchRedirectGuard, updateNativeWebFetchDefinition } fro
 import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-validator.mjs"
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
-import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeGates, resolveNativeOpenclaw } from "./rigel-v2-native-config.mjs"
+import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeDisabledLists, resolveNativeGates, resolveNativeMcpEnvAllowlist, resolveNativeOpenclaw, resolveNativePreemptiveThreshold } from "./rigel-v2-native-config.mjs"
 import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
 import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
 import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
@@ -73,7 +73,7 @@ import { createFileBackgroundState, createStorageBackgroundState } from "./rigel
 import { createFlowRules } from "./rigel-v2-native-flow-rules.mjs"
 import { createNativeCompactionContextHook, isCompactionSummaryRequest } from "./rigel-v2-native-compaction-context.mjs"
 import { createNativeCompactionTodoPreserver } from "./rigel-v2-native-compaction-todo-preserver.mjs"
-import { createNativePreemptiveCompaction, createNativeCompactionIncidentRegistry, readAssistantUsage, resolveNativeContextLimit, PREEMPTIVE_COMPACTION_THRESHOLD } from "./rigel-v2-native-preemptive-compaction.mjs"
+import { createNativePreemptiveCompaction, createNativeCompactionIncidentRegistry, readAssistantUsage, resolveNativeContextLimit } from "./rigel-v2-native-preemptive-compaction.mjs"
 import { applyPromptAdmission, createImageResizerStep, createStopContinuationState, resolveRequestShape, runRequestSteps } from "./rigel-v2-native-request-steps.mjs"
 import { validateAndRepairMessages } from "./rigel-v2-native-message-repair.mjs"
 import { createNativeAutoSlashCommandHook } from "./rigel-v2-auto-slash-command-bridge.mjs"
@@ -517,6 +517,31 @@ export default {
     // value throws so the host fails the plugin load instead of writing V1 state.
     // A source/test load (not a deployment) leaves the environment untouched.
     installGoalStatePath()
+    // Live denylist authority (phase 4): every `disabled_*` list the runtime
+    // enforces is resolved ONCE here, from the same user+project chain the
+    // install-time bake used, so editing `~/.omo/omo.jsonc` takes effect on the
+    // next setup instead of requiring a reinstall. A denylist is a protection,
+    // so an unreadable or refused declaration KEEPS the installed list (the
+    // resolver reports it) rather than releasing it.
+    const disabledListResolution = resolveNativeDisabledLists({
+      manifest,
+      directory: location.directory,
+      env: process.env,
+    })
+    // MCP env allowlist authority (phase 5): the tier-2 `.mcp.json` expansion
+    // grant is user-layer only and FAIL-CLOSED, so an unreadable or refused user
+    // declaration grants nothing instead of resurrecting the installed grants.
+    // Resolved beside the denylists so both MCP consumers below read one value.
+    const mcpEnvAllowlistResolution = resolveNativeMcpEnvAllowlist({
+      manifest,
+      directory: location.directory,
+      env: process.env,
+    })
+    for (const diagnostic of [...disabledListResolution.diagnostics, ...mcpEnvAllowlistResolution.diagnostics]) {
+      console.error(`[oh-my-rigel] ${diagnostic}`)
+    }
+    const disabledLists = disabledListResolution.lists
+    const mcpEnvAllowlist = mcpEnvAllowlistResolution.allowlist
     if (typeof context?.tool?.transform !== "function") {
       throw new Error("OpenCode V2 tool.transform is unavailable")
     }
@@ -572,7 +597,7 @@ export default {
       explicitAgentModels: buildExplicitAgentModels(agentOverrides),
       // V1 `disabled_agents`: a disabled agent is never registered, so a switch
       // onto it is impossible.
-      disabledAgents: readNativeDisabled(manifest).agents,
+      disabledAgents: disabledLists.agents,
       onAgentRequest: (id, body) => {
         agentRequestBodies.set(id.toLocaleLowerCase(), body)
         const name = manifest.agents?.[id]?.name
@@ -663,19 +688,21 @@ export default {
     const resolveRuntimeSkills = createRuntimeHostSkillSource({
       context,
       baseSkills: skillRegistry.skills,
-      disabledSkills: readNativeDisabled(manifest).skills,
+      disabledSkills: disabledLists.skills,
       contract: { env: process.env, userCategories },
     })
     const skillMcpManager = createSkillMcpManager({ storage: context?.storage })
     const skillMcpRegistration = await registerSkillMcpServers(context, skillRegistry.skills)
     // Tier-2 Claude Code MCP loader (correction H5): project/user .mcp.json
     // declarations through ctx.mcp.transform, with the V1 env-allowlist rule.
+    // Both values come from the phase-5 live authority above, so an edited
+    // `omo.jsonc` reaches the tier-2 loader without a reinstall.
     const claudeMcpRegistration = await registerClaudeCodeMcps(context, {
       directory: location.directory,
       home: context?.options?.skillsHome,
       claudeConfigDir: context?.options?.skillsEnv?.CLAUDE_CONFIG_DIR,
-      disabledMcps: readNativeMcpPolicy(manifest).disabled,
-      allowlist: readNativeMcpPolicy(manifest).envAllowlist,
+      disabledMcps: disabledLists.mcps,
+      allowlist: mcpEnvAllowlist,
     })
     // Tier-1 OmO builtin MCP servers (T38). The V2 host has no LSP tools and no
     // grep_app server (official migrate-v1: V2 "does not run language servers,
@@ -688,7 +715,9 @@ export default {
       cwd: location.directory,
       repoRoot: readNativeRepoRoot(manifest),
       configDir: resolveOpenCodeConfigDir(),
-      disabledMcps: readNativeMcpPolicy(manifest).disabled,
+      // Phase 5: the LIVE, scope-aware `disabled_mcps` (a manifest-baked deny is
+      // the installation default, not the runtime truth).
+      disabledMcps: disabledLists.mcps,
       retained: mcpBuiltinsPolicy.retained,
       bundledLocal: mcpBuiltinsPolicy.bundledLocal,
       externalConnections: mcpBuiltinsPolicy.externalConnections,
@@ -1459,11 +1488,20 @@ export default {
       }
       return modelContextLimits.get(key)
     }
+    // T34 threshold: the live user+project chain declares it when the user edits
+    // `omo.jsonc`; the install-time manifest is the fallback ONLY when the key is
+    // absent, and a chain that cannot confirm the value falls closed to the V1
+    // 0.78 default instead of a stale manifest value. Resolved only when the gate
+    // is on, so a gate-off runtime does no extra config IO.
+    const preemptiveThreshold = nativeGates.preemptive_compaction === true
+      ? resolveNativePreemptiveThreshold({ manifest, directory: location.directory, env: process.env })
+      : undefined
+    for (const diagnostic of preemptiveThreshold?.diagnostics ?? []) console.error(`[oh-my-rigel] ${diagnostic}`)
     const preemptiveCompaction = nativeGates.preemptive_compaction === true
       && typeof context?.session?.compact === "function"
       && typeof getSessionMessages === "function"
       ? createNativePreemptiveCompaction({
-        threshold: readNativePreemptiveThreshold(manifest) ?? PREEMPTIVE_COMPACTION_THRESHOLD,
+        threshold: preemptiveThreshold.value,
         readUsage: async (sessionID) => readAssistantUsage(await getSessionMessages(sessionID)),
         resolveContextLimit: async ({ providerID, modelID }) => {
           try {
@@ -2006,7 +2044,7 @@ export default {
       resolveModel: resolveNativeModel,
       getAgentRequestBody: (agent) => agentRequestBodies.get(String(agent ?? "").toLocaleLowerCase()),
       // Mirror the V1 `disabled_hooks` gate for think-mode (default on).
-      thinkModeEnabled: !readNativeDisabled(manifest).hooks.includes("think-mode"),
+      thinkModeEnabled: !disabledLists.hooks.includes("think-mode"),
       onAgentTuningApplied: (event) => {
         recordAgentTuning(event)
       },
@@ -2076,7 +2114,7 @@ export default {
     const autoSlashCommand = createNativeAutoSlashCommandHook({
       skills: skillRegistry.skills,
       listCommands: () => context?.command?.list?.(),
-      nativeCommands: nativeGates.team_mode === true && !readNativeDisabled(manifest).commands.includes(TEAM_MODE_COMMAND_NAME)
+      nativeCommands: nativeGates.team_mode === true && !disabledLists.commands.includes(TEAM_MODE_COMMAND_NAME)
         ? { [TEAM_MODE_COMMAND_NAME]: createTeamModePromptHandler({ resolveCreateTeam: () => teamCreatePortFromTool(teamModeCreateTool) }) }
         : undefined,
     })
@@ -2341,7 +2379,7 @@ export default {
       builtinCommandsRegistration = await registerBuiltinCommands({
         context,
         teamModeEnabled: nativeGates.team_mode === true,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // The V1 `cli/mcp-oauth` effect as a native command. The interactive
@@ -2353,7 +2391,7 @@ export default {
       mcpOAuthCommandRegistration = await registerMcpOAuthCommand({
         context,
         storage: context?.storage,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // U4: `/openclaw-status` is the on-demand report surface for the state
@@ -2367,7 +2405,7 @@ export default {
       openclawStatusCommandRegistration = await registerOpenclawStatusCommand({
         context,
         getReport: () => openclaw.report(),
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // The `/rmo-models` guided command: inspect and change the per-agent model
@@ -2378,7 +2416,7 @@ export default {
     if (typeof context?.command?.transform === "function") {
       modelsCommandRegistration = await registerModelsCommand({
         context,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // The `/team-mode` front door: `/team-mode <objective>` decides deterministically
@@ -2392,7 +2430,7 @@ export default {
     if (nativeGates.team_mode === true && typeof context?.command?.transform === "function") {
       teamModeCommandRegistration = await registerTeamModeCommand({
         context,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
         createTeam: teamCreatePortFromTool(teamModeCreateTool),
       })
     }

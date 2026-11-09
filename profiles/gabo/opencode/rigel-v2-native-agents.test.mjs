@@ -687,3 +687,65 @@ test("registerNativeAgents registers canonical core agents first from a shuffled
   ])
   expect(updateOrder).toEqual(registered)
 })
+
+test("a disabled default agent is never set as the host default", async () => {
+  // The installed manifest keeps every base definition (phase 4), so the default
+  // agent can be one the live `disabled_agents` list filters out. Naming it as
+  // the host default would leave the default unroutable.
+  // given
+  const defaults = []
+  const editor = {
+    update(id, callback) {
+      callback({ request: { headers: {}, body: {} }, permissions: [] })
+    },
+    default(id) {
+      defaults.push(id)
+    },
+  }
+  const agentDomain = {
+    transform: async (callback) => { callback(editor); return { dispose() {} } },
+    reload: async () => {},
+  }
+  const manifest = {
+    defaultAgent: "oracle",
+    agents: {
+      oracle: { name: "Oracle", mode: "subagent" },
+      explore: { name: "Explore", mode: "subagent" },
+    },
+  }
+
+  // when
+  const registered = await registerNativeAgents(agentDomain, manifest, { disabledAgents: ["oracle"] })
+
+  // then
+  expect(registered).toEqual(["explore"])
+  expect(defaults).toEqual([])
+})
+
+test("an enabled default agent is still set as the host default", async () => {
+  // when
+  const defaults = []
+  const editor = {
+    update(id, callback) {
+      callback({ request: { headers: {}, body: {} }, permissions: [] })
+    },
+    default(id) {
+      defaults.push(id)
+    },
+  }
+  const agentDomain = {
+    transform: async (callback) => { callback(editor); return { dispose() {} } },
+    reload: async () => {},
+  }
+  const manifest = {
+    defaultAgent: "oracle",
+    agents: {
+      oracle: { name: "Oracle", mode: "subagent" },
+      explore: { name: "Explore", mode: "subagent" },
+    },
+  }
+
+  // then
+  await registerNativeAgents(agentDomain, manifest, { disabledAgents: ["explore"] })
+  expect(defaults).toEqual(["oracle"])
+})
