@@ -14,9 +14,9 @@
 
 import { agentChain, resolveFallbackModel } from "./rigel-v2-native-model-chains.mjs"
 import { resolveAgentDelegationModel } from "./rigel-v2-native-explicit-chain.mjs"
-import { frontierToolSchemaPermission, mergePermissionRules, translateV1Permissions } from "./rigel-v2-native-permissions.mjs"
+import { applyLiveTaskSystemPermission, frontierToolSchemaPermission, mergePermissionRules, translateV1Permissions } from "./rigel-v2-native-permissions.mjs"
 import { evaluateHephaestusGate, isHephaestusAgentId } from "./rigel-v2-native-hephaestus.mjs"
-import { sortAgentsByCanonicalOrder } from "./rigel-v2-native-agent-order.mjs"
+import { canonicalAgentKey, sortAgentsByCanonicalOrder } from "./rigel-v2-native-agent-order.mjs"
 
 const tuningKeys = ["temperature", "top_p", "maxTokens", "thinking", "reasoning", "reasoningEffort", "textVerbosity"]
 
@@ -76,10 +76,7 @@ export function modelRef(value, variant) {
 }
 
 /** Base agent key: lowercase, display suffix (` - ...`) stripped. */
-function canonicalAgentId(id) {
-  const raw = String(id ?? "").trim().toLocaleLowerCase()
-  return raw ? raw.split(/\s+-\s+/)[0].trim() : ""
-}
+const canonicalAgentId = canonicalAgentKey
 
 const PERMISSION_EFFECT_VALUES = new Set(["allow", "deny", "ask"])
 
@@ -254,7 +251,26 @@ function canonicalAgentEntries(agents) {
     .map((entry) => [entry.id, byId.get(entry.id)])
 }
 
-export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions, onHephaestusGateSkipped, chainFallback } = {}) {
+/**
+ * Apply the LIVE `experimental.task_system` state to a manifest definition's V1
+ * permission BEFORE `applyLegacyAgentDefinition` translates it, so ONE
+ * translation produces both the host `agent.permissions` rules and the runtime
+ * tool-name gates. A post-translation rewrite can only reach the gates, because
+ * the host rules were already assigned on the agent object.
+ *
+ * The manifest object is never mutated: an agent whose permission the live gate
+ * does not change keeps the exact definition reference.
+ */
+function withLiveTaskSystemPermission(id, definition, taskSystemEnabled) {
+  const source = definition && typeof definition === "object" ? definition : {}
+  const key = source.permissions === undefined || source.permissions === null ? "permission" : "permissions"
+  if (!Object.prototype.hasOwnProperty.call(source, key)) return definition
+  const permission = applyLiveTaskSystemPermission(id, source[key], taskSystemEnabled)
+  if (permission === source[key]) return definition
+  return { ...source, [key]: permission }
+}
+
+export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions, onHephaestusGateSkipped, chainFallback, taskSystemEnabled } = {}) {
   if (typeof agentDomain?.transform !== "function" || typeof agentDomain?.reload !== "function") {
     throw new Error("OpenCode V2 agent.transform/agent.reload is unavailable")
   }
@@ -311,7 +327,7 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
         }
       }
       editor.update(id, (agent) => {
-        const permissions = applyLegacyAgentDefinition(agent, id, definition, globalRules)
+        const permissions = applyLegacyAgentDefinition(agent, id, withLiveTaskSystemPermission(id, definition, taskSystemEnabled), globalRules)
         // Two steps on purpose. `applyLegacyAgentDefinition` keeps its public
         // contract: it sets `agent.model` from the definition AND derives the
         // frontier permission from that same model, so its exported behavior is

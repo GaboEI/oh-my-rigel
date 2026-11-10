@@ -40,10 +40,33 @@ test("maps V1 write and apply_patch onto the native edit action", async () => {
   expect(rules.some((rule) => rule.action === "write" || rule.action === "apply_patch")).toBe(false)
 })
 
-test("accepts the V1 todoread permission the task system emits instead of aborting", async () => {
+test("gates the V1 todowrite and todoread task-system permissions by tool name", async () => {
   const { translateV1Permissions } = await load()
   const { toolGates } = translateV1Permissions({ todowrite: "deny", todoread: "deny" })
+  // The host rule alone does not govern the `todowrite` tool the runtime
+  // registers, so the same V1 deny must also be a real tool-name gate.
+  expect(toolGates).toContainEqual({ pattern: "todowrite", effect: "deny" })
   expect(toolGates).toContainEqual({ pattern: "todoread", effect: "deny" })
+})
+
+test("live task-system normalization removes only the V1-injected entries", async () => {
+  const { applyLiveTaskSystemGlobalTools, applyLiveTaskSystemPermission } = await load()
+
+  // given an agent whose todowrite declaration is NOT the shape V1 injects
+  const declared = { task: "allow", "task_*": "allow", todowrite: { "*": "ask" }, todoread: "deny" }
+
+  // when the live gate is off
+  const off = applyLiveTaskSystemPermission("Sisyphus - ultraworker", declared, false)
+
+  // then the injected entries go and the agent declaration survives
+  expect(off).toEqual({ task: "allow", todowrite: { "*": "ask" } })
+
+  // and an agent outside the task family is returned untouched
+  const librarian = { task: "deny", "grep_app_*": "allow" }
+  expect(applyLiveTaskSystemPermission("librarian", librarian, true)).toBe(librarian)
+
+  // A user-declared global todowrite enable is not revoked by a gate flip.
+  expect(applyLiveTaskSystemGlobalTools({ "task_*": true, todowrite: true }, false)).toEqual({ "task_*": false, todowrite: true })
 })
 
 test("maps the remaining native V1 actions to their V2 action names", async () => {

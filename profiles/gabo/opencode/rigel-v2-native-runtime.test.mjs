@@ -712,6 +712,102 @@ async function registerPermissionAgents(wiring, manifest) {
   })
 }
 
+// Same real registration path, but it keeps the agent object the runtime
+// mutated, so a test can assert the HOST-side `agent.permissions` rules, not
+// only the tool-name gate.
+async function registerPermissionAgentsAndCapture(wiring, manifest, options = {}) {
+  const captured = new Map()
+  const agentDomain = {
+    transform: async (callback) => {
+      callback({
+        update: (id, apply) => {
+          const agent = { request: { headers: {}, body: {} }, permissions: [] }
+          apply(agent)
+          captured.set(id, agent)
+        },
+        default() {},
+      })
+      return { dispose() {} }
+    },
+    reload: async () => {},
+  }
+  await registerNativeAgents(agentDomain, manifest, {
+    onAgentPermissions: (id, permissions) => wiring.onAgentPermissions(id, permissions),
+    ...options,
+  })
+  return captured
+}
+
+// Live task-system authority. The manifest is the INSTALL-time bake, so it
+// carries the overlay V1 `applyToolConfig` wrote with the gate as it stood then
+// (`task_*: allow` on the four task-tool owners, `todowrite`/`todoread: deny` on
+// all five, `task_*: true` plus the global todo disables when on). Flipping
+// `experimental.task_system` after install must move the global gates, the agent
+// tool-name gates and the V2 host rules together.
+function bakedTaskSystemManifest(taskSystemEnabled) {
+  const todoDeny = taskSystemEnabled ? { todowrite: "deny", todoread: "deny" } : {}
+  return {
+    agents: {
+      sisyphus: { name: "Sisyphus - ultraworker", mode: "primary", permission: { task: "allow", "task_*": "allow", ...todoDeny } },
+      // Hephaestus owns the task DELEGATION grant only; V1 never gives it
+      // `task_*`, so its task tools come from the global allow.
+      hephaestus: { name: "Hephaestus - Deep Agent", mode: "primary", permission: { task: "allow", ...todoDeny } },
+      librarian: { name: "librarian", mode: "subagent", permission: { task: "deny", "grep_app_*": "allow" } },
+    },
+    metadata: {
+      global: {
+        tools: {
+          "task_*": taskSystemEnabled,
+          ...(taskSystemEnabled ? { todowrite: false, todoread: false } : {}),
+          "grep_app_*": false,
+        },
+      },
+    },
+  }
+}
+
+test("native runtime drops install-time task-system permissions when the live gate is off", async () => {
+  // given a manifest baked with the task system ON, resolved against a live OFF
+  const manifest = bakedTaskSystemManifest(true)
+  const wiring = nativeRuntime.createNativePermissionWiring({ manifest, taskSystemEnabled: false })
+  const captured = await registerPermissionAgentsAndCapture(wiring, manifest, { taskSystemEnabled: false })
+
+  // when the gate governs the task family
+  // then the stale task-tool allow and the stale global allow are gone
+  await expect(wiring.before({ tool: "task_create", agent: "Sisyphus - ultraworker" })).rejects.toThrow(/denied/)
+  await expect(wiring.before({ tool: "task_create", agent: "Hephaestus - Deep Agent" })).rejects.toThrow(/denied/)
+  // and the stale todo denies are gone, in BOTH authorities
+  await expect(wiring.before({ tool: "todowrite", agent: "Sisyphus - ultraworker" })).resolves.toBeUndefined()
+  await expect(wiring.before({ tool: "todoread", agent: "Sisyphus - ultraworker" })).resolves.toBeUndefined()
+  expect(captured.get("sisyphus").permissions).toEqual([{ action: "subagent", resource: "*", effect: "allow" }])
+  expect(captured.get("hephaestus").permissions).toEqual([{ action: "subagent", resource: "*", effect: "allow" }])
+})
+
+test("native runtime grants live task-system permissions over a manifest baked off", async () => {
+  // given a manifest baked with the task system OFF, resolved against a live ON
+  const manifest = bakedTaskSystemManifest(false)
+  const wiring = nativeRuntime.createNativePermissionWiring({ manifest, taskSystemEnabled: true })
+  const captured = await registerPermissionAgentsAndCapture(wiring, manifest, { taskSystemEnabled: true })
+
+  // when the gate governs the task family
+  // then the owners get the task tools...
+  await expect(wiring.before({ tool: "task_create", agent: "Sisyphus - ultraworker" })).resolves.toBeUndefined()
+  // ...and Hephaestus too, through the global allow it inherits
+  await expect(wiring.before({ tool: "task_create", agent: "Hephaestus - Deep Agent" })).resolves.toBeUndefined()
+  // and the todo list is denied for the agents that own the task list, in both
+  // the tool-name gate and the V2 host rules
+  await expect(wiring.before({ tool: "todowrite", agent: "Sisyphus - ultraworker" })).rejects.toThrow(/denied/)
+  await expect(wiring.before({ tool: "todoread", agent: "Sisyphus - ultraworker" })).rejects.toThrow(/denied/)
+  expect(captured.get("sisyphus").permissions).toEqual([
+    { action: "subagent", resource: "*", effect: "allow" },
+    { action: "todowrite", resource: "*", effect: "deny" },
+  ])
+  // The global disable covers every other agent that declares nothing.
+  await expect(wiring.before({ tool: "todowrite", agent: "librarian" })).rejects.toThrow(/denied/)
+  // A non-task agent's own declarations are untouched by the live gate.
+  expect(captured.get("librarian").permissions).toEqual([{ action: "subagent", resource: "*", effect: "deny" }])
+})
+
 test("native runtime permission wiring blocks a denied call before the executor runs", async () => {
   const manifest = permissionManifest()
   const wiring = nativeRuntime.createNativePermissionWiring({ manifest })

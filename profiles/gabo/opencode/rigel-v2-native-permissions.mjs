@@ -6,8 +6,12 @@
  * Contract source: `.omo/plans/task-10-permissions.md` decisions 2 through 7 and
  * the installed `@opencode-ai/sdk/v2/types` contract
  * (`PermissionV2Rule = { action, resource, effect }`, `AgentV2Info.permissions`,
- * `PermissionConfig`). Pure data in, pure data out: no imports, no state, no I/O.
+ * `PermissionConfig`). Pure data in, pure data out: no state, no I/O. The one
+ * import is the canonical agent-id normalizer, so the live task-system authority
+ * below classifies agents exactly like agent registration does.
  */
+
+import { canonicalAgentKey } from "./rigel-v2-native-agent-order.mjs"
 
 /**
  * The concrete V2 action vocabulary this runtime version pins. `*` expands to
@@ -72,6 +76,11 @@ const EXACT_GATE_BY_KEY = Object.freeze({
   skill_mcp: "skill_mcp",
   interactive_bash: "interactive_bash",
   question: "question",
+  // `todowrite` keeps its native action rule AND a real tool-name gate: V2
+  // publishes no builtin `todowrite`, so the runtime registers its own tool of
+  // that name, and the host rule alone would not stop it. The V1 task-system
+  // deny must govern the tool the agent can actually call.
+  todowrite: "todowrite",
   // V1 emits `todoread` (alongside `todowrite`) whenever the task system is
   // enabled (tool-config-handler.ts). V2 has no `todoread` tool, so the exact
   // tool-name gate is harmless, but it must be accepted or agent registration
@@ -279,6 +288,75 @@ export function translateGlobalTools(tools) {
     for (const pattern of globalToolGatePatterns(key)) gates.set(pattern, { pattern, effect })
   }
   return [...gates.values()]
+}
+
+/**
+ * Canonical ids of the agents V1 `applyToolConfig` grants task-system tools to:
+ * `atlas`, `sisyphus`, `prometheus` and `sisyphus-junior` receive
+ * `"task_*": "allow"`, while Hephaestus receives only the `task` delegation
+ * grant and takes the task tools from the global allow. All five receive the
+ * `todowrite` / `todoread` deny while the task system is enabled, because the
+ * task list replaces the todo list for the agents that own it.
+ */
+const TASK_SYSTEM_TOOL_AGENT_IDS = Object.freeze(["atlas", "sisyphus", "prometheus", "sisyphus-junior"])
+const TASK_SYSTEM_PERMISSION_AGENT_IDS = new Set([...TASK_SYSTEM_TOOL_AGENT_IDS, "hephaestus"])
+
+/**
+ * Rebuild the V1 permission object a task-owning agent carries under the LIVE
+ * `experimental.task_system` gate.
+ *
+ * The install-time bake applied V1 `applyToolConfig`'s overlay with the gate as
+ * it stood then, so the manifest can hold a `task_*: allow` and a
+ * `todowrite` / `todoread` deny the live config no longer wants, and miss the
+ * ones it does. Only the shapes V1 injects are dropped, so an agent declaration
+ * of any other shape (`ask`, `allow`, a resource map) survives untouched.
+ *
+ * `undefined` means the caller has no live value: the permission is returned
+ * unchanged rather than corrected toward a guess.
+ */
+export function applyLiveTaskSystemPermission(id, permission, taskSystemEnabled) {
+  if (typeof taskSystemEnabled !== "boolean") return permission
+  if (!isPlainObject(permission)) return permission
+  const key = canonicalAgentKey(id)
+  if (!TASK_SYSTEM_PERMISSION_AGENT_IDS.has(key)) return permission
+  const next = { ...permission }
+  // Drop the install-time overlay first so ONE path owns both directions.
+  if (next["task_*"] === "allow") delete next["task_*"]
+  if (next.todowrite === "deny") delete next.todowrite
+  if (next.todoread === "deny") delete next.todoread
+  if (!taskSystemEnabled) return next
+  if (TASK_SYSTEM_TOOL_AGENT_IDS.includes(key)) next["task_*"] = "allow"
+  next.todowrite = "deny"
+  next.todoread = "deny"
+  return next
+}
+
+/**
+ * Rebuild the V1 global `config.tools` record for the LIVE
+ * `experimental.task_system` gate.
+ *
+ * V1 writes `task_*: false` unconditionally and adds `todowrite` / `todoread`
+ * `false` only while the task system is enabled; the manifest generator then
+ * flips `task_*` to `true` when the install-time gate was on, so the global
+ * allow IS the gate. Flipping the gate after install otherwise leaves a stale
+ * allow (or a stale deny) that disagrees with the tools the runtime registers.
+ *
+ * Only the V1-injected `false` shape is removed when the gate is off, so a
+ * user-declared `todowrite: true` is preserved.
+ */
+export function applyLiveTaskSystemGlobalTools(tools, taskSystemEnabled) {
+  if (typeof taskSystemEnabled !== "boolean") return tools
+  if (!isPlainObject(tools)) return tools
+  const next = { ...tools }
+  next["task_*"] = taskSystemEnabled
+  if (taskSystemEnabled) {
+    next.todowrite = false
+    next.todoread = false
+    return next
+  }
+  if (next.todowrite === false) delete next.todowrite
+  if (next.todoread === false) delete next.todoread
+  return next
 }
 
 export const TOOL_PERMISSION_DENIED = "RIGEL_TOOL_PERMISSION_DENIED"

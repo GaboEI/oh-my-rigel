@@ -41,7 +41,7 @@ import manifest from "./rigel-v2-native-agent-manifest.mjs"
 import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeDisabledLists, resolveNativeGates, resolveNativeMcpEnvAllowlist, resolveNativeOpenclaw, resolveNativePreemptiveThreshold } from "./rigel-v2-native-config.mjs"
 import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
 import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
-import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
+import { applyLiveTaskSystemGlobalTools, createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
 import { createRuntimeHostSkillSource, registerNativeSkills, selectSkillsForChild, formatSkillInjection } from "./rigel-v2-native-skills.mjs"
 import { createSkillMcpManager, createSkillMcpToolDefinition, registerSkillMcpServers } from "./rigel-v2-native-skill-mcp.mjs"
 import { createSlashcommandTool } from "./tools/slashcommand.tools.mjs"
@@ -447,11 +447,16 @@ export function createSessionAgentResolver(context) {
  * agent-specific declaration wins) and indexes every agent under both its
  * manifest id and its display name.
  *
- * Exported so the runtime tests can drive the real collection and decision path
- * with a fixture manifest instead of mutating the generated manifest module.
+ * The task-system family is normalized from the LIVE gate here and in
+ * `registerNativeAgents`, from the same pure authority, so a post-install
+ * on/off edit cannot leave the global gates, the agent gates and the V2 rules
+ * out of sync. `taskSystemEnabled` absent (a direct caller with no live value)
+ * keeps the manifest values unchanged. Exported so the runtime tests can drive
+ * the real collection and decision path with a fixture manifest instead of
+ * mutating the generated manifest module.
  */
-export function createNativePermissionWiring({ manifest: agentManifest, resolveAgent } = {}) {
-  const globalGates = translateGlobalTools(agentManifest?.metadata?.global?.tools)
+export function createNativePermissionWiring({ manifest: agentManifest, resolveAgent, taskSystemEnabled } = {}) {
+  const globalGates = translateGlobalTools(applyLiveTaskSystemGlobalTools(agentManifest?.metadata?.global?.tools, taskSystemEnabled))
   const agents = agentManifest && typeof agentManifest.agents === "object" && agentManifest.agents !== null ? agentManifest.agents : {}
   const gate = createNativeToolPermissionGate({ globalGates, resolveAgent })
   return {
@@ -578,9 +583,23 @@ export default {
       ?? readUserCategories(context)
     const categoryRoster = buildCategoryRoster(userCategories)
     const sessionAgentResolver = createSessionAgentResolver(context)
+    // Gates resolve under the LIVE vs BAKED policy in `NATIVE_GATE_POLICY`: a gate
+    // the live config declares wins over the install-time manifest, so editing
+    // `~/.omo/omo.jsonc` no longer needs a reinstall to take effect, and a declared
+    // value that disagrees with the baked manifest is REPORTED instead of silently
+    // overridden. The chain is read at the instance's own location, which is the
+    // same location the rest of this setup is gated on.
+    //
+    // Resolved BEFORE agent registration on purpose: `task_system` decides both the
+    // tools this setup registers and the permissions each agent is registered with,
+    // so the registered roster and the task tools must read ONE live value.
+    const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env })
+    for (const diagnostic of gateResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
+    const nativeGates = gateResolution.gates
     const permissionWiring = createNativePermissionWiring({
       manifest,
       resolveAgent: sessionAgentResolver,
+      taskSystemEnabled: nativeGates.task_system === true,
     })
     // Buffered observability for the Hephaestus registration gate. The
     // transform callback below is replayable, so it only records the skip here.
@@ -604,8 +623,11 @@ export default {
         if (typeof name === "string") agentRequestBodies.set(name.toLocaleLowerCase(), body)
       },
       // The permission gate consumes each agent's translated tool-name gates
-      // here, so the `execute.before` hook below governs the real roster.
+      // here, so the `execute.before` hook below governs the real roster. The
+      // same LIVE `task_system` value the wiring gates on is applied to each
+      // definition before translation, so the host rules and these gates agree.
       onAgentPermissions: (id, permissions) => permissionWiring.onAgentPermissions(id, permissions),
+      taskSystemEnabled: nativeGates.task_system === true,
       // Observability: the Hephaestus registration gate blocks at startup, so a
       // skip is otherwise only a log line nobody can consult afterwards. The
       // durable receipt is emitted after registration (below) instead of here:
@@ -945,19 +967,6 @@ export default {
         ? context.session.context({ sessionID })
         : Promise.resolve([])),
     })
-    // Task 19: hashline is gated by the materialized `hashline_edit` gate. When
-    // on, the read enhancer tags V2 read output with LINE#ID and an equivalent
-    // `hashline_edit` tool validates the anchor hash before writing.
-    //
-    // Gates resolve under the LIVE vs BAKED policy in `NATIVE_GATE_POLICY`: a gate
-    // the live config declares wins over the install-time manifest, so editing
-    // `~/.omo/omo.jsonc` no longer needs a reinstall to take effect, and a declared
-    // value that disagrees with the baked manifest is REPORTED instead of silently
-    // overridden. The chain is read at the instance's own location, which is the
-    // same location the rest of this setup is gated on.
-    const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env })
-    for (const diagnostic of gateResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
-    const nativeGates = gateResolution.gates
     // The auto-update-checker effect. V1 checked the published plugin's npm
     // dist-tags once per startup and toasted a newer version. The native runtime
     // fetches the same registry at most once per day, caches the result in
@@ -985,6 +994,9 @@ export default {
     void updateChecker.refresh().catch((error) => {
       console.error(`[oh-my-rigel] update check failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+    // Task 19: hashline is gated by the materialized `hashline_edit` gate. When
+    // on, the read enhancer tags V2 read output with LINE#ID and an equivalent
+    // `hashline_edit` tool validates the anchor hash before writing.
     const hashlineEnabled = nativeGates.hashline_edit === true
     const hashline = hashlineEnabled ? createHashlineReadEnhancer() : undefined
     const hashlineEditTool = hashlineEnabled ? createHashlineEditTool({ directory: location.directory }) : undefined
