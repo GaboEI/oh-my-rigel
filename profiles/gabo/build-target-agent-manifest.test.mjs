@@ -251,6 +251,110 @@ describe("build-target-agent-manifest", () => {
     })
   })
 
+  describe("#given a profile whose live denylist names Atlas on a clean install", () => {
+    describe("#when the manifest is generated", () => {
+      test.skipIf(!hasDist)("#then the fallback repair still materializes Atlas so a later denylist removal registers it", async () => {
+        // given: an install that disables a CONDITIONAL agent. Atlas is the only
+        // orchestrated id whose factory can drop it (model resolution yields
+        // nothing on a clean install), so it is the only id the fallback repair
+        // has to reach. The denylist sits in the staged profile layer, which is
+        // exactly what `neutralizeStagedDisabledAgents` clears for the bake.
+        const cleanSandbox = path.join(scratch, "atlas-disabled-sandbox")
+        const cleanHome = path.join(cleanSandbox, "home")
+        fs.mkdirSync(path.join(cleanHome, ".omo"), { recursive: true })
+        fs.writeFileSync(
+          path.join(cleanHome, ".omo", "omo.jsonc"),
+          JSON.stringify({ profiles: { gabo: { "[opencode]": { disabled_agents: ["atlas"] } } } }),
+        )
+        const cleanInputPath = path.join(scratch, "atlas-disabled-input.json")
+        fs.writeFileSync(cleanInputPath, JSON.stringify({}))
+        const { buildTargetAgentManifest } = await import("./build-target-agent-manifest.mjs")
+        const before = await buildTargetAgentManifest({
+          inputPath: cleanInputPath,
+          outputPath: path.join(scratch, "target-agent-manifest-atlas-disabled.mjs"),
+          selectionPath,
+          judgePath,
+          profileRoot: cleanHome,
+          sandbox: cleanSandbox,
+          keepSandbox: true,
+        })
+        // The same profile with the name REMOVED from the live denylist: the
+        // re-enable an operator performs without reinstalling.
+        const reenabledSandbox = path.join(scratch, "atlas-reenabled-sandbox")
+        const reenabledHome = path.join(reenabledSandbox, "home")
+        fs.mkdirSync(path.join(reenabledHome, ".omo"), { recursive: true })
+        fs.writeFileSync(path.join(reenabledHome, ".omo", "omo.jsonc"), JSON.stringify({ profiles: { gabo: {} } }))
+        const after = await buildTargetAgentManifest({
+          inputPath: cleanInputPath,
+          outputPath: path.join(scratch, "target-agent-manifest-atlas-reenabled.mjs"),
+          selectionPath,
+          judgePath,
+          profileRoot: reenabledHome,
+          sandbox: reenabledSandbox,
+          keepSandbox: true,
+        })
+
+        // then: the bake repaired the disabled definition instead of classifying
+        // it unavailable, and the recorded denylist is what keeps the runtime from
+        // registering it today.
+        expect(before.report.disabledAgentIds).toContain("atlas")
+        expect(before.manifest.metadata.global.disabled.agents).toContain("atlas")
+        expect(before.report.unavailableDisabledIds).toEqual([])
+        expect(before.report.repairedIds).toContain(ATLAS_ID)
+        expect(before.manifest.agents[ATLAS_ID]).toBeDefined()
+        expect(before.manifest.agents[ATLAS_ID].model).toBe(expectedAtlasModel)
+        // The retained definition is complete, not a placeholder: dropping the name
+        // from the denylist resolves the SAME record with no reinstall.
+        expect(after.manifest.metadata.global.disabled.agents).not.toContain("atlas")
+        expect(after.manifest.agents[ATLAS_ID]).toEqual(before.manifest.agents[ATLAS_ID])
+        expect(Object.keys(after.manifest.agents)).toEqual(Object.keys(before.manifest.agents))
+      }, 180_000)
+    })
+  })
+
+  describe("#given a layer the bake cannot neutralize still names Atlas", () => {
+    describe("#when the manifest is generated", () => {
+      test.skipIf(!hasDist)("#then Atlas stays unavailable instead of aborting the build", async () => {
+        // given: the denylist lives in a PROJECT layer, which is outside the
+        // throwaway staged profile the bake neutralizes. The repair cannot succeed.
+        const unrepairableSandbox = path.join(scratch, "atlas-unrepairable-sandbox")
+        const unrepairableHome = path.join(unrepairableSandbox, "home")
+        const unrepairableProject = path.join(unrepairableSandbox, "project")
+        fs.mkdirSync(path.join(unrepairableHome, ".omo"), { recursive: true })
+        fs.mkdirSync(path.join(unrepairableProject, ".omo"), { recursive: true })
+        fs.writeFileSync(
+          path.join(unrepairableProject, ".omo", "omo.jsonc"),
+          JSON.stringify({ "[opencode]": { disabled_agents: ["atlas"] } }),
+        )
+        const unrepairableInputPath = path.join(scratch, "atlas-unrepairable-input.json")
+        fs.writeFileSync(unrepairableInputPath, JSON.stringify({}))
+        const { buildTargetAgentManifest } = await import("./build-target-agent-manifest.mjs")
+
+        // when
+        const built = await buildTargetAgentManifest({
+          inputPath: unrepairableInputPath,
+          outputPath: path.join(scratch, "target-agent-manifest-atlas-unrepairable.mjs"),
+          selectionPath,
+          judgePath,
+          directory: unrepairableProject,
+          sandbox: unrepairableSandbox,
+          keepSandbox: true,
+        })
+
+        // then: a failed repair is reported, never thrown, and the agent the
+        // denylist names is the one listed as unavailable.
+        expect(built.manifest.metadata.global.disabled.agents).toContain("atlas")
+        expect(built.report.unavailableDisabledIds).toContain(ATLAS_ID)
+        expect(built.report.repairedIds).not.toContain(ATLAS_ID)
+        expect(built.manifest.agents[ATLAS_ID]).toBeUndefined()
+        // The rest of the roster is untouched by the failed Atlas repair.
+        for (const id of EXPECTED_AGENT_KEYS.filter((key) => key !== ATLAS_ID)) {
+          expect(built.manifest.agents[id], `missing agent: ${id}`).toBeDefined()
+        }
+      }, 180_000)
+    })
+  })
+
   describe("#given an OpenClaw credential written as a reference", () => {
     describe("#when the manifest is generated", () => {
       test.skipIf(!hasDist)("#then the manifest carries the reference verbatim and never a resolved value", async () => {

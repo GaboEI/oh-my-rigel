@@ -40,8 +40,8 @@ import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-on
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
 import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeDisabledLists, resolveNativeGates, resolveNativeMcpEnvAllowlist, resolveNativeOpenclaw, resolveNativePreemptiveThreshold } from "./rigel-v2-native-config.mjs"
 import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
-import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
-import { applyLiveTaskSystemGlobalTools, createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
+import { bakedTaskSystemGate, registerNativeAgents } from "./rigel-v2-native-agents.mjs"
+import { applyLiveTaskSystemGlobalTools, createDisabledToolSet, createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
 import { createRuntimeHostSkillSource, registerNativeSkills, selectSkillsForChild, formatSkillInjection } from "./rigel-v2-native-skills.mjs"
 import { createSkillMcpManager, createSkillMcpToolDefinition, registerSkillMcpServers } from "./rigel-v2-native-skill-mcp.mjs"
 import { createSlashcommandTool } from "./tools/slashcommand.tools.mjs"
@@ -451,16 +451,28 @@ export function createSessionAgentResolver(context) {
  * `registerNativeAgents`, from the same pure authority, so a post-install
  * on/off edit cannot leave the global gates, the agent gates and the V2 rules
  * out of sync. `taskSystemEnabled` absent (a direct caller with no live value)
- * keeps the manifest values unchanged. Exported so the runtime tests can drive
+ * keeps the manifest values unchanged. The BAKED gate is read from the manifest
+ * itself, so a global todo entry is only dropped when the bake provably
+ * injected it rather than when it merely matches the injected shape.
+ * `disabledTools` is the LIVE
+ * `disabled_tools` denylist and is enforced ahead of every permission layer, so
+ * a disabled name is refused even when the installed manifest and every agent
+ * declaration still allow it. Exported so the runtime tests can drive
  * the real collection and decision path with a fixture manifest instead of
  * mutating the generated manifest module.
  */
-export function createNativePermissionWiring({ manifest: agentManifest, resolveAgent, taskSystemEnabled } = {}) {
-  const globalGates = translateGlobalTools(applyLiveTaskSystemGlobalTools(agentManifest?.metadata?.global?.tools, taskSystemEnabled))
+export function createNativePermissionWiring({ manifest: agentManifest, resolveAgent, taskSystemEnabled, disabledTools } = {}) {
+  const globalGates = translateGlobalTools(applyLiveTaskSystemGlobalTools(
+    agentManifest?.metadata?.global?.tools,
+    taskSystemEnabled,
+    bakedTaskSystemGate(agentManifest),
+  ))
   const agents = agentManifest && typeof agentManifest.agents === "object" && agentManifest.agents !== null ? agentManifest.agents : {}
-  const gate = createNativeToolPermissionGate({ globalGates, resolveAgent })
+  const disabledToolSet = createDisabledToolSet(disabledTools)
+  const gate = createNativeToolPermissionGate({ globalGates, resolveAgent, disabledTools })
   return {
     globalGates,
+    disabledTools: [...disabledToolSet],
     onAgentPermissions(id, permissions) {
       if (typeof id !== "string" || !id) return
       gate.registerAgent(id, permissions)
@@ -471,6 +483,34 @@ export function createNativePermissionWiring({ manifest: agentManifest, resolveA
       return gate.before(event)
     },
   }
+}
+
+/**
+ * Wrap a host tool editor so a `disabled_tools` name is never REGISTERED.
+ *
+ * V1 `filterDisabledTools` drops a disabled tool from the registry before the
+ * model ever sees it, and the live denylist is the same authority here. Every
+ * other editor member passes through untouched and its methods stay bound to
+ * the real editor, so the host seam keeps working for the registrations that
+ * are not filtered (including `editor.get` and the in-place `webfetch`
+ * rewrite). An empty denylist returns the host editor itself, so a runtime with
+ * no disabled tools behaves exactly as before.
+ */
+export function createDisabledToolEditor(editor, disabledToolSet) {
+  if (!(disabledToolSet instanceof Set) || disabledToolSet.size === 0) return editor
+  return new Proxy(editor, {
+    get(target, property) {
+      if (property === "add") {
+        return (definition) => {
+          const name = definition?.name
+          if (typeof name === "string" && disabledToolSet.has(name)) return undefined
+          return target.add(definition)
+        }
+      }
+      const value = Reflect.get(target, property)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
 }
 
 // The session family enumerates sessions in-process when the setup context's
@@ -600,7 +640,21 @@ export default {
       manifest,
       resolveAgent: sessionAgentResolver,
       taskSystemEnabled: nativeGates.task_system === true,
+      // V1 `disabled_tools` parity from the SAME live authority every other
+      // denylist uses: the manifest is the install-time bake, so a tool the
+      // user disabled after install must be refused here or it stays callable
+      // from the stale baked copy. Enforced ahead of every permission layer, and
+      // it is also the only surface for a HOST-owned tool this runtime does not
+      // register (V1 reaches `question` the same way, through a permission).
+      disabledTools: disabledLists.tools,
     })
+    // The exact names this setup must never register. Built once from the live
+    // denylist so the two enforcement surfaces below (registration and
+    // execution) cannot disagree about which tools are disabled.
+    const disabledToolSet = createDisabledToolSet(disabledLists.tools)
+    if (disabledToolSet.size > 0) {
+      console.error(`[oh-my-rigel] Native V2 disabled_tools enforced: ${[...disabledToolSet].join(", ")}`)
+    }
     // Buffered observability for the Hephaestus registration gate. The
     // transform callback below is replayable, so it only records the skip here.
     const hephaestusGateSkips = new Map()
@@ -1769,7 +1823,13 @@ export default {
     }
     const toolServerApi = serverApi?.available ? serverApi : undefined
 
-    const registration = await context.tool.transform((editor) => {
+    const registration = await context.tool.transform((hostEditor) => {
+      // The live `disabled_tools` denylist is a REGISTRATION filter here, exactly
+      // like V1 `filterDisabledTools`: a disabled name never reaches the host
+      // registry, so the model is never offered it. Every registration below goes
+      // through this filtered view, and the same names are refused again at
+      // execution for the tools the host owns and this runtime does not register.
+      const editor = createDisabledToolEditor(hostEditor, disabledToolSet)
       // Keep the host's native webfetch identity, schema, description, and
       // output contract, but replace its redirecting executor. The replacement
       // owns each hop so permission.assert runs before any request to it.
@@ -2307,6 +2367,9 @@ export default {
     // max_tools trimming: the names the core transform registered (session/look_at/
     // monitor families, rigel_task, skill_mcp, hashline_edit, todowrite) count
     // toward the cap, so the conditional families trim against the real total.
+    // The live denylist is excluded here too: a disabled tool never registered,
+    // so counting it would overstate the surface and let the cap trim a tool
+    // that IS registered.
     const coreToolNames = [
       ...(skillRegistry.skills.length > 0 ? ["skill_mcp"] : []),
       taskName,
@@ -2314,7 +2377,7 @@ export default {
       "todowrite",
       ...(typeof context?.command?.list === "function" ? ["slashcommand"] : []),
       ...coreFamilyToolNames,
-    ]
+    ].filter((name) => !disabledToolSet.has(name))
     const conditionalTools = await registerConditionalNativeTools({
       context,
       manifest,
@@ -2323,6 +2386,10 @@ export default {
       // conditional families cannot register from a stale baked value the runtime
       // already superseded.
       gates: nativeGates,
+      // The same live denylist the core transform filtered with, so a conditional
+      // family the user disabled after install (interactive_bash is the
+      // documented example) does not register from the stale baked gate.
+      disabledTools: disabledLists.tools,
       // The task tools mirror every write into the same per-session registry the
       // session tools read, so a created/updated task becomes a visible todo.
       syncTodos: taskTodoSync?.syncTodos,

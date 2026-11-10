@@ -258,16 +258,31 @@ function canonicalAgentEntries(agents) {
  * tool-name gates. A post-translation rewrite can only reach the gates, because
  * the host rules were already assigned on the agent object.
  *
+ * `bakedTaskSystemEnabled` is the gate the manifest was generated under, so the
+ * authority can tell a V1 todo overlay from a user declaration of the same
+ * shape. It comes from the manifest itself: nothing else records the bake.
+ *
  * The manifest object is never mutated: an agent whose permission the live gate
  * does not change keeps the exact definition reference.
  */
-function withLiveTaskSystemPermission(id, definition, taskSystemEnabled) {
+function withLiveTaskSystemPermission(id, definition, taskSystemEnabled, bakedTaskSystemEnabled) {
   const source = definition && typeof definition === "object" ? definition : {}
   const key = source.permissions === undefined || source.permissions === null ? "permission" : "permissions"
   if (!Object.prototype.hasOwnProperty.call(source, key)) return definition
-  const permission = applyLiveTaskSystemPermission(id, source[key], taskSystemEnabled)
+  const permission = applyLiveTaskSystemPermission(id, source[key], taskSystemEnabled, bakedTaskSystemEnabled)
   if (permission === source[key]) return definition
   return { ...source, [key]: permission }
+}
+
+/**
+ * The `experimental.task_system` gate the install-time manifest was generated
+ * under. It is the only proof that a `task_*` / todo entry in the manifest is a
+ * generated overlay instead of a user declaration: V1 `applyToolConfig` wrote
+ * the todo denies only while this gate was on. An absent `gates` record means
+ * the bake state is unknown, which is treated as "no overlay proven".
+ */
+export function bakedTaskSystemGate(manifest) {
+  return manifest?.metadata?.global?.gates?.task_system === true
 }
 
 export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions, onHephaestusGateSkipped, chainFallback, taskSystemEnabled } = {}) {
@@ -287,6 +302,9 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
   // The global static overlay is materialized by the generator as
   // manifest.metadata.global.permission; absent metadata is an empty overlay.
   const globalRules = translateV1Permissions(manifest?.metadata?.global?.permission).rules
+  // The manifest records the gate it was generated under; only that value proves
+  // which todo entries are the install-time overlay (see the authority).
+  const bakedTaskSystemEnabled = bakedTaskSystemGate(manifest)
   // Inventory is read once, before the transform, so the whole roster resolves
   // against a single consistent snapshot. A failed read degrades to manifest
   // models instead of blocking agent registration.
@@ -327,7 +345,7 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
         }
       }
       editor.update(id, (agent) => {
-        const permissions = applyLegacyAgentDefinition(agent, id, withLiveTaskSystemPermission(id, definition, taskSystemEnabled), globalRules)
+        const permissions = applyLegacyAgentDefinition(agent, id, withLiveTaskSystemPermission(id, definition, taskSystemEnabled, bakedTaskSystemEnabled), globalRules)
         // Two steps on purpose. `applyLegacyAgentDefinition` keeps its public
         // contract: it sets `agent.model` from the definition AND derives the
         // frontier permission from that same model, so its exported behavior is

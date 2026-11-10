@@ -308,22 +308,34 @@ const TASK_SYSTEM_PERMISSION_AGENT_IDS = new Set([...TASK_SYSTEM_TOOL_AGENT_IDS,
  * The install-time bake applied V1 `applyToolConfig`'s overlay with the gate as
  * it stood then, so the manifest can hold a `task_*: allow` and a
  * `todowrite` / `todoread` deny the live config no longer wants, and miss the
- * ones it does. Only the shapes V1 injects are dropped, so an agent declaration
- * of any other shape (`ask`, `allow`, a resource map) survives untouched.
+ * ones it does. Only the shapes V1 provably injected are dropped, so an agent
+ * declaration of any other shape (`ask`, `allow`, a resource map) survives
+ * untouched:
  *
- * `undefined` means the caller has no live value: the permission is returned
- * unchanged rather than corrected toward a guess.
+ * - `task_*: allow` on the four task-tool owners is unconditional in V1, so it
+ *   is always a generated entry.
+ * - the `todowrite` / `todoread` denies are written only while the BAKED gate
+ *   was on. A manifest baked OFF that carries the same deny is declaring it
+ *   itself, so `bakedTaskSystemEnabled` must be `true` before that deny is
+ *   removed; deleting it on a value match alone drops a user restriction the
+ *   bake never injected.
+ *
+ * `undefined` for either gate means the caller has no value for it: without a
+ * live value the permission is returned unchanged, and without a baked value
+ * no entry is treated as generated and removed toward a guess.
  */
-export function applyLiveTaskSystemPermission(id, permission, taskSystemEnabled) {
+export function applyLiveTaskSystemPermission(id, permission, taskSystemEnabled, bakedTaskSystemEnabled) {
   if (typeof taskSystemEnabled !== "boolean") return permission
   if (!isPlainObject(permission)) return permission
   const key = canonicalAgentKey(id)
   if (!TASK_SYSTEM_PERMISSION_AGENT_IDS.has(key)) return permission
   const next = { ...permission }
   // Drop the install-time overlay first so ONE path owns both directions.
-  if (next["task_*"] === "allow") delete next["task_*"]
-  if (next.todowrite === "deny") delete next.todowrite
-  if (next.todoread === "deny") delete next.todoread
+  if (TASK_SYSTEM_TOOL_AGENT_IDS.includes(key) && next["task_*"] === "allow") delete next["task_*"]
+  if (bakedTaskSystemEnabled === true) {
+    if (next.todowrite === "deny") delete next.todowrite
+    if (next.todoread === "deny") delete next.todoread
+  }
   if (!taskSystemEnabled) return next
   if (TASK_SYSTEM_TOOL_AGENT_IDS.includes(key)) next["task_*"] = "allow"
   next.todowrite = "deny"
@@ -341,10 +353,13 @@ export function applyLiveTaskSystemPermission(id, permission, taskSystemEnabled)
  * allow IS the gate. Flipping the gate after install otherwise leaves a stale
  * allow (or a stale deny) that disagrees with the tools the runtime registers.
  *
- * Only the V1-injected `false` shape is removed when the gate is off, so a
- * user-declared `todowrite: true` is preserved.
+ * The todo disables are the BAKED gate's overlay, so `bakedTaskSystemEnabled`
+ * must be `true` before one is removed: with a manifest baked OFF an identical
+ * `false` is the user's own global disable and survives. `task_*` is always
+ * V1-written, so it follows the live gate in both directions, and a
+ * user-declared `todowrite: true` is preserved either way.
  */
-export function applyLiveTaskSystemGlobalTools(tools, taskSystemEnabled) {
+export function applyLiveTaskSystemGlobalTools(tools, taskSystemEnabled, bakedTaskSystemEnabled) {
   if (typeof taskSystemEnabled !== "boolean") return tools
   if (!isPlainObject(tools)) return tools
   const next = { ...tools }
@@ -354,14 +369,20 @@ export function applyLiveTaskSystemGlobalTools(tools, taskSystemEnabled) {
     next.todoread = false
     return next
   }
-  if (next.todowrite === false) delete next.todowrite
-  if (next.todoread === false) delete next.todoread
+  if (bakedTaskSystemEnabled === true) {
+    if (next.todowrite === false) delete next.todowrite
+    if (next.todoread === false) delete next.todoread
+  }
   return next
 }
 
 export const TOOL_PERMISSION_DENIED = "RIGEL_TOOL_PERMISSION_DENIED"
 export const TOOL_PERMISSION_APPROVAL_REQUIRED = "RIGEL_TOOL_PERMISSION_APPROVAL_REQUIRED"
 export const TOOL_PERMISSION_IDENTITY_UNRESOLVED = "RIGEL_TOOL_PERMISSION_IDENTITY_UNRESOLVED"
+// A `disabled_tools` entry is a CONFIGURATION deny, not an agent permission: it
+// carries its own code so an operator can tell a live `omo.jsonc` denylist from
+// an agent `permission` decision.
+export const TOOL_DISABLED_BY_CONFIG = "RIGEL_TOOL_DISABLED_BY_CONFIG"
 
 export function frontierToolSchemaPermission(model) {
   const id = typeof model === "string" ? model : model?.id
@@ -390,18 +411,46 @@ function matchesAnyPattern(patterns, toolName) {
 }
 
 /**
+ * Normalize a `disabled_tools` list into the exact tool names the runtime
+ * refuses.
+ *
+ * V1 parity (`shared/disabled-tools.ts`): the denylist is matched by EXACT
+ * name. It has no wildcard semantics, so `task_*` disables nothing, and it is a
+ * hard removal rather than a permission default, so nothing can re-enable it.
+ * Non-string and blank entries are ignored, and an absent or malformed list
+ * yields an empty set so a caller can never crash on a config record.
+ */
+export function createDisabledToolSet(disabledTools) {
+  const set = new Set()
+  if (!Array.isArray(disabledTools)) return set
+  for (const entry of disabledTools) {
+    if (typeof entry !== "string") continue
+    const name = entry.trim()
+    if (name) set.add(name)
+  }
+  return set
+}
+
+/**
  * The real V2 tool-name permission gate consumed by the runtime
  * `tool.execute.before` hook. `before(event)` throws before the executor for a
  * denied call and for an `ask` that still needs approval, returns for an
  * allowed or ungoverned call, and fails closed only when a governed call
  * cannot be tied to an agent identity (event.agent absent and the injected
  * session resolver cannot answer).
+ *
+ * `disabledTools` is the LIVE `disabled_tools` denylist and is evaluated
+ * BEFORE any permission layer. V1 removes a disabled tool from the registry, so
+ * no agent declaration and no global `config.tools` default could ever reach
+ * it; evaluating the denylist first reproduces that ordering, which is why an
+ * agent `allow` cannot win a disabled name back.
  */
-export function createNativeToolPermissionGate({ globalGates = [], resolveAgent } = {}) {
+export function createNativeToolPermissionGate({ globalGates = [], resolveAgent, disabledTools } = {}) {
   if (globalGates !== undefined && !Array.isArray(globalGates)) {
     throw new TypeError("Global tool gates must be an array")
   }
   const globalList = Array.isArray(globalGates) ? globalGates : []
+  const disabledToolSet = createDisabledToolSet(disabledTools)
   const agentGatesByKey = new Map()
   const governedPatterns = new Set(globalList.map((gate) => gate && typeof gate.pattern === "string" ? gate.pattern : undefined).filter(Boolean))
 
@@ -429,6 +478,9 @@ export function createNativeToolPermissionGate({ globalGates = [], resolveAgent 
     async before(event) {
       const toolName = typeof event?.tool === "string" ? event.tool : undefined
       if (!toolName) return
+      if (disabledToolSet.has(toolName)) {
+        throw permissionError(TOOL_DISABLED_BY_CONFIG, `Rigel tool disabled by config: tool=${toolName}`)
+      }
       const agentKey = await resolveAgentKey(event)
       // V1 precedence: an agent `permission` entry overrides the global `tools`
       // default. The global map is a default-deny catalog that specific agents

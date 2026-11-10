@@ -199,14 +199,13 @@ export async function buildTargetAgentManifest(options = {}) {
       const unavailableDisabledIds = []
       const selected = {}
       for (const id of selection?.orchestratedAgentIds ?? Object.keys(primaryAgents)) {
-        // A disabled agent is NOT skipped here: its definition is materialized so
-        // the runtime can register it the moment the live denylist stops naming
-        // it. Only an id the pipeline could not produce is skipped, and only when
-        // it is disabled, because a disabled agent with no definition is inert.
-        if (!primaryAgents[id] && disabledAgentKeys.has(canonicalAgentKey(id))) {
-          unavailableDisabledIds.push(id)
-          continue
-        }
+        // Repair runs BEFORE the disabled classification: a disabled agent still
+        // needs its definition, and the fallback repair is the ONLY path that can
+        // produce one for an agent whose factory is conditional (Atlas). Skipping a
+        // disabled id first made the definition permanent, so removing the name from
+        // the live `disabled_agents` could never register it without a reinstall.
+        // Only an id that stays missing AFTER the repair is unavailable, and only
+        // when it is disabled, because a disabled agent with no definition is inert.
         let record = primaryAgents[id]
         if (!record) {
           // Repair: re-run the plugin's own pipeline with the agent's fallback
@@ -220,7 +219,13 @@ export async function buildTargetAgentManifest(options = {}) {
             if (record) repairedIds.push(id)
           }
         }
-        if (!record) throw new Error(`OmO did not generate the required agent: ${id}`)
+        if (!record) {
+          if (disabledAgentKeys.has(canonicalAgentKey(id))) {
+            unavailableDisabledIds.push(id)
+            continue
+          }
+          throw new Error(`OmO did not generate the required agent: ${id}`)
+        }
         selected[id] = record
       }
       for (const id of selection?.optionalAgentIds ?? []) {

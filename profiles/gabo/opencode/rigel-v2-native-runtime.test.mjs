@@ -743,7 +743,9 @@ async function registerPermissionAgentsAndCapture(wiring, manifest, options = {}
 // (`task_*: allow` on the four task-tool owners, `todowrite`/`todoread: deny` on
 // all five, `task_*: true` plus the global todo disables when on). Flipping
 // `experimental.task_system` after install must move the global gates, the agent
-// tool-name gates and the V2 host rules together.
+// tool-name gates and the V2 host rules together. `metadata.global.gates` is the
+// real bake marker the generator writes, and the runtime reads it to tell an
+// injected todo entry from a user declaration.
 function bakedTaskSystemManifest(taskSystemEnabled) {
   const todoDeny = taskSystemEnabled ? { todowrite: "deny", todoread: "deny" } : {}
   return {
@@ -756,6 +758,7 @@ function bakedTaskSystemManifest(taskSystemEnabled) {
     },
     metadata: {
       global: {
+        gates: { task_system: taskSystemEnabled },
         tools: {
           "task_*": taskSystemEnabled,
           ...(taskSystemEnabled ? { todowrite: false, todoread: false } : {}),
@@ -806,6 +809,34 @@ test("native runtime grants live task-system permissions over a manifest baked o
   await expect(wiring.before({ tool: "todowrite", agent: "librarian" })).rejects.toThrow(/denied/)
   // A non-task agent's own declarations are untouched by the live gate.
   expect(captured.get("librarian").permissions).toEqual([{ action: "subagent", resource: "*", effect: "deny" }])
+})
+
+// Regression for the Codex finding: with the task system baked OFF the V1
+// overlay never wrote a todo deny, so an identical deny/false in that manifest
+// belongs to the user. A live-OFF gate must leave both authorities alone
+// instead of deleting every value that matches the injected shape.
+test("native runtime keeps a user todo deny that a baked-OFF manifest never injected", async () => {
+  // given a manifest baked with the task system OFF where the user denies the
+  // todo tools on one agent and globally, which the bake itself never wrote
+  const manifest = bakedTaskSystemManifest(false)
+  manifest.agents.sisyphus.permission.todowrite = "deny"
+  manifest.metadata.global.tools.todowrite = false
+
+  // when the live gate is also off
+  const wiring = nativeRuntime.createNativePermissionWiring({ manifest, taskSystemEnabled: false })
+  const captured = await registerPermissionAgentsAndCapture(wiring, manifest, { taskSystemEnabled: false })
+
+  // then the global disable still governs every agent through the global gates
+  expect(wiring.globalGates).toContainEqual({ pattern: "todowrite", effect: "deny" })
+  await expect(wiring.before({ tool: "todowrite", agent: "librarian" })).rejects.toThrow(/denied/)
+  // and the agent's own deny reaches both the runtime gate and the host rules
+  await expect(wiring.before({ tool: "todowrite", agent: "Sisyphus - ultraworker" })).rejects.toThrow(/denied/)
+  expect(captured.get("sisyphus").permissions).toEqual([
+    { action: "subagent", resource: "*", effect: "allow" },
+    { action: "todowrite", resource: "*", effect: "deny" },
+  ])
+  // while the always-injected `task_*` allow is still normalized away
+  await expect(wiring.before({ tool: "task_create", agent: "Sisyphus - ultraworker" })).rejects.toThrow(/denied/)
 })
 
 test("native runtime permission wiring blocks a denied call before the executor runs", async () => {
