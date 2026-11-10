@@ -38,6 +38,9 @@ function projectGates(config) {
     monitor: config.monitor,
     goal: config.goal,
     task_system: config.experimental?.task_system ?? false,
+    // The default-mode switch is a plugin config block the native view now
+    // projects, so the port is pinned against the real loader here too.
+    default_mode: config.default_mode,
     disabled_tools: config.disabled_tools ?? [],
     disabled_agents: config.disabled_agents ?? [],
     disabled_skills: config.disabled_skills ?? [],
@@ -50,6 +53,7 @@ function nativeGates(view) {
     monitor: view.monitor,
     goal: view.goal,
     task_system: view.experimental.task_system,
+    default_mode: view.default_mode,
     disabled_tools: view.disabled.tools,
     disabled_agents: view.disabled.agents,
     disabled_skills: view.disabled.skills,
@@ -120,6 +124,30 @@ describe("#given the real OmO loader and the native resolver", () => {
     fixture.writeUser(`{ "[opencode]": { "ralph_loop": { "enabled": true, "default_max_iterations": 42 } } }`)
     // when / then
     assertParity(fixture)
+  })
+
+  test("#when a profile declares the default-mode switch #then both resolve the same block", () => {
+    // given: the shipped shape - `profiles.<p>.[opencode].default_mode`, with the
+    // `goal` leaf written the way the real profile does
+    const fixture = makeFixture()
+    fixture.writeUser(`{
+      "[opencode]": { "default_mode": { "goal": false } },
+      "profiles": { "gabo": { "[opencode]": { "default_mode": { "ultrawork": true } } } },
+    }`)
+    // when / then: parity proves the port materializes the same `false` defaults
+    // the Zod schema applies, so the runtime switch reads the value a fresh
+    // install would bake from the same file
+    const { native } = assertParity(fixture, { OMO_PROFILE: "gabo" })
+    expect(native.default_mode).toEqual({ ultrawork: true, goal: false })
+  })
+
+  test("#when no layer declares the default-mode block #then both leave it absent", () => {
+    // given: `default_mode` is an OPTIONAL block, so absence must stay absence
+    // instead of a materialized `{ ultrawork: false, goal: false }`
+    const fixture = makeFixture()
+    // when / then
+    const { native } = assertParity(fixture)
+    expect(native.default_mode).toBeUndefined()
   })
 
   test("#when values are invalid #then both drop the same leaves and keep the rest", () => {
