@@ -55,6 +55,12 @@ export const NATIVE_GOAL_DEFAULTS = Object.freeze({
   default_max_iterations: 100,
 })
 
+/** Default-mode defaults, from config/schema/default-mode.ts (`z.boolean().default(false)`). */
+export const NATIVE_DEFAULT_MODE_DEFAULTS = Object.freeze({
+  ultrawork: false,
+  goal: false,
+})
+
 // Known top-level keys of OmoConfigLayerSchema (config.ts). Anything else at the
 // top level of an omo.jsonc layer is stripped by the real loader, so it must not
 // reach the plugin view here either.
@@ -74,6 +80,7 @@ const PROFILE_KEYS = new Set(["categories", "disabled_skills", "openclaw", "[ope
 const TARGET_KEYS = new Set([
   "monitor", "goal", "experimental", "team_mode", "skills", "disabled_tools", "disabled_agents", "disabled_mcps",
   "disabled_skills", "disabled_commands", "disabled_hooks", "categories", "agents", "ralph_loop", "hashline_edit", "openclaw",
+  "default_mode",
 ])
 
 const MAX_PROJECT_CONFIG_DIRECTORY_DEPTH = 256
@@ -130,6 +137,7 @@ const DECLARATION_SECTION_LEAVES = Object.freeze({
     "hashline_edit",
   ]),
   team_mode: Object.freeze(["enabled", "tmux_visualization", "max_members"]),
+  default_mode: Object.freeze(["ultrawork", "goal"]),
 })
 
 /** How each tracked root key combines across layers (the fold's own semantics). */
@@ -138,6 +146,7 @@ const DECLARATION_ROOT_KINDS = Object.freeze({
   goal: "replace",
   experimental: "replace",
   team_mode: "replace",
+  default_mode: "replace",
   hashline_edit: "replace",
   skills: "replace",
   openclaw: "replace",
@@ -636,6 +645,29 @@ function validateGoal(value, path, diagnostics) {
   return { ...NATIVE_GOAL_DEFAULTS, ...parsed }
 }
 
+/**
+ * Port of `DefaultModeConfigSchema` (config/schema/default-mode.ts).
+ *
+ * Both fields are `z.boolean().default(false)`, so a DECLARED block materializes
+ * the documented `false` for a field it omits. That is why the switch reader
+ * cannot answer "was `ultrawork` authored?" from this value and reads the
+ * `declarations` contract instead. A refused block returns `undefined` so the
+ * earlier layer's block stays in effect, exactly like `monitor`/`goal`.
+ */
+function validateDefaultMode(value, path, diagnostics) {
+  if (!isPlainRecord(value)) {
+    warn(diagnostics, `config: ${path}: default_mode ignored (invalid value)`, "default_mode")
+    return undefined
+  }
+  const parsed = {}
+  for (const key of ["ultrawork", "goal"]) {
+    if (!(key in value)) continue
+    if (typeof value[key] === "boolean") parsed[key] = value[key]
+    else warn(diagnostics, `config: ${path}: default_mode.${key} ignored (invalid value)`, `default_mode.${key}`)
+  }
+  return { ...NATIVE_DEFAULT_MODE_DEFAULTS, ...parsed }
+}
+
 function validateExperimental(value, path, diagnostics) {
   if (!isPlainRecord(value)) {
     warn(diagnostics, `config: ${path}: experimental ignored (invalid value)`, "experimental")
@@ -834,6 +866,9 @@ function parseConfigView(view, diagnostics) {
     } else if (key === "team_mode") {
       const section = validateTeamMode(value, view.path, diagnostics)
       if (section !== undefined) parsed.team_mode = section
+    } else if (key === "default_mode") {
+      const section = validateDefaultMode(value, view.path, diagnostics)
+      if (section !== undefined) parsed.default_mode = section
     } else if (key === "skills") {
       if (isPlainRecord(value)) parsed.skills = sanitizeValue(value)
       else warn(diagnostics, `config: ${view.path}: skills ignored (invalid value)`, "skills")
@@ -1246,6 +1281,10 @@ function buildResolvedConfigView(collected, directory) {
       truncate_all_tool_outputs: config.experimental?.truncate_all_tool_outputs ?? false,
     },
     team_mode: config.team_mode,
+    // OmO's "start the session in this mode" switch. Undefined when no layer
+    // declared the block (V1 parity: the loader leaves an absent optional block
+    // absent); a declared block carries the schema's `false` defaults.
+    default_mode: config.default_mode,
     // Root hashline_edit is authoritative; the legacy experimental placement is
     // folded in when the root key is absent, mirroring V1's config migration.
     hashline_edit: config.hashline_edit === true || config.experimental?.hashline_edit === true,
@@ -1303,6 +1342,7 @@ function buildResolvedConfigView(collected, directory) {
  *   goal: { enabled: boolean, auto_start: boolean, default_max_iterations: number },
  *   experimental: { task_system: boolean },
  *   disabled: { tools: string[], agents: string[], skills: string[] },
+ *   default_mode: { ultrawork: boolean, goal: boolean } | undefined,
  *   disabled_mcps: string[],
  *   mcp_env_allowlist: string[],
  *   categories: Record<string, unknown>,
@@ -1938,6 +1978,86 @@ export function resolveNativeGates({ manifest, disabledTools: suppliedDisabledTo
   // the resolved live list. Every other baked gate keeps the manifest value.
   releaseBakedDisabledToolGate({ manifest, gates, liveDisabledTools, diagnostics })
   return { gates: Object.freeze(gates), diagnostics }
+}
+
+// --- Native V2 default-mode switch (LIVE, opt-in, off on any doubt) ---
+// `default_mode.ultrawork` is OmO's documented "start every conversation in
+// Ultrawork" setting (config/schema/default-mode.ts). Unlike the gates above it
+// does not switch a FEATURE on or off: it ACTIVATES a mode on a new root session
+// by routing the ultrawork body through the keyword seam's `defaultUltrawork`
+// input, which already owns the default-vs-explicit split.
+//
+// Its authority is LIVE for a structural reason: the install-time bake pins
+// `modes.defaultUltrawork` false (the manifest must never arm the mode on its
+// own), so the manifest cannot carry the user's value at all and re-reading the
+// chain is the only way the documented edit works without a reinstall.
+//
+// Its failure direction is OFF, which is the opposite of a denylist's. An
+// unconfirmed read resolves `enabled: false` and is REPORTED, so a switch the
+// runtime could not read is observable and never silently arms the mode.
+// "Unconfirmed" follows the PARSER's own section semantics: a refused
+// `default_mode` block leaves the earlier, valid block in effect (`monitor` and
+// `goal` behave the same way), so it is only reported, and only fails closed,
+// when no valid `ultrawork` leaf survives anywhere in the chain.
+
+const DEFAULT_MODE_ULTRAWORK_DECLARATION = "default_mode.ultrawork"
+const DEFAULT_MODE_BLOCK_DECLARATION = "default_mode"
+
+/**
+ * The single fail-closed report for the default-mode switch. `where` names the
+ * file when the failure came from an unreadable layer, and the dotted placement
+ * when it came from a refused value.
+ */
+function defaultModeFailClosed(entry) {
+  const where = typeof entry?.path === "string" ? `${entry.path}: ` : ""
+  return {
+    enabled: false,
+    state: "error",
+    diagnostics: [
+      `Native V2 default mode: ${where}could not confirm ${entry?.at ?? DEFAULT_MODE_ULTRAWORK_DECLARATION} (${entry?.reason ?? "unconfirmed declaration"}); Ultrawork stays off (fail-closed)`,
+    ],
+  }
+}
+
+/**
+ * Resolve the `defaultUltrawork` flag the keyword seam consumes, plus the
+ * transitions to report.
+ *
+ * `true` only when a live layer declares `default_mode.ultrawork: true`. The two
+ * declarations are read separately, in precedence order, because they answer
+ * different questions:
+ * - the LEAF says the switch itself was authored (declared, or refused);
+ * - the BLOCK is only consulted when no leaf survived, and only for its failure:
+ *   a block that declares just `goal` is NOT a declaration of this switch (it
+ *   reads the documented `false`), while a REFUSED block (`default_mode: 7`)
+ *   with no earlier valid leaf is an unconfirmed declaration that must be
+ *   reported, never read as absent.
+ *
+ * A refused block over an earlier valid leaf resolves that leaf: the parser
+ * drops the refused section, so the earlier block stays in effect, exactly like
+ * `monitor`/`goal`. This reader mirrors the parser instead of inventing a
+ * stricter rule.
+ *
+ * `declaredKeyBoolean` supplies the shared semantics: an unreadable layer and a
+ * schema-refused value are `error`, never `undeclared`.
+ */
+export function resolveNativeDefaultUltrawork({ ...options } = {}) {
+  let leaf
+  let block
+  try {
+    const view = resolveNativePluginConfig(options)
+    const readValue = () => view?.default_mode?.ultrawork
+    leaf = declaredKeyBoolean(view, [DEFAULT_MODE_ULTRAWORK_DECLARATION], readValue)
+    if (leaf === undefined) block = declaredKeyBoolean(view, [DEFAULT_MODE_BLOCK_DECLARATION], readValue)
+  } catch (error) {
+    leaf = { state: "error", reason: readFailureReason(error) }
+  }
+  if (leaf === undefined) {
+    if (block?.state !== "error") return { enabled: false, state: "undeclared", diagnostics: [] }
+    return defaultModeFailClosed(block)
+  }
+  if (leaf.state === "declared") return { enabled: leaf.value === true, state: "declared", diagnostics: [] }
+  return defaultModeFailClosed(leaf)
 }
 
 // --- Native V2 denylist policy (LIVE vs BAKED) ---

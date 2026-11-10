@@ -355,6 +355,59 @@ test("default Ultrawork activates for roots and never leaks into children", asyn
   expect((await child.request.clone().json()).messages).toEqual([{ role: "user", content: "child work" }])
 })
 
+// The default-mode switch must never replace the explicit launchers: `ulw` /
+// `ultrawork` activate Ultrawork on its own, and when the default mode is also on
+// the two paths must not stack two copies of the same guidance into one request.
+const DEFAULT_MODE_BODY = "<ultrawork-mode>DEFAULT MODE BODY</ultrawork-mode>"
+
+function defaultModeContextEvent(text, sessionID) {
+  return {
+    sessionID,
+    agent: "Sisyphus",
+    model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
+    system: [{ type: "text", text: "base" }],
+    messages: [{ role: "user", content: text }],
+    tools: [],
+    options: {},
+  }
+}
+
+function bodyCount(event) {
+  return event.messages[0].content.split(DEFAULT_MODE_BODY).length - 1
+}
+
+test("an explicit ulw request activates Ultrawork even when the default mode is off", async () => {
+  // given
+  const hook = createNativeContextHook({
+    getDelegationRoster: async () => [{ name: "explore", mode: "subagent" }],
+    ultraworkPrompt: DEFAULT_MODE_BODY,
+    defaultUltrawork: false,
+  })
+  const event = defaultModeContextEvent("please ulw this refactor", "ses_explicit_ulw")
+
+  // when
+  await hook(event)
+
+  // then
+  expect(bodyCount(event)).toBe(1)
+})
+
+test("an explicit ulw request under the default mode injects the guidance once", async () => {
+  // given: both the default-mode block and the keyword decision target this turn
+  const hook = createNativeContextHook({
+    getDelegationRoster: async () => [{ name: "explore", mode: "subagent" }],
+    ultraworkPrompt: DEFAULT_MODE_BODY,
+    defaultUltrawork: true,
+  })
+  const event = defaultModeContextEvent("please ulw this refactor", "ses_explicit_ulw_with_default")
+
+  // when
+  await hook(event)
+
+  // then
+  expect(bodyCount(event)).toBe(1)
+})
+
 test("resolves a fallback model at the request boundary when the primary is unavailable", async () => {
   const seen = []
   const hook = createNativeRequestHook({

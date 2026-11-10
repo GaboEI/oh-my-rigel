@@ -38,7 +38,7 @@ import { createNativeWebFetchRedirectGuard, updateNativeWebFetchDefinition } fro
 import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-validator.mjs"
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
-import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeDisabledLists, resolveNativeGates, resolveNativeMcpEnvAllowlist, resolveNativeOpenclaw, resolveNativePreemptiveThreshold } from "./rigel-v2-native-config.mjs"
+import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeDefaultUltrawork, resolveNativeDisabledLists, resolveNativeGates, resolveNativeMcpEnvAllowlist, resolveNativeOpenclaw, resolveNativePreemptiveThreshold } from "./rigel-v2-native-config.mjs"
 import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
 import { bakedTaskSystemGate, registerNativeAgents } from "./rigel-v2-native-agents.mjs"
 import { applyLiveTaskSystemGlobalTools, createDisabledToolSet, createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
@@ -640,6 +640,21 @@ export default {
     const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env, disabledTools: disabledLists.tools })
     for (const diagnostic of gateResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
     const nativeGates = gateResolution.gates
+    // Live `default_mode.ultrawork`: OmO's "start the session in Ultrawork"
+    // setting. It is a MODE activation, not a feature gate, so its authority is
+    // live (the install-time bake pins `modes.defaultUltrawork` false and can
+    // never carry the user's value) and its failure direction is OFF: an absent,
+    // refused, or unreadable declaration keeps the keyword seam's
+    // `defaultUltrawork` false and is reported, so nothing silently arms a mode
+    // the user did not ask for. The manifest value is ORed at the seam, so a
+    // manifest that armed the mode (the QA harnesses do) keeps working.
+    const liveDefaultMode = resolveNativeDefaultUltrawork({
+      directory: location.directory,
+      env: process.env,
+    })
+    for (const diagnostic of liveDefaultMode.diagnostics) {
+      console.error(`[oh-my-rigel] ${diagnostic}`)
+    }
     const permissionWiring = createNativePermissionWiring({
       manifest,
       resolveAgent: sessionAgentResolver,
@@ -2156,7 +2171,13 @@ export default {
       keywordState,
       disabledKeywords: keywordConfig.disabledKeywords,
       enabledExpansions: keywordConfig.enabledExpansions,
-      defaultUltrawork: manifest.modes?.defaultUltrawork === true,
+      // The manifest value is preserved verbatim (installs and the QA harnesses
+      // read it), and the live `default_mode.ultrawork` switch resolved once at
+      // setup can only ADD to it. The seam owns the default-vs-explicit split: an
+      // explicit ulw/ultrawork request and the context activation paths are
+      // unchanged, and this only decides whether an ordinary first request on a
+      // root session starts in Ultrawork.
+      defaultUltrawork: manifest.modes?.defaultUltrawork === true || liveDefaultMode.enabled === true,
       getInitialDirectoryInstructions: ({ agent }) => /\bhephaestus\b/i.test(String(agent ?? ""))
         ? directoryInstructions.rootAgentsGuidance()
         : "",
