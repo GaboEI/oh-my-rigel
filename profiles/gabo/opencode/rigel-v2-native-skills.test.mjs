@@ -313,6 +313,44 @@ describe("#given the V2 native skill surface", () => {
     expect(added.map((info) => info.name)).toEqual(["alpha"])
   })
 
+  test("#given the ARRAY shape resolveNativeDisabledLists returns #when skills register and the host catalog merges #then the deny filters and host skills still merge", async () => {
+    // The runtime hands this denylist across the setup boundary as a string
+    // array (V1 config parity with disabled_tools/disabled_mcps), so the array
+    // shape IS the production contract: an array has no `.size`/`.has`, which
+    // once made the deny a silent no-op here and threw inside the host merge.
+    const root = makeRoot()
+    const home = makeRoot()
+    const projectDir = path.join(root, "work")
+    writeSkill(projectDir, ".agents/skills/alpha", "alpha", { frontmatter: "name: alpha\ndescription: Alpha skill", body: "ALPHA_BODY" })
+    writeSkill(projectDir, ".agents/skills/beta", "beta", { frontmatter: "name: beta\ndescription: Beta skill", body: "BETA_BODY" })
+    const added = []
+    const context = {
+      location: { directory: projectDir },
+      skill: { transform: async (callback) => { callback({ add: (info) => added.push(info), list: () => [] }); return { dispose() {} } } },
+      options: { skillsHome: home, skillsEnv: { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") } },
+    }
+    // when
+    const registry = await registerNativeSkills(context, {
+      directory: projectDir,
+      home,
+      env: { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") },
+      disabledSkills: ["BETA"],
+    })
+    const merged = await createRuntimeHostSkillSource({
+      context: { skill: { list: async () => [
+        { id: "omega", name: "omega", content: "OMEGA_BODY" },
+        { id: "beta", name: "beta", content: "BETA_BODY" },
+      ] } },
+      baseSkills: registry.skills,
+      disabledSkills: ["beta"],
+    })()
+    // then
+    expect(registry.skills.map((skill) => skill.name)).toEqual(["alpha"])
+    expect(added.map((info) => info.name)).toEqual(["alpha"])
+    // a denylist present must not cost the runtime its plugin-provided skills
+    expect(merged.map((skill) => skill.name)).toEqual(["alpha", "omega"])
+  })
+
   test("#when the host exposes source() instead of add() #then registration still lands as an embedded source", async () => {
     const root = makeRoot()
     const projectDir = path.join(root, "work")

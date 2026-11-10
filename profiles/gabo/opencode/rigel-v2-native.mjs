@@ -746,6 +746,14 @@ export default {
     // per-session `skill_mcp` manager. When the host lacks a domain (older lab
     // build or a test fixture), the family degrades to an empty, inert set
     // instead of throwing during setup.
+    //
+    // The resolved denylist is applied HERE, at discovery, because this one list
+    // is the only source of every downstream skill surface: the host registry
+    // (below), the embedded MCP servers registered from it, child body
+    // injection, `skill_mcp`'s catalog, the category reminder, and slash-command
+    // skill matching. Filtering any of those consumers instead would leave the
+    // skill registered and injectable, so a live `disabled_skills` edit would
+    // take effect nowhere.
     const skillRegistry = typeof context?.skill?.transform === "function"
       ? await registerNativeSkills(context, {
         directory: location.directory,
@@ -755,6 +763,10 @@ export default {
         env: context?.options?.skillsEnv,
         runtimeEnv: process.env,
         userCategories,
+        // Phase 4 live denylist (falls back to the installed list when no layer
+        // declared one), so a skill named only in the LIVE config never reaches
+        // the registry it would otherwise be served and injected from.
+        disabledSkills: disabledLists.skills,
       })
       : { skills: [], registered: [], dispose: undefined }
     // Runtime host-skill source (V1 runtime-skill-resolver parity): skills that

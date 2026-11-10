@@ -22,7 +22,7 @@ function writeSkill(baseDir, relativeDir, name, { frontmatter = "", body = "" } 
   fs.writeFileSync(path.join(dir, "SKILL.md"), `${frontmatter ? `---\n${frontmatter}\n---\n` : ""}${body}\n`, "utf8")
 }
 
-function makeContext({ projectDir, home, prompts, tools, nativeSkills }) {
+function makeContext({ projectDir, home, prompts, tools, nativeSkills, mcpServers = [] }) {
   const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, "empty") }
   return {
     location: { directory: projectDir },
@@ -40,6 +40,18 @@ function makeContext({ projectDir, home, prompts, tools, nativeSkills }) {
     },
     skill: {
       transform: async (callback) => { callback({ add: (info) => nativeSkills.push(info), list: () => [] }); return { dispose() {} } },
+    },
+    // Mirrors the V2 MCP surface `registerSkillMcpServers` writes into: an
+    // embedded `mcp:` block from a SKILL.md lands here as a named server.
+    mcp: {
+      transform: async (callback) => {
+        const servers = new Map()
+        callback({
+          get: (name) => servers.get(name),
+          set: (name, config) => { servers.set(name, config); mcpServers.push(name) },
+        })
+        return { dispose() {} }
+      },
     },
     tool: {
       transform: async (callback) => { callback({ add: (definition) => tools.push(definition) }); return { dispose() {} } },
@@ -105,5 +117,114 @@ describe("#given a delegated child that requests skills", () => {
     expect(childPrompt.text).not.toContain("ORACLE_SECRET_BODY")
     expect(childPrompt.text).toContain("oracle-only")
     await dispose()
+  })
+})
+
+// The runtime resolves `disabled_skills` from the LIVE `~/.omo/omo.jsonc` at
+// plugin setup, so each case below drives a disposable HOME/XDG tree and puts
+// it back afterwards. The real user config must never be read or written by a
+// test.
+async function withLiveOmoConfig(config, run) {
+  const sandbox = makeRoot()
+  const home = path.join(sandbox, "home")
+  const projectDir = path.join(sandbox, "project")
+  fs.mkdirSync(path.join(home, ".omo"), { recursive: true })
+  fs.mkdirSync(projectDir, { recursive: true })
+  fs.writeFileSync(path.join(home, ".omo", "omo.jsonc"), `${JSON.stringify(config, null, 2)}\n`)
+  const previous = {}
+  for (const key of ["HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]) previous[key] = process.env[key]
+  process.env.HOME = home
+  process.env.XDG_STATE_HOME = path.join(sandbox, "state")
+  process.env.XDG_CONFIG_HOME = path.join(sandbox, "config")
+  process.env.XDG_DATA_HOME = path.join(sandbox, "data")
+  process.env.XDG_CACHE_HOME = path.join(sandbox, "cache")
+  try {
+    return await run({ home, projectDir })
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
+function writeEmbeddedMcpSkills(projectDir, disabledName) {
+  writeSkill(projectDir, ".agents/skills/alpha", "alpha", {
+    frontmatter: "name: alpha\ndescription: Alpha\nmcp:\n  alpha-api:\n    type: http\n    url: https://alpha.example.com/mcp",
+    body: "ALPHA_BODY",
+  })
+  writeSkill(projectDir, `.agents/skills/${disabledName}`, disabledName, {
+    frontmatter: `name: ${disabledName}\ndescription: Disabled by the live config\nmcp:\n  ${disabledName}-api:\n    type: http\n    url: https://${disabledName}.example.com/mcp`,
+    body: "LIVE_DISABLED_SECRET_BODY",
+  })
+}
+
+describe("#given a live omo.jsonc that disables a discovered skill", () => {
+  test("#when the runtime sets up #then the skill and its embedded MCP server never register", async () => {
+    await withLiveOmoConfig({ "[opencode]": { disabled_skills: ["beta"] } }, async ({ home, projectDir }) => {
+      writeEmbeddedMcpSkills(projectDir, "beta")
+      const native = []
+      const mcpServers = []
+      const context = makeContext({ projectDir, home, prompts: [], tools: [], nativeSkills: native, mcpServers })
+      const dispose = await plugin.setup(context)
+      try {
+        // the live deny is the only reason beta can be missing: the install-time
+        // manifest baked an empty list
+        expect(native.map((info) => info.name)).toEqual(["alpha"])
+        // an embedded `mcp:` block is a side effect of registration, so it must
+        // follow the same list instead of leaking a server for a disabled skill
+        expect(mcpServers).toEqual(["alpha-api"])
+      } finally {
+        await dispose()
+      }
+    })
+  })
+
+  test("#when a delegated child requests the disabled skill #then its body is withheld and the fallback names it", async () => {
+    await withLiveOmoConfig({ "[opencode]": { disabled_skills: ["beta"] } }, async ({ home, projectDir }) => {
+      writeEmbeddedMcpSkills(projectDir, "beta")
+      const prompts = []
+      const tools = []
+      const context = makeContext({ projectDir, home, prompts, tools, nativeSkills: [] })
+      const dispose = await plugin.setup(context)
+      try {
+        const task = tools.find((definition) => definition.name === "rigel_task")
+        await task.execute({ subagent_type: "explore", prompt: "Read only.", load_skills: ["beta"], run_in_background: true }, { sessionID: "ses_parent" })
+        const childPrompt = prompts.find((entry) => typeof entry.text === "string" && entry.text.includes("Read only."))
+        expect(childPrompt.text).not.toContain("LIVE_DISABLED_SECRET_BODY")
+        expect(childPrompt.text).toContain("<rigel-requested-skills>Before working, load these native skills if available: beta</rigel-requested-skills>")
+        // a name the live list does not carry still injects, so the deny is not a
+        // blanket injection failure
+        await task.execute({ subagent_type: "explore", prompt: "Alpha only.", load_skills: ["alpha"], run_in_background: true }, { sessionID: "ses_parent" })
+        const allowedPrompt = prompts.find((entry) => typeof entry.text === "string" && entry.text.includes("Alpha only."))
+        expect(allowedPrompt.text).toContain("ALPHA_BODY")
+      } finally {
+        await dispose()
+      }
+    })
+  })
+})
+
+describe("#given a live omo.jsonc with no disabled_skills declaration", () => {
+  test("#when the runtime sets up #then registration, embedded MCPs and injection are unchanged", async () => {
+    await withLiveOmoConfig({ "[opencode]": { hashline_edit: false } }, async ({ home, projectDir }) => {
+      writeEmbeddedMcpSkills(projectDir, "beta")
+      const native = []
+      const mcpServers = []
+      const prompts = []
+      const tools = []
+      const context = makeContext({ projectDir, home, prompts, tools, nativeSkills: native, mcpServers })
+      const dispose = await plugin.setup(context)
+      try {
+        expect(native.map((info) => info.name).sort()).toEqual(["alpha", "beta"])
+        expect(mcpServers.sort()).toEqual(["alpha-api", "beta-api"])
+        const task = tools.find((definition) => definition.name === "rigel_task")
+        await task.execute({ subagent_type: "explore", prompt: "Read only.", load_skills: ["beta"], run_in_background: true }, { sessionID: "ses_parent" })
+        const childPrompt = prompts.find((entry) => typeof entry.text === "string" && entry.text.includes("Read only."))
+        expect(childPrompt.text).toContain("LIVE_DISABLED_SECRET_BODY")
+      } finally {
+        await dispose()
+      }
+    })
   })
 })
