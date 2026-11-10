@@ -539,9 +539,27 @@ export function collectDisabledSkillAliases(config = {}) {
   return disabled
 }
 
+// The resolved denylist crosses the setup boundary in the ARRAY shape
+// `resolveNativeDisabledLists` returns (V1 config parity, same as
+// `disabled_tools` / `disabled_mcps`), while membership here is a lowercase-name
+// lookup. Normalize once per entry point so neither shape can degrade into
+// "nothing is disabled": an array has no `.size` and no `.has`, which made a
+// real denylist a silent no-op and threw inside the runtime-host merge.
+function toDisabledSkillSet(disabledSkills) {
+  const source = disabledSkills instanceof Set
+    ? [...disabledSkills]
+    : Array.isArray(disabledSkills) ? disabledSkills : []
+  const disabled = new Set()
+  for (const name of source) {
+    if (typeof name === "string" && name.trim()) disabled.add(name.trim().toLowerCase())
+  }
+  return disabled
+}
+
 export function isDisabledSkillAlias(skill, disabledSkills) {
   if (!disabledSkills || disabledSkills.size === 0) return false
-  return disabledSkills.has(skill.name.toLowerCase())
+  const name = skill?.name
+  return typeof name === "string" && disabledSkills.has(name.toLowerCase())
 }
 
 export function isSkillAllowedForTargetAgent(skill, targetAgent) {
@@ -557,13 +575,14 @@ export function isSkillAllowedForTargetAgent(skill, targetAgent) {
 // reported as `missing` rather than silently dropped, so the caller can still
 // emit the textual fallback notice.
 export function selectSkillsForChild(skills, requestedNames, { targetAgent, disabledSkills } = {}) {
+  const disabled = toDisabledSkillSet(disabledSkills)
   const injected = []
   const missing = []
   for (const raw of requestedNames ?? []) {
     const name = typeof raw === "string" ? raw.trim() : ""
     if (!name) continue
     const skill = matchSkillByName(skills, name)
-    if (!skill || isDisabledSkillAlias(skill, disabledSkills) || !isSkillAllowedForTargetAgent(skill, targetAgent)) {
+    if (!skill || isDisabledSkillAlias(skill, disabled) || !isSkillAllowedForTargetAgent(skill, targetAgent)) {
       missing.push(name)
       continue
     }
@@ -621,8 +640,9 @@ function addNativeSkill(collection, skill) {
 export async function registerNativeSkills(context, { directory, home, env, runtimeEnv, disabledSkills, config, userCategories } = {}) {
   const target = directory ?? context?.location?.directory ?? process.cwd()
   const discovered = discoverSkills({ directory: target, home, env, runtimeEnv, config: config ?? context?.config, userCategories })
-  const enabled = disabledSkills && disabledSkills.size > 0
-    ? discovered.filter((skill) => !isDisabledSkillAlias(skill, disabledSkills))
+  const disabled = toDisabledSkillSet(disabledSkills)
+  const enabled = disabled.size > 0
+    ? discovered.filter((skill) => !isDisabledSkillAlias(skill, disabled))
     : discovered
   const skills = sortSkillsForListing(enabled)
   const registered = []
@@ -678,6 +698,7 @@ export async function readRuntimeHostSkills(context, { contract } = {}) {
 }
 
 export function createRuntimeHostSkillSource({ context, baseSkills, disabledSkills, contract } = {}) {
+  const disabled = toDisabledSkillSet(disabledSkills)
   let inflight
   const resolve = async () => {
     try {
@@ -687,7 +708,7 @@ export function createRuntimeHostSkillSource({ context, baseSkills, disabledSkil
       const merged = [...baseSkills]
       for (const skill of hostSkills) {
         const key = skill.name.toLowerCase()
-        if (seen.has(key) || isDisabledSkillAlias(skill, disabledSkills)) continue
+        if (seen.has(key) || isDisabledSkillAlias(skill, disabled)) continue
         seen.add(key)
         merged.push(skill)
       }

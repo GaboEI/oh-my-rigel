@@ -38,10 +38,10 @@ import { createNativeWebFetchRedirectGuard, updateNativeWebFetchDefinition } fro
 import { createNativePlanFormatValidator } from "./rigel-v2-native-plan-format-validator.mjs"
 import { createNativePrometheusMdOnly } from "./rigel-v2-native-prometheus-md-only.mjs"
 import manifest from "./rigel-v2-native-agent-manifest.mjs"
-import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeDisabled, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeMcpPolicy, readNativePreemptiveThreshold, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeGates, resolveNativeOpenclaw } from "./rigel-v2-native-config.mjs"
+import { checkNativeHostVersion, readLiveAgentOverridesSource, readNativeBundledVersion, readNativeMaxTools, readNativeMcpBuiltinsPolicy, readNativeRepoRoot, readNativeTruncateAllToolOutputs, resolveNativeDisabledLists, resolveNativeGates, resolveNativeMcpEnvAllowlist, resolveNativeOpenclaw, resolveNativePreemptiveThreshold } from "./rigel-v2-native-config.mjs"
 import { installGoalStatePath } from "./rigel-v2-native-goal-state.mjs"
-import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
-import { createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
+import { bakedTaskSystemGate, registerNativeAgents } from "./rigel-v2-native-agents.mjs"
+import { applyLiveTaskSystemGlobalTools, createDisabledToolSet, createNativeToolPermissionGate, translateGlobalTools } from "./rigel-v2-native-permissions.mjs"
 import { createRuntimeHostSkillSource, registerNativeSkills, selectSkillsForChild, formatSkillInjection } from "./rigel-v2-native-skills.mjs"
 import { createSkillMcpManager, createSkillMcpToolDefinition, registerSkillMcpServers } from "./rigel-v2-native-skill-mcp.mjs"
 import { createSlashcommandTool } from "./tools/slashcommand.tools.mjs"
@@ -73,7 +73,7 @@ import { createFileBackgroundState, createStorageBackgroundState } from "./rigel
 import { createFlowRules } from "./rigel-v2-native-flow-rules.mjs"
 import { createNativeCompactionContextHook, isCompactionSummaryRequest } from "./rigel-v2-native-compaction-context.mjs"
 import { createNativeCompactionTodoPreserver } from "./rigel-v2-native-compaction-todo-preserver.mjs"
-import { createNativePreemptiveCompaction, createNativeCompactionIncidentRegistry, readAssistantUsage, resolveNativeContextLimit, PREEMPTIVE_COMPACTION_THRESHOLD } from "./rigel-v2-native-preemptive-compaction.mjs"
+import { createNativePreemptiveCompaction, createNativeCompactionIncidentRegistry, readAssistantUsage, resolveNativeContextLimit } from "./rigel-v2-native-preemptive-compaction.mjs"
 import { applyPromptAdmission, createImageResizerStep, createStopContinuationState, resolveRequestShape, runRequestSteps } from "./rigel-v2-native-request-steps.mjs"
 import { validateAndRepairMessages } from "./rigel-v2-native-message-repair.mjs"
 import { createNativeAutoSlashCommandHook } from "./rigel-v2-auto-slash-command-bridge.mjs"
@@ -447,15 +447,32 @@ export function createSessionAgentResolver(context) {
  * agent-specific declaration wins) and indexes every agent under both its
  * manifest id and its display name.
  *
- * Exported so the runtime tests can drive the real collection and decision path
- * with a fixture manifest instead of mutating the generated manifest module.
+ * The task-system family is normalized from the LIVE gate here and in
+ * `registerNativeAgents`, from the same pure authority, so a post-install
+ * on/off edit cannot leave the global gates, the agent gates and the V2 rules
+ * out of sync. `taskSystemEnabled` absent (a direct caller with no live value)
+ * keeps the manifest values unchanged. The BAKED gate is read from the manifest
+ * itself, so a global todo entry is only dropped when the bake provably
+ * injected it rather than when it merely matches the injected shape.
+ * `disabledTools` is the LIVE
+ * `disabled_tools` denylist and is enforced ahead of every permission layer, so
+ * a disabled name is refused even when the installed manifest and every agent
+ * declaration still allow it. Exported so the runtime tests can drive
+ * the real collection and decision path with a fixture manifest instead of
+ * mutating the generated manifest module.
  */
-export function createNativePermissionWiring({ manifest: agentManifest, resolveAgent } = {}) {
-  const globalGates = translateGlobalTools(agentManifest?.metadata?.global?.tools)
+export function createNativePermissionWiring({ manifest: agentManifest, resolveAgent, taskSystemEnabled, disabledTools } = {}) {
+  const globalGates = translateGlobalTools(applyLiveTaskSystemGlobalTools(
+    agentManifest?.metadata?.global?.tools,
+    taskSystemEnabled,
+    bakedTaskSystemGate(agentManifest),
+  ))
   const agents = agentManifest && typeof agentManifest.agents === "object" && agentManifest.agents !== null ? agentManifest.agents : {}
-  const gate = createNativeToolPermissionGate({ globalGates, resolveAgent })
+  const disabledToolSet = createDisabledToolSet(disabledTools)
+  const gate = createNativeToolPermissionGate({ globalGates, resolveAgent, disabledTools })
   return {
     globalGates,
+    disabledTools: [...disabledToolSet],
     onAgentPermissions(id, permissions) {
       if (typeof id !== "string" || !id) return
       gate.registerAgent(id, permissions)
@@ -466,6 +483,34 @@ export function createNativePermissionWiring({ manifest: agentManifest, resolveA
       return gate.before(event)
     },
   }
+}
+
+/**
+ * Wrap a host tool editor so a `disabled_tools` name is never REGISTERED.
+ *
+ * V1 `filterDisabledTools` drops a disabled tool from the registry before the
+ * model ever sees it, and the live denylist is the same authority here. Every
+ * other editor member passes through untouched and its methods stay bound to
+ * the real editor, so the host seam keeps working for the registrations that
+ * are not filtered (including `editor.get` and the in-place `webfetch`
+ * rewrite). An empty denylist returns the host editor itself, so a runtime with
+ * no disabled tools behaves exactly as before.
+ */
+export function createDisabledToolEditor(editor, disabledToolSet) {
+  if (!(disabledToolSet instanceof Set) || disabledToolSet.size === 0) return editor
+  return new Proxy(editor, {
+    get(target, property) {
+      if (property === "add") {
+        return (definition) => {
+          const name = definition?.name
+          if (typeof name === "string" && disabledToolSet.has(name)) return undefined
+          return target.add(definition)
+        }
+      }
+      const value = Reflect.get(target, property)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
 }
 
 // The session family enumerates sessions in-process when the setup context's
@@ -517,6 +562,31 @@ export default {
     // value throws so the host fails the plugin load instead of writing V1 state.
     // A source/test load (not a deployment) leaves the environment untouched.
     installGoalStatePath()
+    // Live denylist authority (phase 4): every `disabled_*` list the runtime
+    // enforces is resolved ONCE here, from the same user+project chain the
+    // install-time bake used, so editing `~/.omo/omo.jsonc` takes effect on the
+    // next setup instead of requiring a reinstall. A denylist is a protection,
+    // so an unreadable or refused declaration KEEPS the installed list (the
+    // resolver reports it) rather than releasing it.
+    const disabledListResolution = resolveNativeDisabledLists({
+      manifest,
+      directory: location.directory,
+      env: process.env,
+    })
+    // MCP env allowlist authority (phase 5): the tier-2 `.mcp.json` expansion
+    // grant is user-layer only and FAIL-CLOSED, so an unreadable or refused user
+    // declaration grants nothing instead of resurrecting the installed grants.
+    // Resolved beside the denylists so both MCP consumers below read one value.
+    const mcpEnvAllowlistResolution = resolveNativeMcpEnvAllowlist({
+      manifest,
+      directory: location.directory,
+      env: process.env,
+    })
+    for (const diagnostic of [...disabledListResolution.diagnostics, ...mcpEnvAllowlistResolution.diagnostics]) {
+      console.error(`[oh-my-rigel] ${diagnostic}`)
+    }
+    const disabledLists = disabledListResolution.lists
+    const mcpEnvAllowlist = mcpEnvAllowlistResolution.allowlist
     if (typeof context?.tool?.transform !== "function") {
       throw new Error("OpenCode V2 tool.transform is unavailable")
     }
@@ -553,10 +623,44 @@ export default {
       ?? readUserCategories(context)
     const categoryRoster = buildCategoryRoster(userCategories)
     const sessionAgentResolver = createSessionAgentResolver(context)
+    // Gates resolve under the LIVE vs BAKED policy in `NATIVE_GATE_POLICY`: a gate
+    // the live config declares wins over the install-time manifest, so editing
+    // `~/.omo/omo.jsonc` no longer needs a reinstall to take effect, and a declared
+    // value that disagrees with the baked manifest is REPORTED instead of silently
+    // overridden. The chain is read at the instance's own location, which is the
+    // same location the rest of this setup is gated on.
+    //
+    // Resolved BEFORE agent registration on purpose: `task_system` decides both the
+    // tools this setup registers and the permissions each agent is registered with,
+    // so the registered roster and the task tools must read ONE live value.
+    //
+    // The ALREADY RESOLVED denylist travels with it: `interactive_bash` bakes only
+    // whether the install-time `disabled_tools` forbade it, so the live list is the
+    // only thing that can release that baked `false` without a reinstall.
+    const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env, disabledTools: disabledLists.tools })
+    for (const diagnostic of gateResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
+    const nativeGates = gateResolution.gates
     const permissionWiring = createNativePermissionWiring({
       manifest,
       resolveAgent: sessionAgentResolver,
+      taskSystemEnabled: nativeGates.task_system === true,
+      // V1 `disabled_tools` parity from the SAME live authority every other
+      // denylist uses: the manifest is the install-time bake, so a tool the
+      // user disabled after install must be refused here or it stays callable
+      // from the stale baked copy. Enforced ahead of every permission layer, and
+      // it is also the only surface for a HOST-owned tool this runtime does not
+      // register (V1 reaches `question` the same way, through a permission). The
+      // same live list also RELEASES the `question` deny the bake generated from
+      // it, so removing the entry needs no reinstall.
+      disabledTools: disabledLists.tools,
     })
+    // The exact names this setup must never register. Built once from the live
+    // denylist so the two enforcement surfaces below (registration and
+    // execution) cannot disagree about which tools are disabled.
+    const disabledToolSet = createDisabledToolSet(disabledLists.tools)
+    if (disabledToolSet.size > 0) {
+      console.error(`[oh-my-rigel] Native V2 disabled_tools enforced: ${[...disabledToolSet].join(", ")}`)
+    }
     // Buffered observability for the Hephaestus registration gate. The
     // transform callback below is replayable, so it only records the skip here.
     const hephaestusGateSkips = new Map()
@@ -572,15 +676,21 @@ export default {
       explicitAgentModels: buildExplicitAgentModels(agentOverrides),
       // V1 `disabled_agents`: a disabled agent is never registered, so a switch
       // onto it is impossible.
-      disabledAgents: readNativeDisabled(manifest).agents,
+      disabledAgents: disabledLists.agents,
+      // The LIVE `disabled_tools` list: the generation-side authority that drops
+      // the `question` deny the install-time bake wrote from an older list.
+      disabledTools: disabledLists.tools,
       onAgentRequest: (id, body) => {
         agentRequestBodies.set(id.toLocaleLowerCase(), body)
         const name = manifest.agents?.[id]?.name
         if (typeof name === "string") agentRequestBodies.set(name.toLocaleLowerCase(), body)
       },
       // The permission gate consumes each agent's translated tool-name gates
-      // here, so the `execute.before` hook below governs the real roster.
+      // here, so the `execute.before` hook below governs the real roster. The
+      // same LIVE `task_system` value the wiring gates on is applied to each
+      // definition before translation, so the host rules and these gates agree.
       onAgentPermissions: (id, permissions) => permissionWiring.onAgentPermissions(id, permissions),
+      taskSystemEnabled: nativeGates.task_system === true,
       // Observability: the Hephaestus registration gate blocks at startup, so a
       // skip is otherwise only a log line nobody can consult afterwards. The
       // durable receipt is emitted after registration (below) instead of here:
@@ -645,6 +755,14 @@ export default {
     // per-session `skill_mcp` manager. When the host lacks a domain (older lab
     // build or a test fixture), the family degrades to an empty, inert set
     // instead of throwing during setup.
+    //
+    // The resolved denylist is applied HERE, at discovery, because this one list
+    // is the only source of every downstream skill surface: the host registry
+    // (below), the embedded MCP servers registered from it, child body
+    // injection, `skill_mcp`'s catalog, the category reminder, and slash-command
+    // skill matching. Filtering any of those consumers instead would leave the
+    // skill registered and injectable, so a live `disabled_skills` edit would
+    // take effect nowhere.
     const skillRegistry = typeof context?.skill?.transform === "function"
       ? await registerNativeSkills(context, {
         directory: location.directory,
@@ -654,6 +772,10 @@ export default {
         env: context?.options?.skillsEnv,
         runtimeEnv: process.env,
         userCategories,
+        // Phase 4 live denylist (falls back to the installed list when no layer
+        // declared one), so a skill named only in the LIVE config never reaches
+        // the registry it would otherwise be served and injected from.
+        disabledSkills: disabledLists.skills,
       })
       : { skills: [], registered: [], dispose: undefined }
     // Runtime host-skill source (V1 runtime-skill-resolver parity): skills that
@@ -663,19 +785,21 @@ export default {
     const resolveRuntimeSkills = createRuntimeHostSkillSource({
       context,
       baseSkills: skillRegistry.skills,
-      disabledSkills: readNativeDisabled(manifest).skills,
+      disabledSkills: disabledLists.skills,
       contract: { env: process.env, userCategories },
     })
     const skillMcpManager = createSkillMcpManager({ storage: context?.storage })
     const skillMcpRegistration = await registerSkillMcpServers(context, skillRegistry.skills)
     // Tier-2 Claude Code MCP loader (correction H5): project/user .mcp.json
     // declarations through ctx.mcp.transform, with the V1 env-allowlist rule.
+    // Both values come from the phase-5 live authority above, so an edited
+    // `omo.jsonc` reaches the tier-2 loader without a reinstall.
     const claudeMcpRegistration = await registerClaudeCodeMcps(context, {
       directory: location.directory,
       home: context?.options?.skillsHome,
       claudeConfigDir: context?.options?.skillsEnv?.CLAUDE_CONFIG_DIR,
-      disabledMcps: readNativeMcpPolicy(manifest).disabled,
-      allowlist: readNativeMcpPolicy(manifest).envAllowlist,
+      disabledMcps: disabledLists.mcps,
+      allowlist: mcpEnvAllowlist,
     })
     // Tier-1 OmO builtin MCP servers (T38). The V2 host has no LSP tools and no
     // grep_app server (official migrate-v1: V2 "does not run language servers,
@@ -688,7 +812,9 @@ export default {
       cwd: location.directory,
       repoRoot: readNativeRepoRoot(manifest),
       configDir: resolveOpenCodeConfigDir(),
-      disabledMcps: readNativeMcpPolicy(manifest).disabled,
+      // Phase 5: the LIVE, scope-aware `disabled_mcps` (a manifest-baked deny is
+      // the installation default, not the runtime truth).
+      disabledMcps: disabledLists.mcps,
       retained: mcpBuiltinsPolicy.retained,
       bundledLocal: mcpBuiltinsPolicy.bundledLocal,
       externalConnections: mcpBuiltinsPolicy.externalConnections,
@@ -916,19 +1042,6 @@ export default {
         ? context.session.context({ sessionID })
         : Promise.resolve([])),
     })
-    // Task 19: hashline is gated by the materialized `hashline_edit` gate. When
-    // on, the read enhancer tags V2 read output with LINE#ID and an equivalent
-    // `hashline_edit` tool validates the anchor hash before writing.
-    //
-    // Gates resolve under the LIVE vs BAKED policy in `NATIVE_GATE_POLICY`: a gate
-    // the live config declares wins over the install-time manifest, so editing
-    // `~/.omo/omo.jsonc` no longer needs a reinstall to take effect, and a declared
-    // value that disagrees with the baked manifest is REPORTED instead of silently
-    // overridden. The chain is read at the instance's own location, which is the
-    // same location the rest of this setup is gated on.
-    const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env })
-    for (const diagnostic of gateResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
-    const nativeGates = gateResolution.gates
     // The auto-update-checker effect. V1 checked the published plugin's npm
     // dist-tags once per startup and toasted a newer version. The native runtime
     // fetches the same registry at most once per day, caches the result in
@@ -956,6 +1069,9 @@ export default {
     void updateChecker.refresh().catch((error) => {
       console.error(`[oh-my-rigel] update check failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+    // Task 19: hashline is gated by the materialized `hashline_edit` gate. When
+    // on, the read enhancer tags V2 read output with LINE#ID and an equivalent
+    // `hashline_edit` tool validates the anchor hash before writing.
     const hashlineEnabled = nativeGates.hashline_edit === true
     const hashline = hashlineEnabled ? createHashlineReadEnhancer() : undefined
     const hashlineEditTool = hashlineEnabled ? createHashlineEditTool({ directory: location.directory }) : undefined
@@ -1459,11 +1575,20 @@ export default {
       }
       return modelContextLimits.get(key)
     }
+    // T34 threshold: the live user+project chain declares it when the user edits
+    // `omo.jsonc`; the install-time manifest is the fallback ONLY when the key is
+    // absent, and a chain that cannot confirm the value falls closed to the V1
+    // 0.78 default instead of a stale manifest value. Resolved only when the gate
+    // is on, so a gate-off runtime does no extra config IO.
+    const preemptiveThreshold = nativeGates.preemptive_compaction === true
+      ? resolveNativePreemptiveThreshold({ manifest, directory: location.directory, env: process.env })
+      : undefined
+    for (const diagnostic of preemptiveThreshold?.diagnostics ?? []) console.error(`[oh-my-rigel] ${diagnostic}`)
     const preemptiveCompaction = nativeGates.preemptive_compaction === true
       && typeof context?.session?.compact === "function"
       && typeof getSessionMessages === "function"
       ? createNativePreemptiveCompaction({
-        threshold: readNativePreemptiveThreshold(manifest) ?? PREEMPTIVE_COMPACTION_THRESHOLD,
+        threshold: preemptiveThreshold.value,
         readUsage: async (sessionID) => readAssistantUsage(await getSessionMessages(sessionID)),
         resolveContextLimit: async ({ providerID, modelID }) => {
           try {
@@ -1719,7 +1844,13 @@ export default {
     }
     const toolServerApi = serverApi?.available ? serverApi : undefined
 
-    const registration = await context.tool.transform((editor) => {
+    const registration = await context.tool.transform((hostEditor) => {
+      // The live `disabled_tools` denylist is a REGISTRATION filter here, exactly
+      // like V1 `filterDisabledTools`: a disabled name never reaches the host
+      // registry, so the model is never offered it. Every registration below goes
+      // through this filtered view, and the same names are refused again at
+      // execution for the tools the host owns and this runtime does not register.
+      const editor = createDisabledToolEditor(hostEditor, disabledToolSet)
       // Keep the host's native webfetch identity, schema, description, and
       // output contract, but replace its redirecting executor. The replacement
       // owns each hop so permission.assert runs before any request to it.
@@ -2006,7 +2137,7 @@ export default {
       resolveModel: resolveNativeModel,
       getAgentRequestBody: (agent) => agentRequestBodies.get(String(agent ?? "").toLocaleLowerCase()),
       // Mirror the V1 `disabled_hooks` gate for think-mode (default on).
-      thinkModeEnabled: !readNativeDisabled(manifest).hooks.includes("think-mode"),
+      thinkModeEnabled: !disabledLists.hooks.includes("think-mode"),
       onAgentTuningApplied: (event) => {
         recordAgentTuning(event)
       },
@@ -2076,7 +2207,7 @@ export default {
     const autoSlashCommand = createNativeAutoSlashCommandHook({
       skills: skillRegistry.skills,
       listCommands: () => context?.command?.list?.(),
-      nativeCommands: nativeGates.team_mode === true && !readNativeDisabled(manifest).commands.includes(TEAM_MODE_COMMAND_NAME)
+      nativeCommands: nativeGates.team_mode === true && !disabledLists.commands.includes(TEAM_MODE_COMMAND_NAME)
         ? { [TEAM_MODE_COMMAND_NAME]: createTeamModePromptHandler({ resolveCreateTeam: () => teamCreatePortFromTool(teamModeCreateTool) }) }
         : undefined,
     })
@@ -2257,6 +2388,9 @@ export default {
     // max_tools trimming: the names the core transform registered (session/look_at/
     // monitor families, rigel_task, skill_mcp, hashline_edit, todowrite) count
     // toward the cap, so the conditional families trim against the real total.
+    // The live denylist is excluded here too: a disabled tool never registered,
+    // so counting it would overstate the surface and let the cap trim a tool
+    // that IS registered.
     const coreToolNames = [
       ...(skillRegistry.skills.length > 0 ? ["skill_mcp"] : []),
       taskName,
@@ -2264,7 +2398,7 @@ export default {
       "todowrite",
       ...(typeof context?.command?.list === "function" ? ["slashcommand"] : []),
       ...coreFamilyToolNames,
-    ]
+    ].filter((name) => !disabledToolSet.has(name))
     const conditionalTools = await registerConditionalNativeTools({
       context,
       manifest,
@@ -2273,6 +2407,10 @@ export default {
       // conditional families cannot register from a stale baked value the runtime
       // already superseded.
       gates: nativeGates,
+      // The same live denylist the core transform filtered with, so a conditional
+      // family the user disabled after install (interactive_bash is the
+      // documented example) does not register from the stale baked gate.
+      disabledTools: disabledLists.tools,
       // The task tools mirror every write into the same per-session registry the
       // session tools read, so a created/updated task becomes a visible todo.
       syncTodos: taskTodoSync?.syncTodos,
@@ -2341,7 +2479,7 @@ export default {
       builtinCommandsRegistration = await registerBuiltinCommands({
         context,
         teamModeEnabled: nativeGates.team_mode === true,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // The V1 `cli/mcp-oauth` effect as a native command. The interactive
@@ -2353,7 +2491,7 @@ export default {
       mcpOAuthCommandRegistration = await registerMcpOAuthCommand({
         context,
         storage: context?.storage,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // U4: `/openclaw-status` is the on-demand report surface for the state
@@ -2367,7 +2505,7 @@ export default {
       openclawStatusCommandRegistration = await registerOpenclawStatusCommand({
         context,
         getReport: () => openclaw.report(),
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // The `/rmo-models` guided command: inspect and change the per-agent model
@@ -2378,7 +2516,7 @@ export default {
     if (typeof context?.command?.transform === "function") {
       modelsCommandRegistration = await registerModelsCommand({
         context,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
       })
     }
     // The `/team-mode` front door: `/team-mode <objective>` decides deterministically
@@ -2392,7 +2530,7 @@ export default {
     if (nativeGates.team_mode === true && typeof context?.command?.transform === "function") {
       teamModeCommandRegistration = await registerTeamModeCommand({
         context,
-        disabledCommands: readNativeDisabled(manifest).commands,
+        disabledCommands: disabledLists.commands,
         createTeam: teamCreatePortFromTool(teamModeCreateTool),
       })
     }

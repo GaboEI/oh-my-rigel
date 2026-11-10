@@ -36,6 +36,7 @@ import {
   GOAL_TOOL_NAMES,
 } from "./tools/goal.tools.mjs"
 import { readNativeGates, readNativeTeamMode } from "./rigel-v2-native-config.mjs"
+import { createDisabledToolSet } from "./rigel-v2-native-permissions.mjs"
 import { normalizeToolDefinition } from "./rigel-v2-native-core.mjs"
 import { trimToolNamesToCap } from "./rigel-v2-native-tool-trimming.mjs"
 import { createTeamTools, TEAM_TOOL_NAMES } from "./tools/team.tools.mjs"
@@ -57,9 +58,16 @@ function emptyResult() {
  * gate with no tmux is therefore unavailable, not broken. Each family is only
  * built when its `ctx` domain is present; a missing domain is reported loudly
  * and the family is skipped rather than registered with a fake backend.
+ *
+ * `disabledTools` is the LIVE `disabled_tools` denylist, applied AFTER the family
+ * builders by exact tool name. A gate being enabled only means the config
+ * PERMITS the family; a denylist entry is a separate protection that must still
+ * remove the tool. `interactive_bash` is the concrete case: its gate stays BAKED
+ * (host availability), so a live `disabled_tools` edit can only reach it here.
  */
 export function buildConditionalToolDefinitions({
   gates = {},
+  disabledTools,
   tmuxPath,
   ptyRunner,
   terminalFactory,
@@ -137,7 +145,17 @@ export function buildConditionalToolDefinitions({
     }
   }
 
-  return { definitions, names }
+  // One live denylist, applied LAST so no family can slip past it. V1 parity:
+  // the name is removed outright instead of registered-then-denied, so the model
+  // is never offered a tool the user disabled. Reported through the same
+  // observability seam a missing backend uses: the family stays unregistered and
+  // the reason names the denylist.
+  const disabledToolSet = createDisabledToolSet(disabledTools)
+  for (const name of names.filter((candidate) => disabledToolSet.has(candidate))) {
+    delete definitions[name]
+    onUnavailable(name, "it is listed in the live disabled_tools denylist")
+  }
+  return { definitions, names: names.filter((name) => !disabledToolSet.has(name)) }
 }
 
 function locationOf(context) {
@@ -151,12 +169,15 @@ function locationOf(context) {
  *
  * `gates` is the exact injection point for the config adapter. When omitted it
  * is read from the manifest; when supplied (for example by an owner test) it
- * overrides the manifest as the resolved gate set.
+ * overrides the manifest as the resolved gate set. `disabledTools` is the LIVE
+ * `disabled_tools` denylist; a name it lists never registers, whatever the
+ * baked gate says.
  */
 export async function registerConditionalNativeTools({
   context,
   manifest,
   gates,
+  disabledTools,
   directory,
   tmuxPath,
   ptyRunner,
@@ -263,6 +284,7 @@ export async function registerConditionalNativeTools({
     : undefined
   const { definitions, names } = buildConditionalToolDefinitions({
     gates: resolved,
+    disabledTools,
     tmuxPath: resolvedTmuxPath,
     ptyRunner: runner,
     terminalFactory,

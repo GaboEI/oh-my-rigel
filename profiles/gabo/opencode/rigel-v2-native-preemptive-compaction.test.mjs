@@ -53,9 +53,20 @@ describe("preemptive compaction", () => {
       expect(resolveNativeContextLimit({ providerID: "anthropic", modelID: "claude-opus-4-8", modelContextLimit: undefined })).toBe(ANTHROPIC_GA_1M_LIMIT)
     })
 
-    test("#then a non-GA Anthropic model defaults to the V1 200k limit", () => {
-      expect(resolveNativeContextLimit({ providerID: "anthropic", modelID: "claude-haiku-4-5", modelContextLimit: 500_000 })).toBe(DEFAULT_ANTHROPIC_ACTUAL_LIMIT)
+    test("#then the catalog limit wins for every Anthropic model, including one the id regex does not know", () => {
+      // The reported defect: `claude-sonnet-5-5` has a 1M window but the GA-1M
+      // id regex does not match it, so the old precedence pinned it to the 200k
+      // V1 default and the trigger asked for a compaction five times too early.
+      expect(resolveNativeContextLimit({ providerID: "anthropic", modelID: "claude-sonnet-5-5", modelContextLimit: 1_000_000 })).toBe(1_000_000)
+      expect(resolveNativeContextLimit({ providerID: "google-vertex-anthropic", modelID: "claude-sonnet-5-5", modelContextLimit: 1_000_000 })).toBe(1_000_000)
+      expect(resolveNativeContextLimit({ providerID: "anthropic", modelID: "claude-sonnet-5", modelContextLimit: 1_000_000 })).toBe(1_000_000)
+      expect(resolveNativeContextLimit({ providerID: "anthropic", modelID: "claude-haiku-4-5", modelContextLimit: 500_000 })).toBe(500_000)
       expect(resolveNativeContextLimit({ providerID: "google", modelID: "claude-sonnet-4-6", modelContextLimit: undefined })).toBe(ANTHROPIC_GA_1M_LIMIT)
+    })
+
+    test("#then a model row without a usable limit.context keeps the documented fallbacks", () => {
+      expect(resolveNativeContextLimit({ providerID: "anthropic", modelID: "claude-sonnet-5-5", modelContextLimit: undefined })).toBe(DEFAULT_ANTHROPIC_ACTUAL_LIMIT)
+      expect(resolveNativeContextLimit({ providerID: "anthropic", modelID: "claude-opus-4-8", modelContextLimit: 0 })).toBe(ANTHROPIC_GA_1M_LIMIT)
     })
 
     test("#then a non-Anthropic model uses the V2 model row and returns null when unknown", () => {
@@ -113,6 +124,29 @@ describe("preemptive compaction", () => {
       })
       const result = await controller.observe({ sessionID: "ses_1" })
       expect(result).toMatchObject({ decision: "skip", reason: "below-threshold" })
+      expect(compacted).toEqual([])
+    })
+
+    test("#then a 500k footprint on a 1M catalog window does not compact early", async () => {
+      // The reported defect end to end: `claude-sonnet-5-5` used to resolve to
+      // the 200k V1 default even though its catalog row says 1M, so this exact
+      // footprint (ratio 0.5 on the real window, 2.5 on the wrong one) compacted
+      // on the first observed turn.
+      const compacted = []
+      const controller = createNativePreemptiveCompaction({
+        readUsage: fixedReader(assistant("m1", usage({ input: 450_000, cache: { read: 50_000, write: 0 } }), {
+          providerID: "anthropic",
+          modelID: "claude-sonnet-5-5",
+        })),
+        resolveContextLimit: ({ providerID, modelID }) => resolveNativeContextLimit({
+          providerID,
+          modelID,
+          modelContextLimit: 1_000_000,
+        }),
+        requestCompact: async (input) => { compacted.push(input) },
+      })
+      const result = await controller.observe({ sessionID: "ses_1" })
+      expect(result).toMatchObject({ decision: "skip", reason: "below-threshold", limit: 1_000_000 })
       expect(compacted).toEqual([])
     })
 

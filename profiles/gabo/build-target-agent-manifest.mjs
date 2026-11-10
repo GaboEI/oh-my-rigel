@@ -46,6 +46,7 @@ import {
   buildMcpPolicyEntry,
   deriveNativeGates,
   deriveNativeMinOpenCodeVersion,
+  parseJsoncText,
   resolveNativePluginConfig,
 } from "./opencode/rigel-v2-native-config.mjs"
 import { stripLegacyGoalToolPermission } from "./opencode/rigel-v2-native-goal-quarantine.mjs"
@@ -72,6 +73,46 @@ const manifestMcpPolicy = integrationManifest?.mcpPolicy ?? {}
  * `getFirstFallbackModel`, so the repaired record matches what the plugin would
  * have emitted had its wrapper fallen back like general-agents.ts.
  */
+/**
+ * Strip every `disabled_agents` declaration from the DISPOSABLE staged profile
+ * copy, so the bake materializes a definition for every base agent.
+ *
+ * The four placements are the ones the OpenCode plugin view folds (layer root,
+ * `[opencode]`, `profiles.<p>`, `profiles.<p>.[opencode]`). Deleting the key
+ * rather than emptying it matters: the layer merge UNIONS these lists, so an
+ * empty array in one placement could never mask a non-empty one in another.
+ *
+ * Returns whether the staged layer changed. An absent file (a build with no
+ * `--profile-root`), a parse failure, or a layer with no declaration is a no-op:
+ * nothing to neutralize means the bake already sees every definition.
+ */
+function neutralizeStagedDisabledAgents(stagedConfigPath) {
+  if (!fs.existsSync(stagedConfigPath)) return false
+  let layer
+  try {
+    layer = parseJsoncText(fs.readFileSync(stagedConfigPath, "utf8"))
+  } catch {
+    return false
+  }
+  if (!layer || typeof layer !== "object" || Array.isArray(layer)) return false
+  const placements = [layer, layer["[opencode]"]]
+  const profiles = layer.profiles && typeof layer.profiles === "object" && !Array.isArray(layer.profiles) ? layer.profiles : {}
+  for (const profile of Object.values(profiles)) {
+    if (!profile || typeof profile !== "object" || Array.isArray(profile)) continue
+    placements.push(profile, profile["[opencode]"])
+  }
+  let changed = false
+  for (const placement of placements) {
+    if (!placement || typeof placement !== "object" || Array.isArray(placement)) continue
+    if (!Object.prototype.hasOwnProperty.call(placement, "disabled_agents")) continue
+    delete placement.disabled_agents
+    changed = true
+  }
+  if (!changed) return false
+  fs.writeFileSync(stagedConfigPath, `${JSON.stringify(layer, null, 2)}\n`)
+  return true
+}
+
 function resolveRepairModel(configKey) {
   if (configKey !== "atlas") return undefined
   const requirement = AGENT_MODEL_REQUIREMENTS[configKey]
@@ -123,14 +164,22 @@ export async function buildTargetAgentManifest(options = {}) {
 
   try {
     return await withProcessEnv(isolatedEnv, async () => {
-      const primary = await runPluginConfig(rawConfig, directory)
-      const primaryAgents = primary.agent || {}
-
-      // Resolve the user plugin view so a `disabled_agents` entry can drop an
-      // agent from the manifest instead of failing generation, matching the
-      // target generator.
+      // Resolve the INSTALL-TIME plugin view BEFORE the bake, because the bake is
+      // about to be neutralized for `disabled_agents` (see below). This view is
+      // the one the manifest records: `metadata.global.disabled.agents` must keep
+      // naming the install-time denylist so the runtime filters the roster.
       const pluginView = resolveNativePluginConfig({ directory, env: isolatedEnv })
       const manifestOpenclaw = resolveManifestOpenclaw({ directory, env: isolatedEnv, pluginView, stagedConfigPath })
+      // A disabled agent must still have a DEFINITION in the manifest, or removing
+      // it from `disabled_agents` later could not register it without a
+      // reinstall. The plugin pipeline returns NO record for a denied agent
+      // (`createBuiltinAgents` drops it), so the bake reads a disposable copy of
+      // the staged layer without the key. The staged file is throwaway; the user
+      // profile is never touched, and `pluginView` above already recorded the
+      // denylist the runtime enforces.
+      neutralizeStagedDisabledAgents(stagedConfigPath)
+      const primary = await runPluginConfig(rawConfig, directory)
+      const primaryAgents = primary.agent || {}
       // Credential references are written to the manifest VERBATIM (the writer below
       // copies the block, and nothing here resolves it), which is what keeps a
       // secret out of the installed file. A plaintext token still works, but it is
@@ -147,9 +196,16 @@ export async function buildTargetAgentManifest(options = {}) {
       const selection = selectionPath ? JSON.parse(fs.readFileSync(selectionPath, "utf8")) : null
 
       const repairedIds = []
+      const unavailableDisabledIds = []
       const selected = {}
       for (const id of selection?.orchestratedAgentIds ?? Object.keys(primaryAgents)) {
-        if (disabledAgentKeys.has(canonicalAgentKey(id))) continue
+        // Repair runs BEFORE the disabled classification: a disabled agent still
+        // needs its definition, and the fallback repair is the ONLY path that can
+        // produce one for an agent whose factory is conditional (Atlas). Skipping a
+        // disabled id first made the definition permanent, so removing the name from
+        // the live `disabled_agents` could never register it without a reinstall.
+        // Only an id that stays missing AFTER the repair is unavailable, and only
+        // when it is disabled, because a disabled agent with no definition is inert.
         let record = primaryAgents[id]
         if (!record) {
           // Repair: re-run the plugin's own pipeline with the agent's fallback
@@ -163,7 +219,13 @@ export async function buildTargetAgentManifest(options = {}) {
             if (record) repairedIds.push(id)
           }
         }
-        if (!record) throw new Error(`OmO did not generate the required agent: ${id}`)
+        if (!record) {
+          if (disabledAgentKeys.has(canonicalAgentKey(id))) {
+            unavailableDisabledIds.push(id)
+            continue
+          }
+          throw new Error(`OmO did not generate the required agent: ${id}`)
+        }
         selected[id] = record
       }
       for (const id of selection?.optionalAgentIds ?? []) {
@@ -250,6 +312,8 @@ export async function buildTargetAgentManifest(options = {}) {
           agentCount: Object.keys(orderedSelected).length,
           agentIds: Object.keys(orderedSelected),
           repairedIds,
+          disabledAgentIds: [...disabledAgentKeys],
+          unavailableDisabledIds,
           sandbox,
           openclaw: manifestOpenclaw.report,
         },

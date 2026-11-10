@@ -4,6 +4,7 @@ import { join, resolve as resolvePath } from "node:path"
 import * as config from "./rigel-v2-native-config.mjs"
 import { buildConditionalToolDefinitions } from "./rigel-v2-native-conditional-tools.mjs"
 import { TEAM_TOOL_NAMES } from "./tools/team.tools.mjs"
+import { TASK_TOOL_NAMES } from "./tools/task.tools.mjs"
 
 // The gates are materialized into the agent manifest at INSTALL time, so a
 // runtime that reads only the manifest answers an edited `~/.omo/omo.jsonc` with
@@ -193,43 +194,251 @@ describe("#given the live chain cannot be resolved at all", () => {
   })
 
   test("#when resolved #then a BAKED gate keeps its manifest value because it never reads the chain", () => {
-    // given
-    const manifest = manifestWith({ interactive_bash: true, hashline_edit: true, task_system: true })
+    // given: `goal` is quarantined and `interactive_bash` depends on host
+    // capability, so neither may be re-resolved from the chain.
+    const manifest = manifestWith({ goal: true, interactive_bash: true })
     // when
     const resolution = resolve(manifest, UNRESOLVABLE)
     // then
     expect(resolution.gates.interactive_bash).toBe(true)
-    expect(resolution.gates.hashline_edit).toBe(true)
-    expect(resolution.gates.task_system).toBe(true)
+    expect(resolution.gates.goal).toBe(false)
+    expect(resolution.gates.task_system).toBe(false)
+    expect(resolution.gates.hashline_edit).toBe(false)
   })
 })
 
 describe("#given a gate the policy keeps BAKED", () => {
   test("#when the live chain declares the opposite #then the manifest value is used and no drift is reported", () => {
-    // given: `goal` is quarantined, `interactive_bash` depends on host capability,
-    // and the rest have a materialized default the live view cannot distinguish
-    // from absence, so none of them may be re-resolved from the chain yet.
-    const manifest = manifestWith({ goal: false, interactive_bash: true, task_system: false, hashline_edit: false, preemptive_compaction: false })
+    // given: `goal` is quarantined and `interactive_bash` is host availability,
+    // so neither may be re-resolved from the chain even when a layer writes it.
+    const manifest = manifestWith({ goal: false, interactive_bash: true })
     const fileSystem = projectDeclaring({
       goal: { enabled: true },
       disabled_tools: ["interactive_bash"],
-      experimental: { task_system: true, hashline_edit: true, preemptive_compaction: true },
-      hashline_edit: true,
     })
     // when
     const resolution = resolve(manifest, fileSystem)
     // then
     expect(resolution.gates.goal).toBe(false)
     expect(resolution.gates.interactive_bash).toBe(true)
-    expect(resolution.gates.task_system).toBe(false)
-    expect(resolution.gates.hashline_edit).toBe(false)
-    expect(resolution.gates.preemptive_compaction).toBe(false)
     expect(resolution.diagnostics).toEqual([])
+  })
+})
+
+describe("#given the task_system gate resolves LIVE", () => {
+  test("#when the project declares it on over a manifest that baked it off #then the live value wins and the drift is reported", () => {
+    // given
+    const manifest = manifestWith({ task_system: false })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { task_system: true } }))
+    // then
+    expect(resolution.gates.task_system).toBe(true)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("task_system")
+    expect(resolution.diagnostics[0]).toContain("drift")
+  })
+
+  test("#when the project declares it off over a manifest that baked it on #then the family turns off instead of staying stale", () => {
+    // given: the reported defect class - the user disables the family and the
+    // task tools stay registered from the install-time manifest
+    const manifest = manifestWith({ task_system: true })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { task_system: false } }))
+    // then
+    expect(resolution.gates.task_system).toBe(false)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("task_system")
+  })
+
+  test("#when no layer declares it #then the materialized manifest value is preserved in both directions", () => {
+    // given
+    const nothingDeclared = memoryFileSystem({})
+    // when
+    const on = resolve(manifestWith({ task_system: true }), nothingDeclared)
+    const off = resolve(manifestWith({ task_system: false }), nothingDeclared)
+    // then
+    expect(on.gates.task_system).toBe(true)
+    expect(off.gates.task_system).toBe(false)
+    expect(on.diagnostics).toEqual([])
+    expect(off.diagnostics).toEqual([])
+  })
+
+  test("#when the declared value is refused #then the gate fails closed instead of reviving the manifest", () => {
+    // given: a manifest baked it ON, and the live value the user wrote is not a boolean
+    const manifest = manifestWith({ task_system: true })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { task_system: "yes" } }))
+    // then
+    expect(resolution.gates.task_system).toBe(false)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("failed closed")
+  })
+
+  test("#when a layer cannot be parsed #then the gate fails closed instead of reviving the manifest", () => {
+    // given: the file may have declared the gate, so the runtime cannot confirm it
+    const manifest = manifestWith({ task_system: true })
+    const broken = memoryFileSystem({ [PROJECT_CONFIG]: `{ "[opencode]": {` })
+    // when
+    const resolution = resolve(manifest, broken)
+    // then: a chain-wide failure is reported once PER LIVE GATE it could not
+    // confirm, so the assertion is scoped to this gate instead of the total.
+    expect(resolution.gates.task_system).toBe(false)
+    const reported = resolution.diagnostics.filter((line) => line.includes("task_system"))
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toContain("failed closed")
+  })
+})
+
+describe("#given the hashline_edit gate resolves LIVE", () => {
+  test("#when the root key declares it on over a manifest that baked it off #then hashline turns on with a drift report", () => {
+    // given
+    const manifest = manifestWith({ hashline_edit: false })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ hashline_edit: true }))
+    // then
+    expect(resolution.gates.hashline_edit).toBe(true)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("hashline_edit")
+    expect(resolution.diagnostics[0]).toContain("drift")
+  })
+
+  test("#when only the legacy experimental placement declares it #then it resolves the same gate", () => {
+    // given: V1 migrated `experimental.hashline_edit` up to the root key, so an
+    // older profile that kept the legacy placement must still be authoritative
+    const manifest = manifestWith({ hashline_edit: false })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { hashline_edit: true } }))
+    // then
+    expect(resolution.gates.hashline_edit).toBe(true)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("hashline_edit")
+  })
+
+  test("#when the root key declares it off over a manifest that baked it on #then hashline turns off", () => {
+    // given
+    const manifest = manifestWith({ hashline_edit: true })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ hashline_edit: false }))
+    // then
+    expect(resolution.gates.hashline_edit).toBe(false)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("hashline_edit")
+  })
+
+  test("#when no layer declares it #then the materialized manifest value is preserved", () => {
+    // given
+    const nothingDeclared = memoryFileSystem({})
+    // when
+    const on = resolve(manifestWith({ hashline_edit: true }), nothingDeclared)
+    const off = resolve(manifestWith({ hashline_edit: false }), nothingDeclared)
+    // then
+    expect(on.gates.hashline_edit).toBe(true)
+    expect(off.gates.hashline_edit).toBe(false)
+    expect(on.diagnostics).toEqual([])
+    expect(off.diagnostics).toEqual([])
+  })
+
+  test("#when the declared root value is refused #then the gate fails closed instead of reviving the manifest", () => {
+    // given
+    const manifest = manifestWith({ hashline_edit: true })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ hashline_edit: "yes" }))
+    // then
+    expect(resolution.gates.hashline_edit).toBe(false)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("failed closed")
+  })
+
+  test("#when the declared legacy value is refused #then the gate fails closed instead of reviving the manifest", () => {
+    // given
+    const manifest = manifestWith({ hashline_edit: true })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { hashline_edit: "yes" } }))
+    // then
+    expect(resolution.gates.hashline_edit).toBe(false)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("failed closed")
+  })
+
+  test("#when a layer cannot be parsed #then the gate fails closed instead of reviving the manifest", () => {
+    // given
+    const manifest = manifestWith({ hashline_edit: true })
+    const broken = memoryFileSystem({ [PROJECT_CONFIG]: `{ "[opencode]": {` })
+    // when
+    const resolution = resolve(manifest, broken)
+    // then: a chain-wide failure is reported once PER LIVE GATE it could not
+    // confirm, so the assertion is scoped to this gate instead of the total.
+    expect(resolution.gates.hashline_edit).toBe(false)
+    const reported = resolution.diagnostics.filter((line) => line.includes("hashline_edit"))
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toContain("failed closed")
+  })
+})
+
+describe("#given the preemptive compaction gate resolves LIVE", () => {
+  test("#when the project declares it on over a manifest that baked it off #then the live value wins and the drift is reported", () => {
+    // given
+    const manifest = manifestWith({ preemptive_compaction: false })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { preemptive_compaction: true } }))
+    // then
+    expect(resolution.gates.preemptive_compaction).toBe(true)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("preemptive_compaction")
+  })
+
+  test("#when the project declares it off over a manifest that baked it on #then the gate turns off instead of staying stale", () => {
+    // given
+    const manifest = manifestWith({ preemptive_compaction: true })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { preemptive_compaction: false } }))
+    // then
+    expect(resolution.gates.preemptive_compaction).toBe(false)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("false")
+  })
+
+  test("#when no layer declares it #then the materialized manifest value is preserved", () => {
+    // given
+    const nothingDeclared = memoryFileSystem({})
+    // when
+    const on = resolve(manifestWith({ preemptive_compaction: true }), nothingDeclared)
+    const off = resolve(manifestWith({ preemptive_compaction: false }), nothingDeclared)
+    // then
+    expect(on.gates.preemptive_compaction).toBe(true)
+    expect(off.gates.preemptive_compaction).toBe(false)
+    expect(on.diagnostics).toEqual([])
+  })
+
+  test("#when the declared value is refused #then the gate fails closed instead of reviving the manifest", () => {
+    // given: a manifest baked it ON, and the live value the user wrote is not a boolean
+    const manifest = manifestWith({ preemptive_compaction: true })
+    // when
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { preemptive_compaction: "yes" } }))
+    // then
+    expect(resolution.gates.preemptive_compaction).toBe(false)
+    expect(resolution.diagnostics).toHaveLength(1)
+    expect(resolution.diagnostics[0]).toContain("failed closed")
+  })
+
+  test("#when a layer cannot be parsed #then the gate fails closed instead of reviving the manifest", () => {
+    // given: the file may have declared the gate, so the runtime cannot confirm it
+    const manifest = manifestWith({ preemptive_compaction: true })
+    const broken = memoryFileSystem({ [PROJECT_CONFIG]: `{ "[opencode]": {` })
+    // when
+    const resolution = resolve(manifest, broken)
+    // then: a chain-wide failure is reported once PER LIVE GATE it could not
+    // confirm, so the assertion is scoped to this gate instead of the total.
+    expect(resolution.gates.preemptive_compaction).toBe(false)
+    const reported = resolution.diagnostics.filter((line) => line.includes("preemptive_compaction"))
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toContain("failed closed")
   })
 })
 
 describe("#given the conditional tool surface", () => {
   const teamStorage = { get: async () => undefined, set: async () => {} }
+  const taskStore = { readTask: async () => null, writeTask: async () => {}, listTasks: async () => [] }
 
   test("#when the live config disables team_mode #then no team tool registers even though the manifest baked it on", () => {
     // given
@@ -249,5 +458,25 @@ describe("#given the conditional tool surface", () => {
     const { names } = buildConditionalToolDefinitions({ gates: resolution.gates, taskStore: {}, goalStore: {}, teamStorage })
     // then
     for (const name of TEAM_TOOL_NAMES) expect(names, name).toContain(name)
+  })
+
+  test("#when the live config disables task_system #then no task tool registers even though the manifest baked it on", () => {
+    // given: the manifest is the stale install-time record; the live declaration wins
+    const manifest = manifestWith({ task_system: true })
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { task_system: false } }))
+    // when
+    const { names } = buildConditionalToolDefinitions({ gates: resolution.gates, taskStore, goalStore: {}, teamStorage })
+    // then
+    for (const name of TASK_TOOL_NAMES) expect(names, name).not.toContain(name)
+  })
+
+  test("#when the live config enables task_system #then the task tools register without a reinstall", () => {
+    // given
+    const manifest = manifestWith({ task_system: false })
+    const resolution = resolve(manifest, projectDeclaring({ experimental: { task_system: true } }))
+    // when
+    const { names } = buildConditionalToolDefinitions({ gates: resolution.gates, taskStore, goalStore: {}, teamStorage })
+    // then
+    for (const name of TASK_TOOL_NAMES) expect(names, name).toContain(name)
   })
 })

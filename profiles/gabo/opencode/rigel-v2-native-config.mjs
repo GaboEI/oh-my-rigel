@@ -73,13 +73,168 @@ const PROFILE_KEYS = new Set(["categories", "disabled_skills", "openclaw", "[ope
 
 const TARGET_KEYS = new Set([
   "monitor", "goal", "experimental", "team_mode", "skills", "disabled_tools", "disabled_agents", "disabled_mcps",
-  "disabled_skills", "disabled_commands", "categories", "agents", "ralph_loop", "hashline_edit", "openclaw",
+  "disabled_skills", "disabled_commands", "disabled_hooks", "categories", "agents", "ralph_loop", "hashline_edit", "openclaw",
 ])
 
 const MAX_PROJECT_CONFIG_DIRECTORY_DEPTH = 256
 
-const STRING_ARRAY_KEYS = new Set(["disabled_tools", "disabled_agents", "disabled_skills", "disabled_mcps", "disabled_commands", "mcp_env_allowlist"])
+const STRING_ARRAY_KEYS = new Set(["disabled_tools", "disabled_agents", "disabled_skills", "disabled_hooks", "disabled_mcps", "disabled_commands", "mcp_env_allowlist"])
 
+// --- Explicit declaration tracking (presence contract) ---
+// A resolved view cannot answer "did a layer write this key?": the validated
+// sections materialize their schema defaults (`monitor`, `goal`), the plugin
+// projection fills an absent collection with `[]` or `{}`, and a value the
+// schema refused is dropped exactly like a key no layer authored. A reader that
+// tested truthiness (`value || fallback`) or bare presence in the view therefore
+// could not tell `false`, `0`, `[]` and `{}` from an undeclared key, and could
+// not tell a rejected declaration from an absent one.
+//
+// `declarations` is that contract, computed from the SAME fold the view uses:
+//   - `declared`:   a layer authored the key and the value survived validation.
+//                   `false`, `0`, `[]` and `{}` are declarations exactly like a
+//                   non-empty value; none of them is absence.
+//   - `error`:      a layer authored the key and the schema refused the value.
+//                   The refusal diagnostic is still reported in `diagnostics`.
+//                   A file that could not be read or parsed is a DIFFERENT error
+//                   class: it is reported in `loadFailures`, and a non-empty
+//                   `loadFailures` means NO entry here is authoritative, not
+//                   even a `declared` one, because an unreadable layer may have
+//                   overridden it.
+//   - `undeclared`: no layer authored the key. A view default is NEVER read as
+//                   a declaration.
+// `sources` names the declaring file and placement, so a later authority
+// migration can report provenance without re-reading the chain. Resolved values
+// are deliberately not carried: they live in the view, and a refused raw value
+// never reaches this contract. Legacy migration (`ralph_loop` -> `goal`) runs
+// AFTER this record, so presence names the key a layer actually wrote and never
+// a synthesized one.
+//
+// Authority per root key mirrors the fold. `replace` keys keep the last
+// surviving declaration because the resolved section replaces the previous one
+// whole, `merge` keys deep-merge, and `union` keys accumulate string lists. A
+// section that a later layer re-declares RESETS the leaf declarations it does
+// not repeat, because the resolved section no longer reflects them. That is why
+// a section leaf is decided from the PAIR (`monitor` state and `monitor.enabled`
+// state), never from the leaf alone.
+
+/** Section leaves tracked per validated section (mirrors the parse contract). */
+const DECLARATION_SECTION_LEAVES = Object.freeze({
+  monitor: Object.freeze(["enabled", "live_mode_enabled"]),
+  goal: Object.freeze(["enabled", "auto_start", "default_max_iterations"]),
+  experimental: Object.freeze([
+    "task_system",
+    "preemptive_compaction",
+    "preemptive_compaction_threshold",
+    "truncate_all_tool_outputs",
+    "max_tools",
+    "hashline_edit",
+  ]),
+  team_mode: Object.freeze(["enabled", "tmux_visualization", "max_members"]),
+})
+
+/** How each tracked root key combines across layers (the fold's own semantics). */
+const DECLARATION_ROOT_KINDS = Object.freeze({
+  monitor: "replace",
+  goal: "replace",
+  experimental: "replace",
+  team_mode: "replace",
+  hashline_edit: "replace",
+  skills: "replace",
+  openclaw: "replace",
+  ralph_loop: "replace",
+  categories: "merge",
+  agents: "merge",
+  disabled_tools: "union",
+  disabled_agents: "union",
+  disabled_skills: "union",
+  disabled_hooks: "union",
+  disabled_mcps: "union",
+  disabled_commands: "union",
+  mcp_env_allowlist: "union",
+})
+
+/** Every statically tracked path, in a stable order so the record is deterministic. */
+const DECLARATION_PATHS = Object.freeze([
+  ...Object.keys(DECLARATION_ROOT_KINDS).filter((key) => key !== "mcp_env_allowlist"),
+  ...Object.entries(DECLARATION_SECTION_LEAVES).flatMap(([section, leaves]) => leaves.map((leaf) => `${section}.${leaf}`)),
+  "mcp_env_allowlist",
+])
+
+function declarationKindOf(key) {
+  return DECLARATION_ROOT_KINDS[key.split(".")[0]] ?? "replace"
+}
+
+function appendDeclaration(records, key, entry) {
+  const list = records.get(key)
+  if (list === undefined) records.set(key, [entry])
+  else list.push(entry)
+}
+
+/**
+ * Record what ONE placement view authored, in the fold's own order. `rejected`
+ * carries the dotted keys the parser refused for this view, so "authored but
+ * refused" can never collapse into "undeclared".
+ */
+function observeDeclarations(records, view, rejected) {
+  const { config, path, at } = view
+  if (!isPlainRecord(config)) return
+  for (const [rootKey, kind] of Object.entries(DECLARATION_ROOT_KINDS)) {
+    if (rootKey === "mcp_env_allowlist") continue
+    if (!Object.prototype.hasOwnProperty.call(config, rootKey)) continue
+    const value = config[rootKey]
+    appendDeclaration(records, rootKey, { path, at: `${at}${rootKey}`, rejected: rejected.has(rootKey) })
+    const leaves = DECLARATION_SECTION_LEAVES[rootKey]
+    if (leaves !== undefined) {
+      // A refused section (`monitor: 7`) is dropped by the parser, so the earlier
+      // section stays in effect and its leaf declarations survive.
+      if (!isPlainRecord(value)) continue
+      for (const leaf of leaves) {
+        const leafKey = `${rootKey}.${leaf}`
+        // The resolved section replaced the previous one whole.
+        records.delete(leafKey)
+        if (!Object.prototype.hasOwnProperty.call(value, leaf)) continue
+        appendDeclaration(records, leafKey, { path, at: `${at}${leafKey}`, rejected: rejected.has(leafKey) })
+      }
+      continue
+    }
+    if (kind !== "merge" || !isPlainRecord(value)) continue
+    for (const [name, entry] of Object.entries(value)) {
+      const childKey = `${rootKey}.${rootKey === "categories" ? canonicalCategoryName(name) : name}`
+      appendDeclaration(records, childKey, { path, at: `${at}${childKey}`, rejected: rejected.has(`${rootKey}.${name}`) })
+      if (!isPlainRecord(entry)) continue
+      for (const leaf of Object.keys(entry)) {
+        const leafKey = `${childKey}.${leaf}`
+        appendDeclaration(records, leafKey, {
+          path,
+          at: `${at}${leafKey}`,
+          rejected: rejected.has(`${rootKey}.${name}.${leaf}`),
+        })
+      }
+    }
+  }
+}
+
+function declarationSourceOf(entry) {
+  return { path: entry.path, at: entry.at }
+}
+
+function declarationEntryOf(key, list) {
+  if (list === undefined || list.length === 0) return { state: "undeclared" }
+  const survived = list.filter((entry) => !entry.rejected)
+  if (survived.length === 0) return { state: "error", sources: list.map(declarationSourceOf) }
+  const winners = declarationKindOf(key) === "replace" ? [survived[survived.length - 1]] : survived
+  return { state: "declared", sources: winners.map(declarationSourceOf) }
+}
+
+function buildDeclarations(records) {
+  const declarations = {}
+  const staticKeys = new Set(DECLARATION_PATHS)
+  for (const key of DECLARATION_PATHS) declarations[key] = declarationEntryOf(key, records.get(key))
+  for (const key of [...records.keys()].filter((entry) => !staticKeys.has(entry)).sort()) {
+    declarations[key] = declarationEntryOf(key, records.get(key))
+  }
+  return declarations
+}
 const DEFAULT_READ_FILE_SYSTEM = {
   existsSync,
   lstatSync,
@@ -394,8 +549,33 @@ function resolveOmoConfigView(config, harness, profileName) {
   return withoutControlKeys(resolved)
 }
 
-function warn(diagnostics, message) {
+/**
+ * Diagnostics sink for one parsed placement view. It keeps the shared diagnostic
+ * list byte-identical while remembering WHICH dotted keys that view refused,
+ * which is what separates `error` from `undeclared` in `declarations`.
+ */
+function createDiagnosticsSink(diagnostics) {
+  const rejected = new Set()
+  return {
+    rejected,
+    push: (line) => diagnostics.push(line),
+    reject: (key) => rejected.add(key),
+  }
+}
+
+function warn(diagnostics, message, key) {
   diagnostics.push(message)
+  if (key !== undefined && typeof diagnostics.reject === "function") diagnostics.reject(key)
+}
+
+/**
+ * Record a schema refusal for presence tracking WITHOUT emitting a diagnostic.
+ * `ralph_loop` has always been dropped silently, and this phase may not change
+ * the diagnostic stream; the declaration record still has to say the authored
+ * value was refused instead of reporting it as `declared`.
+ */
+function rejectDeclaration(diagnostics, key) {
+  if (typeof diagnostics.reject === "function") diagnostics.reject(key)
 }
 
 function intInRange(value, min, max) {
@@ -404,14 +584,14 @@ function intInRange(value, min, max) {
 
 function validateMonitor(value, path, diagnostics) {
   if (!isPlainRecord(value)) {
-    warn(diagnostics, `config: ${path}: monitor ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: monitor ignored (invalid value)`, "monitor")
     return undefined
   }
   const parsed = {}
   for (const key of ["enabled", "live_mode_enabled"]) {
     if (!(key in value)) continue
     if (typeof value[key] === "boolean") parsed[key] = value[key]
-    else warn(diagnostics, `config: ${path}: monitor.${key} ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: monitor.${key} ignored (invalid value)`, `monitor.${key}`)
   }
   const integerBounds = {
     max_monitors_per_session: [1, 16],
@@ -426,7 +606,7 @@ function validateMonitor(value, path, diagnostics) {
   for (const [key, [min, max]] of Object.entries(integerBounds)) {
     if (!(key in value)) continue
     if (intInRange(value[key], min, max)) parsed[key] = value[key]
-    else warn(diagnostics, `config: ${path}: monitor.${key} ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: monitor.${key} ignored (invalid value)`, `monitor.${key}`)
   }
   if ("allowed_commands" in value) {
     if (Array.isArray(value.allowed_commands) && value.allowed_commands.every((entry) => typeof entry === "string")) {
@@ -440,31 +620,31 @@ function validateMonitor(value, path, diagnostics) {
 
 function validateGoal(value, path, diagnostics) {
   if (!isPlainRecord(value)) {
-    warn(diagnostics, `config: ${path}: goal ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: goal ignored (invalid value)`, "goal")
     return undefined
   }
   const parsed = {}
   for (const key of ["enabled", "auto_start"]) {
     if (!(key in value)) continue
     if (typeof value[key] === "boolean") parsed[key] = value[key]
-    else warn(diagnostics, `config: ${path}: goal.${key} ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: goal.${key} ignored (invalid value)`, `goal.${key}`)
   }
   if ("default_max_iterations" in value) {
     if (intInRange(value.default_max_iterations, 1, 1000)) parsed.default_max_iterations = value.default_max_iterations
-    else warn(diagnostics, `config: ${path}: goal.default_max_iterations ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: goal.default_max_iterations ignored (invalid value)`, "goal.default_max_iterations")
   }
   return { ...NATIVE_GOAL_DEFAULTS, ...parsed }
 }
 
 function validateExperimental(value, path, diagnostics) {
   if (!isPlainRecord(value)) {
-    warn(diagnostics, `config: ${path}: experimental ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: experimental ignored (invalid value)`, "experimental")
     return undefined
   }
   const parsed = {}
   if ("task_system" in value) {
     if (typeof value.task_system === "boolean") parsed.task_system = value.task_system
-    else warn(diagnostics, `config: ${path}: experimental.task_system ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: experimental.task_system ignored (invalid value)`, "experimental.task_system")
   }
   // T34: V1 `experimental.preemptive_compaction` gate (off by default). The
   // threshold is a Rigel addition (V1 hardcodes 0.78); it must be a fraction in
@@ -472,29 +652,29 @@ function validateExperimental(value, path, diagnostics) {
   // guard silently.
   if ("preemptive_compaction" in value) {
     if (typeof value.preemptive_compaction === "boolean") parsed.preemptive_compaction = value.preemptive_compaction
-    else warn(diagnostics, `config: ${path}: experimental.preemptive_compaction ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: experimental.preemptive_compaction ignored (invalid value)`, "experimental.preemptive_compaction")
   }
   if ("preemptive_compaction_threshold" in value) {
     const threshold = value.preemptive_compaction_threshold
     if (typeof threshold === "number" && Number.isFinite(threshold) && threshold > 0 && threshold <= 1) parsed.preemptive_compaction_threshold = threshold
-    else warn(diagnostics, `config: ${path}: experimental.preemptive_compaction_threshold ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: experimental.preemptive_compaction_threshold ignored (invalid value)`, "experimental.preemptive_compaction_threshold")
   }
   if ("max_tools" in value) {
     if (intInRange(value.max_tools, 1, 1000)) parsed.max_tools = value.max_tools
-    else warn(diagnostics, `config: ${path}: experimental.max_tools ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: experimental.max_tools ignored (invalid value)`, "experimental.max_tools")
   }
   // V1 migrates experimental.hashline_edit up to the root key; keep the legacy
   // placement readable so an older profile still enables the hashline surface.
   if ("hashline_edit" in value) {
     if (typeof value.hashline_edit === "boolean") parsed.hashline_edit = value.hashline_edit
-    else warn(diagnostics, `config: ${path}: experimental.hashline_edit ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: experimental.hashline_edit ignored (invalid value)`, "experimental.hashline_edit")
   }
   // T38: V1 `experimental.truncate_all_tool_outputs` (off by default). When set,
   // the native tool-output truncator applies to every tool, not only the V1
   // TRUNCATABLE_TOOLS list.
   if ("truncate_all_tool_outputs" in value) {
     if (typeof value.truncate_all_tool_outputs === "boolean") parsed.truncate_all_tool_outputs = value.truncate_all_tool_outputs
-    else warn(diagnostics, `config: ${path}: experimental.truncate_all_tool_outputs ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: experimental.truncate_all_tool_outputs ignored (invalid value)`, "experimental.truncate_all_tool_outputs")
   }
   return parsed
 }
@@ -513,25 +693,25 @@ const KNOWN_UNHONORED = new Set([
 
 function validateTeamMode(value, path, diagnostics) {
   if (!isPlainRecord(value)) {
-    warn(diagnostics, `config: ${path}: team_mode ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: team_mode ignored (invalid value)`, "team_mode")
     return undefined
   }
   const validated = {}
   if ("enabled" in value && typeof value.enabled !== "boolean") {
-    warn(diagnostics, `config: ${path}: team_mode.enabled ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: team_mode.enabled ignored (invalid value)`, "team_mode.enabled")
   } else if ("enabled" in value) {
     validated.enabled = value.enabled
   }
   // tmux visualization gate (rewritten feature): a boolean that rides with the
   // team_mode block so the generator can materialize it into the manifest.
   if ("tmux_visualization" in value && typeof value.tmux_visualization !== "boolean") {
-    warn(diagnostics, `config: ${path}: team_mode.tmux_visualization ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: team_mode.tmux_visualization ignored (invalid value)`, "team_mode.tmux_visualization")
   } else if ("tmux_visualization" in value) {
     validated.tmux_visualization = value.tmux_visualization
   }
   if ("max_members" in value) {
     if (typeof value.max_members !== "number" || !Number.isInteger(value.max_members) || value.max_members < 1) {
-      warn(diagnostics, `config: ${path}: team_mode.max_members ignored (invalid value)`)
+      warn(diagnostics, `config: ${path}: team_mode.max_members ignored (invalid value)`, "team_mode.max_members")
     } else {
       validated.max_members = Math.min(value.max_members, TEAM_MODE_MAX_MEMBERS_CEILING)
     }
@@ -549,48 +729,48 @@ const TEXT_VERBOSITIES = new Set(["low", "medium", "high"])
 
 function validateCategoryEntry(value, path, categoryName, diagnostics) {
   if (!isPlainRecord(value)) {
-    warn(diagnostics, `config: ${path}: categories.${categoryName} ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: categories.${categoryName} ignored (invalid value)`, `categories.${categoryName}`)
     return undefined
   }
   const parsed = {}
   for (const key of CATEGORY_STRING_FIELDS) {
     if (!(key in value)) continue
     if (typeof value[key] === "string") parsed[key] = value[key]
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.${key} ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.${key} ignored (invalid value)`, `categories.${categoryName}.${key}`)
   }
   for (const key of CATEGORY_BOOLEAN_FIELDS) {
     if (!(key in value)) continue
     if (typeof value[key] === "boolean") parsed[key] = value[key]
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.${key} ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.${key} ignored (invalid value)`, `categories.${categoryName}.${key}`)
   }
   if ("temperature" in value) {
     if (typeof value.temperature === "number" && value.temperature >= 0 && value.temperature <= 2) parsed.temperature = value.temperature
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.temperature ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.temperature ignored (invalid value)`, `categories.${categoryName}.temperature`)
   }
   if ("top_p" in value) {
     if (typeof value.top_p === "number" && value.top_p >= 0 && value.top_p <= 1) parsed.top_p = value.top_p
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.top_p ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.top_p ignored (invalid value)`, `categories.${categoryName}.top_p`)
   }
   for (const key of ["max_tokens", "max_prompt_tokens"]) {
     if (!(key in value)) continue
     if (intInRange(value[key], 1, Number.MAX_SAFE_INTEGER)) parsed[key] = value[key]
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.${key} ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.${key} ignored (invalid value)`, `categories.${categoryName}.${key}`)
   }
   if ("maxTokens" in value) {
     if (typeof value.maxTokens === "number") parsed.maxTokens = value.maxTokens
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.maxTokens ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.maxTokens ignored (invalid value)`, `categories.${categoryName}.maxTokens`)
   }
   if ("reasoningEffort" in value) {
     if (REASONING_EFFORTS.has(value.reasoningEffort)) parsed.reasoningEffort = value.reasoningEffort
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.reasoningEffort ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.reasoningEffort ignored (invalid value)`, `categories.${categoryName}.reasoningEffort`)
   }
   if ("textVerbosity" in value) {
     if (TEXT_VERBOSITIES.has(value.textVerbosity)) parsed.textVerbosity = value.textVerbosity
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.textVerbosity ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.textVerbosity ignored (invalid value)`, `categories.${categoryName}.textVerbosity`)
   }
   if ("provider_options" in value) {
     if (isPlainRecord(value.provider_options)) parsed.provider_options = value.provider_options
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.provider_options ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.provider_options ignored (invalid value)`, `categories.${categoryName}.provider_options`)
   }
   if ("thinking" in value) {
     const thinking = value.thinking
@@ -599,26 +779,26 @@ function validateCategoryEntry(value, path, categoryName, diagnostics) {
         ? { ...thinking }
         : { type: thinking.type }
     } else {
-      warn(diagnostics, `config: ${path}: categories.${categoryName}.thinking ignored (invalid value)`)
+      warn(diagnostics, `config: ${path}: categories.${categoryName}.thinking ignored (invalid value)`, `categories.${categoryName}.thinking`)
     }
   }
   if ("models" in value) {
     if (Array.isArray(value.models)) parsed.models = [...value.models]
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.models ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.models ignored (invalid value)`, `categories.${categoryName}.models`)
   }
   if ("fallback_models" in value) {
     if (Array.isArray(value.fallback_models)) parsed.fallback_models = [...value.fallback_models]
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.fallback_models ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.fallback_models ignored (invalid value)`, `categories.${categoryName}.fallback_models`)
   }
   if ("reasoning" in value) {
     if (typeof value.reasoning === "string" || isPlainRecord(value.reasoning)) parsed.reasoning = value.reasoning
-    else warn(diagnostics, `config: ${path}: categories.${categoryName}.reasoning ignored (invalid value)`)
+    else warn(diagnostics, `config: ${path}: categories.${categoryName}.reasoning ignored (invalid value)`, `categories.${categoryName}.reasoning`)
   }
   if ("tools" in value) {
     if (isPlainRecord(value.tools) && Object.values(value.tools).every((entry) => typeof entry === "boolean")) {
       parsed.tools = { ...value.tools }
     } else {
-      warn(diagnostics, `config: ${path}: categories.${categoryName}.tools ignored (invalid value)`)
+      warn(diagnostics, `config: ${path}: categories.${categoryName}.tools ignored (invalid value)`, `categories.${categoryName}.tools`)
     }
   }
   return parsed
@@ -626,7 +806,7 @@ function validateCategoryEntry(value, path, categoryName, diagnostics) {
 
 function validateCategories(value, path, diagnostics) {
   if (!isPlainRecord(value)) {
-    warn(diagnostics, `config: ${path}: categories ignored (invalid value)`)
+    warn(diagnostics, `config: ${path}: categories ignored (invalid value)`, "categories")
     return undefined
   }
   const parsed = {}
@@ -656,13 +836,13 @@ function parseConfigView(view, diagnostics) {
       if (section !== undefined) parsed.team_mode = section
     } else if (key === "skills") {
       if (isPlainRecord(value)) parsed.skills = sanitizeValue(value)
-      else warn(diagnostics, `config: ${view.path}: skills ignored (invalid value)`)
+      else warn(diagnostics, `config: ${view.path}: skills ignored (invalid value)`, "skills")
     } else if (key === "hashline_edit") {
       if (typeof value === "boolean") parsed.hashline_edit = value
-      else warn(diagnostics, `config: ${view.path}: hashline_edit ignored (invalid value)`)
+      else warn(diagnostics, `config: ${view.path}: hashline_edit ignored (invalid value)`, "hashline_edit")
     } else if (STRING_ARRAY_KEYS.has(key)) {
       if (Array.isArray(value)) parsed[key] = value.filter((entry) => typeof entry === "string")
-      else warn(diagnostics, `config: ${view.path}: ${key} ignored (invalid value)`)
+      else warn(diagnostics, `config: ${view.path}: ${key} ignored (invalid value)`, key)
     } else if (key === "categories") {
       const section = validateCategories(value, view.path, diagnostics)
       if (section !== undefined) parsed.categories = section
@@ -672,16 +852,17 @@ function parseConfigView(view, diagnostics) {
       // source; carry the block sanely so the live reader can normalize it. The
       // shape is validated downstream by `readAgentOverridesFromConfig`.
       if (isPlainRecord(value)) parsed.agents = sanitizeValue(value)
-      else warn(diagnostics, `config: ${view.path}: agents ignored (invalid value)`)
+      else warn(diagnostics, `config: ${view.path}: agents ignored (invalid value)`, "agents")
     } else if (key === "ralph_loop") {
       if (isPlainRecord(value)) parsed.ralph_loop = value
+      else rejectDeclaration(diagnostics, "ralph_loop")
     } else if (key === "openclaw") {
       // The bidirectional OpenClaw block is carried raw (sanitized
       // against prototype-pollution keys) because its own shape is validated at
       // runtime by the native normalizer, exactly like V1 read it from the
       // plugin config. An absent block stays absent (no-op), never materialized.
       if (isPlainRecord(value)) parsed.openclaw = sanitizeValue(value)
-      else warn(diagnostics, `config: ${view.path}: openclaw ignored (invalid value)`)
+      else warn(diagnostics, `config: ${view.path}: openclaw ignored (invalid value)`, "openclaw")
     }
   }
   return parsed
@@ -695,6 +876,7 @@ function mergeConfigViews(base, override) {
     disabled_tools: mergeUniqueStrings(base.disabled_tools, override.disabled_tools),
     disabled_agents: mergeUniqueStrings(base.disabled_agents, override.disabled_agents),
     disabled_skills: mergeUniqueStrings(base.disabled_skills, override.disabled_skills),
+    disabled_hooks: mergeUniqueStrings(base.disabled_hooks, override.disabled_hooks),
     disabled_commands: mergeUniqueStrings(base.disabled_commands, override.disabled_commands),
     disabled_mcps: mergeUniqueStrings(base.disabled_mcps, override.disabled_mcps),
     categories: deepMerge(base.categories, override.categories),
@@ -771,11 +953,67 @@ function stringArray(value) {
  * admits at the user layer: the layer root, the `[opencode]` harness block, and
  * the same two spots inside the selected profile block. Mirrors V1
  * `protectedUserView` (which reads the block) without dropping a root-level key.
+ *
+ * Presence is reported beside the values, because this key is not one of
+ * `parseConfigView`'s target keys and this collector IS its parser: an empty
+ * list, a key no layer wrote and a refused value must stay distinguishable.
+ * Project-scope placements are deliberately NOT declarations: the fold refuses
+ * them by scope, and that scope policy is a later migration phase.
  */
-function collectUserMcpEnvAllowlist(layer, profileName) {
+function collectUserMcpEnvAllowlist(layer, profileName, path) {
   const profile = profileRecord(layer, profileName)
-  const placements = [layer, layer["[opencode]"], profile, profile["[opencode]"]]
-  return placements.flatMap((placement) => (isPlainRecord(placement) ? stringArray(placement.mcp_env_allowlist) : []))
+  const placements = [
+    { placement: layer, at: "" },
+    { placement: layer["[opencode]"], at: "[opencode]." },
+    { placement: profile, at: profileName === undefined ? "" : `profiles.${profileName}.` },
+    {
+      placement: profile["[opencode]"],
+      at: profileName === undefined ? "[opencode]." : `profiles.${profileName}.[opencode].`,
+    },
+  ]
+  const values = []
+  const declarations = []
+  for (const { placement, at } of placements) {
+    if (!isPlainRecord(placement)) continue
+    if (!Object.prototype.hasOwnProperty.call(placement, "mcp_env_allowlist")) continue
+    const value = placement.mcp_env_allowlist
+    declarations.push({ path, at: `${at}mcp_env_allowlist`, rejected: !Array.isArray(value) })
+    values.push(...stringArray(value))
+  }
+  return { values, declarations }
+}
+
+// `disabled_mcps` is observed through the SAME placement list the plugin fold
+// uses (declared below), so the observer can never drift from the fold: a
+// placement the fold drops is not a declaration here either.
+
+/**
+ * Record whether ONE layer declared `disabled_mcps`, and whether the value it
+ * authored was refused, split by LAYER SCOPE.
+ *
+ * This is the ONLY reason a second record exists beside `declarations`: a union
+ * fold can answer "did any layer declare the key?" but never "did the USER
+ * declare it?", and MCP blocking's scope contract depends on exactly that. Values
+ * are deliberately NOT collected here; the enforced list always comes from the
+ * resolved view, so a live list can never disagree with what a fresh install
+ * would bake from the same file.
+ *
+ * The selected sections are the fold's own placements (layer root, `[opencode]`,
+ * the profile block, the profile's `[opencode]`), which is why the shipped
+ * profile's `profiles.<p>.[opencode].disabled_mcps` is a USER declaration.
+ */
+function observeMcpDisabledScope(record, layer, scope, profileName) {
+  const entry = record[scope]
+  if (entry === undefined) return
+  for (const placement of PLUGIN_PLACEMENTS) {
+    const section = placement.select(layer, profileName)
+    if (!isPlainRecord(section)) continue
+    if (!Object.prototype.hasOwnProperty.call(section, "disabled_mcps")) continue
+    entry.declared = true
+    // A refused declaration is recorded as REFUSED, not as absent: an
+    // unconfirmed deny must keep denying.
+    if (!Array.isArray(section.disabled_mcps)) entry.refused = true
+  }
 }
 
 function validateLayer(raw, source, diagnostics) {
@@ -797,7 +1035,7 @@ function validateLayer(raw, source, diagnostics) {
     }
     if (key === "disabled_skills") {
       if (Array.isArray(value)) layer.disabled_skills = value.filter((entry) => typeof entry === "string")
-      else warn(diagnostics, `config: ${source.path}: disabled_skills ignored (invalid value)`)
+      else warn(diagnostics, `config: ${source.path}: disabled_skills ignored (invalid value)`, "disabled_skills")
       continue
     }
     if (key === "profiles") {
@@ -853,7 +1091,16 @@ function collectLiveConfigLayers({ directory, env, fileSystem, manifest }) {
   const sources = []
   const layers = []
   const loadFailures = []
+  // Presence records for the two keys this pass owns before the fold: the
+  // user-scope MCP env allowlist and a layer-root key the layer validator
+  // refused. Both are DECLARATIONS: the file wrote them.
+  const mcpEnvAllowlistDeclarations = []
+  const layerDeclarations = []
   let userMcpEnvAllowlist = []
+  const mcpDisabledScope = {
+    user: { declared: false, refused: false },
+    project: { declared: false, refused: false },
+  }
 
   for (const candidate of candidates) {
     if (!fileSystem.existsSync(candidate.path)) {
@@ -861,8 +1108,9 @@ function collectLiveConfigLayers({ directory, env, fileSystem, manifest }) {
       continue
     }
     let layer
+    const layerSink = createDiagnosticsSink(diagnostics)
     try {
-      layer = validateLayer(readJsonc(fileSystem.readFileSync(candidate.path, "utf-8")), candidate, diagnostics)
+      layer = validateLayer(readJsonc(fileSystem.readFileSync(candidate.path, "utf-8")), candidate, layerSink)
     } catch (error) {
       const reason = readFailureReason(error)
       warn(diagnostics, `config: ${candidate.path}: ${reason}`)
@@ -882,18 +1130,29 @@ function collectLiveConfigLayers({ directory, env, fileSystem, manifest }) {
       continue
     }
     layers.push({ config: layer, path: candidate.path, scope: candidate.scope })
+    // A key the layer validator refused (a malformed `categories` or
+    // `disabled_skills` at the layer root) was authored by the file, so it is
+    // recorded here as a refused layer-root declaration instead of vanishing
+    // into `undeclared`.
+    for (const key of layerSink.rejected) layerDeclarations.push({ key, path: candidate.path, at: key, rejected: true })
     // V1 security rule: the MCP env allowlist is user-layer only, so a project
     // layer can never extend it. V1 reads it from the harness block
     // (`protectedUserView` = `[opencode]`), and the unified layer schema also
     // admits it at the layer root and in the user's own profile block, so a
     // user-scope layer contributes from all three placements.
     if (candidate.scope === "user") {
-      userMcpEnvAllowlist = [...new Set([...userMcpEnvAllowlist, ...collectUserMcpEnvAllowlist(layer, profileName)])]
+      const allowlist = collectUserMcpEnvAllowlist(layer, profileName, candidate.path)
+      userMcpEnvAllowlist = [...new Set([...userMcpEnvAllowlist, ...allowlist.values])]
+      mcpEnvAllowlistDeclarations.push(...allowlist.declarations)
     }
+    // MCP blocking's scope contract needs the declaration split per scope; the
+    // union fold below carries the VALUE and the generic `declarations` record
+    // carries presence, but neither can name the declaring scope.
+    observeMcpDisabledScope(mcpDisabledScope, layer, candidate.scope, profileName)
     sources.push({ path: candidate.path, scope: candidate.scope, loaded: true })
   }
 
-  return { diagnostics, profileName, sources, layers, loadFailures, userMcpEnvAllowlist }
+  return { diagnostics, profileName, sources, layers, loadFailures, userMcpEnvAllowlist, mcpEnvAllowlistDeclarations, layerDeclarations, mcpDisabledScope }
 }
 
 const PLUGIN_PLACEMENTS = Object.freeze([
@@ -922,13 +1181,21 @@ const PLUGIN_PLACEMENTS = Object.freeze([
  * declaration finder below instead of restated in a second loop nesting.
  */
 function buildResolvedConfigView(collected, directory) {
-  const { diagnostics, profileName, sources, layers, userMcpEnvAllowlist } = collected
+  const { diagnostics, profileName, sources, layers, loadFailures, userMcpEnvAllowlist, mcpEnvAllowlistDeclarations, layerDeclarations, mcpDisabledScope } = collected
+
+  // Declaration records follow the fold below, so presence can never disagree
+  // with the value the resolved view carries.
+  const declarationRecords = new Map()
+  for (const entry of mcpEnvAllowlistDeclarations) appendDeclaration(declarationRecords, "mcp_env_allowlist", entry)
+  for (const entry of layerDeclarations) appendDeclaration(declarationRecords, entry.key, entry)
 
   const views = []
   for (const placement of PLUGIN_PLACEMENTS) {
     for (const layer of layers) {
       const config = placement.select(layer.config, profileName)
-      if (Object.keys(config).length > 0) views.push({ config, path: layer.path })
+      if (Object.keys(config).length > 0) {
+        views.push({ config, path: layer.path, at: placement.prefix(profileName), declare: true })
+      }
     }
   }
 
@@ -940,18 +1207,27 @@ function buildResolvedConfigView(collected, directory) {
     // the deep-merge, or the legacy key would be re-introduced by the merge.
     const categories = canonicalizeCategoriesRecord(resolvedView.categories)
     if (Object.keys(categories).length > 0) {
-      views.push({ config: { categories }, path: layers[0]?.path ?? directory })
+      views.push({ config: { categories }, path: layers[0]?.path ?? directory, at: "", declare: false })
     }
   }
 
   let config = {}
-  for (const view of views) config = mergeConfigViews(config, parseConfigView(view, diagnostics))
+  for (const view of views) {
+    const sink = createDiagnosticsSink(diagnostics)
+    const parsed = parseConfigView(view, sink)
+    // The synthetic merged-categories view is a projection, not a declaration:
+    // it re-validates values already recorded by their own placements.
+    if (view.declare) observeDeclarations(declarationRecords, view, sink.rejected)
+    config = mergeConfigViews(config, parsed)
+  }
   config = migrateRalphLoop(config)
 
   // Parity with the real OmO loader: when a key is absent from every layer the
   // loader leaves it `undefined`; it does NOT materialize schema defaults into
   // the plugin config view. Emitting synthetic defaults here would diverge from
-  // V1, so each gate preserves its absence instead of inventing a value.
+  // V1, so each gate preserves its absence instead of inventing a value. What the
+  // loader DOES preserve, whether a layer authored a key, is published separately
+  // as `declarations` below; it never feeds the value projection.
   const monitor = config.monitor
   const goal = config.goal
   const view = {
@@ -987,6 +1263,12 @@ function buildResolvedConfigView(collected, directory) {
     disabled_mcps: config.disabled_mcps ?? [],
     // User-layer only (V1 parity): never merged from project layers.
     mcp_env_allowlist: userMcpEnvAllowlist,
+    // Presence/refusal of `disabled_mcps` PER SCOPE, from the same layer pass
+    // that produced `disabled_mcps` above. The value always comes from that
+    // resolved list; this record only says which scope authored it, which is what
+    // the user-baseline vs project-hardening rule needs. See
+    // `resolveNativeDisabledLists`.
+    mcpDisabledScope,
     categories: config.categories ?? {},
     // Upstream 5a9bb74a4: the raw user `agents` block, carried so the generator can
     // materialize the per-agent "explicit model" overrides into the manifest.
@@ -995,6 +1277,17 @@ function buildResolvedConfigView(collected, directory) {
     // generator materializes it into the manifest; the runtime never parses
     // omo.jsonc itself.
     openclaw: config.openclaw,
+    // Whether a layer AUTHORED each gate/block/list, derived from the same fold.
+    // `false`, `0`, `[]` and `{}` are declarations; a default the projection
+    // invented is not. See the declaration contract at the top of this module.
+    declarations: buildDeclarations(declarationRecords),
+    // Files that exist but could not be read or parsed. A non-empty list means
+    // no presence entry is authoritative: an unreadable layer may have declared
+    // or overridden the key, so a sensitive reader must fail closed instead of
+    // treating `undeclared` as "the install-time manifest still applies".
+    // Existing readers keep their historical behavior; a later phase consumes
+    // this to fail closed.
+    loadFailures,
     diagnostics,
     sources,
   }
@@ -1014,6 +1307,8 @@ function buildResolvedConfigView(collected, directory) {
  *   mcp_env_allowlist: string[],
  *   categories: Record<string, unknown>,
  *   diagnostics: string[],
+ *   declarations: Record<string, { state: "declared" | "error" | "undeclared", sources?: { path: string, at: string }[] }>,
+ *   loadFailures: { path: string, scope: string, reason: string }[],
  *   sources: { path: string, scope: string, loaded: boolean }[],
  * }}
  */
@@ -1431,35 +1726,40 @@ function openclawIdentityDiff(from, to) {
 // used (`resolveNativePluginConfig`), so the runtime value is exactly what a
 // reinstall would bake now. A BAKED gate keeps the install-time manifest value.
 //
-// LIVE is only claimed where the live chain can DECLARE the key on its own, which
-// the resolved view preserves for these two and no others:
+// LIVE is only claimed where the live chain can DECLARE the key on its own:
 // - `team_mode`: `validateTeamMode` keeps only the keys a layer actually wrote, so
 //   `enabled` is absent unless declared.
 // - `monitor`: `validateMonitor` materializes the block defaults, so the presence
 //   of a `monitor` block IS the declaration; a block that omits `enabled` declares
 //   the family and reads the documented `false`.
+// - `preemptive_compaction`, `task_system`, `hashline_edit`: the resolved view
+//   materializes their `false` default, so the VALUE cannot answer "was it
+//   declared". `declarations` can, and it also separates a REFUSED declaration from
+//   an absent one, which is what lets a broken chain fail closed instead of
+//   reviving the install-baked gate. `hashline_edit` tracks BOTH placements the
+//   parser accepts (root `hashline_edit`, authoritative, plus the legacy
+//   `experimental.hashline_edit`) and reads the SAME projected boolean the
+//   materializer bakes, so a live value can never disagree with a fresh install.
 //
 // Everything else stays BAKED, each for a recorded reason:
 // - `goal`: `quarantineNativeGates` owns the value on BOTH sides (generator and
 //   runtime), so the live chain can never change it. Resolving it live would add a
 //   second path to a gate that is deliberately forced `false`.
-// - `task_system` / `hashline_edit` / `preemptive_compaction`: the resolved view
-//   materializes their `false` default, so a declared key and an absent key are
-//   indistinguishable. A live read would report `false` for a key no layer wrote
-//   and turn an install-baked gate off, which is exactly the "no default changes"
-//   rule the tmux resolver protects. Making them LIVE needs declaration tracking
-//   in the shared loader (`resolveNativePluginConfig`), which is its own change.
 // - `interactive_bash`: its truth is host availability (a persistent-terminal
 //   factory or a `tmux` on PATH), not a config key; the baked value records only
-//   that `disabled_tools` does not forbid the family.
+//   that `disabled_tools` does not forbid the family. That ONE recorded fact is
+//   re-resolved at runtime: `releaseBakedDisabledToolGate` clears a baked `false`
+//   when the EFFECTIVE live denylist stops naming the tool, so an explicit
+//   `disabled_tools: []` re-enables the family without a reinstall. Host
+//   availability is still probed where the family registers, never assumed.
 export const NATIVE_GATE_POLICY = Object.freeze({
   monitor: "live",
   team_mode: "live",
   goal: "baked",
-  task_system: "baked",
+  task_system: "live",
   interactive_bash: "baked",
-  hashline_edit: "baked",
-  preemptive_compaction: "baked",
+  hashline_edit: "live",
+  preemptive_compaction: "live",
 })
 
 // How a LIVE gate reads its declaration out of the resolved config view.
@@ -1471,7 +1771,42 @@ const LIVE_GATE_DECLARATIONS = Object.freeze({
   team_mode: (view) => (isPlainObject(view?.team_mode) && Object.prototype.hasOwnProperty.call(view.team_mode, "enabled")
     ? view.team_mode.enabled === true
     : undefined),
+  preemptive_compaction: (view) => declaredKeyBoolean(view, ["experimental.preemptive_compaction"], () => view?.experimental?.preemptive_compaction),
+  task_system: (view) => declaredKeyBoolean(view, ["experimental.task_system"], () => view?.experimental?.task_system),
+  hashline_edit: (view) => declaredKeyBoolean(view, ["hashline_edit", "experimental.hashline_edit"], () => view?.hashline_edit),
 })
+
+/**
+ * Read a boolean gate whose section the resolved view materializes a default for.
+ *
+ * The VALUE cannot answer "was the key declared", so this reads the phase-1
+ * `declarations` record instead. Two failure classes are `error` rather than
+ * `undeclared`, because both mean the runtime cannot confirm the gate and must
+ * fail closed: a layer that exists but could not be read/parsed (`loadFailures`),
+ * and a key that was authored but refused by the schema.
+ *
+ * `keys` lists the tracked paths that can declare the SAME gate, in precedence
+ * order. A refused declaration is only fatal when no tracked placement survived
+ * (a valid legacy `experimental.hashline_edit` still resolves the gate), and the
+ * value always comes from the resolved view, never from the raw layer.
+ */
+function declaredKeyBoolean(view, keys, readValue) {
+  const failure = Array.isArray(view?.loadFailures) ? view.loadFailures[0] : undefined
+  if (failure !== undefined) {
+    return { state: "error", path: failure.path, reason: failure.reason }
+  }
+  let refused
+  for (const key of keys) {
+    const declaration = view?.declarations?.[key]
+    if (declaration === undefined || declaration.state === "undeclared") continue
+    if (declaration.state === "error") {
+      refused ??= { state: "error", at: key, reason: "declared value was refused by the schema" }
+      continue
+    }
+    return { state: "declared", value: readValue() === true }
+  }
+  return refused
+}
 
 /**
  * Read the LIVE value of every LIVE gate from the user+project chain.
@@ -1479,7 +1814,9 @@ const LIVE_GATE_DECLARATIONS = Object.freeze({
  * Two states, mirroring `readLiveTmuxVisualizationSource`:
  * - `resolved`: the chain was read. `gates` carries ONLY the gates a layer
  *   declared; a gate absent from `gates` is undeclared and the caller keeps the
- *   install-time manifest value, so nothing is invented here.
+ *   install-time manifest value, so nothing is invented here. `failedClosed`
+ *   names the gates the chain COULD have declared but could not confirm (a
+ *   refused value, an unreadable layer); those never consult the manifest.
  * - `error`: the chain could not be resolved at all; the caller fails closed.
  *
  * BAKED gates are absent from `gates` in both states: they never read the chain.
@@ -1488,17 +1825,52 @@ export function readLiveGatesSource(options = {}) {
   try {
     const view = resolveNativePluginConfig(options)
     const gates = {}
+    const failedClosed = {}
     for (const gate of GATE_KEYS) {
       if (NATIVE_GATE_POLICY[gate] !== "live") continue
       const read = LIVE_GATE_DECLARATIONS[gate]
       if (typeof read !== "function") continue
       const value = read(view)
-      if (value !== undefined) gates[gate] = value
+      if (value === undefined) continue
+      if (typeof value === "boolean") {
+        gates[gate] = value
+        continue
+      }
+      if (value.state === "declared") {
+        gates[gate] = value.value === true
+        continue
+      }
+      failedClosed[gate] = value.reason ?? "unconfirmed declaration"
     }
-    return { state: "resolved", gates }
+    return { state: "resolved", gates, failedClosed }
   } catch (error) {
     return { state: "error", reason: readFailureReason(error) }
   }
+}
+
+/**
+ * Release the single BAKED gate whose recorded meaning IS a denylist.
+ *
+ * `deriveNativeGates` bakes `interactive_bash` from one fact only: whether the
+ * install-time `disabled_tools` forbade the family. Host availability is never
+ * baked (the runtime probes it), so a `disabled_tools` edit is the only way that
+ * gate can change without a reinstall. Keeping a stale `false` made the documented
+ * `disabled_tools: []` release impossible: the live list reached registration as
+ * an exact-name removal, but the family was never built in the first place.
+ *
+ * `liveDisabledTools` is the EFFECTIVE list `resolveNativeDisabledLists` produced,
+ * so every fail-closed path arrives here as the installed list and keeps the gate
+ * off: an unreadable chain, a refused value, and an undeclared list all preserve
+ * the protection. A live list that still names the tool keeps it off too, and so
+ * does a baked `false` the denylist never produced (an unknown bake is not proof
+ * of a release).
+ */
+function releaseBakedDisabledToolGate({ manifest, gates, liveDisabledTools, diagnostics }) {
+  if (gates.interactive_bash !== false) return
+  if (!readNativeDisabled(manifest).tools.includes("interactive_bash")) return
+  if (!Array.isArray(liveDisabledTools) || liveDisabledTools.includes("interactive_bash")) return
+  gates.interactive_bash = true
+  diagnostics.push("Native V2 gate policy: interactive_bash is released by the live disabled_tools list (it no longer names the tool, the installed manifest did); host availability is still probed where the family registers")
 }
 
 /**
@@ -1513,14 +1885,31 @@ export function readLiveGatesSource(options = {}) {
  * not confirm. Only a genuinely UNDECLARED key consults the manifest, and BAKED
  * gates never read the chain at all, so neither case can change them.
  *
+ * A single gate whose declaration exists but was REFUSED, or whose layer could
+ * not be read, fails closed on its own (`failedClosed`) while every other gate
+ * keeps its resolved outcome: one malformed key must not silently flip a gate on,
+ * and it must not take the readable gates down with it.
+ *
  * A declared value that DISAGREES with the baked manifest is reported in
  * `diagnostics` and the live value is used: that is the whole point of a LIVE
  * gate, and the diagnostic is what the silent version was missing. `diagnostics`
  * is empty when the live chain agrees with the manifest or declares nothing.
+ *
+ * `disabledTools` is the EFFECTIVE live `disabled_tools` list, passed in already
+ * resolved so this resolver never reads the chain twice. It releases the one
+ * BAKED gate the denylist is the whole meaning of (`interactive_bash`); see
+ * `releaseBakedDisabledToolGate`. Without it that baked `false` outlives the list
+ * that produced it, so the documented `disabled_tools: []` release would need a
+ * reinstall.
  */
-export function resolveNativeGates({ manifest, ...options } = {}) {
+export function resolveNativeGates({ manifest, disabledTools: suppliedDisabledTools, ...options } = {}) {
   const baked = readNativeGates(manifest)
   const live = readLiveGatesSource({ manifest, ...options })
+  // A caller that already resolved the denylist passes it in (setup does, so the
+  // chain is read once). Omitting it must not silently lose the release, so the
+  // same authority is consulted here instead of treating "absent" as "declared
+  // empty".
+  const liveDisabledTools = suppliedDisabledTools ?? resolveNativeDisabledLists({ manifest, ...options }).lists.tools
   const gates = { ...baked }
   const diagnostics = []
   const liveGates = GATE_KEYS.filter((gate) => NATIVE_GATE_POLICY[gate] === "live")
@@ -1532,6 +1921,12 @@ export function resolveNativeGates({ manifest, ...options } = {}) {
     return { gates: Object.freeze(gates), diagnostics }
   }
   for (const gate of liveGates) {
+    const failure = live.failedClosed?.[gate]
+    if (typeof failure === "string") {
+      gates[gate] = false
+      diagnostics.push(`Native V2 gate policy: ${gate} failed closed (${failure}) instead of using the installed manifest`)
+      continue
+    }
     if (!Object.prototype.hasOwnProperty.call(live.gates, gate)) continue
     const value = live.gates[gate] === true
     gates[gate] = value
@@ -1539,7 +1934,258 @@ export function resolveNativeGates({ manifest, ...options } = {}) {
       diagnostics.push(`Native V2 gate drift: ${gate} is ${value} in the live config but ${baked[gate]} in the installed manifest; using the live value. Reinstall to resync the manifest`)
     }
   }
+  // The ONE baked gate whose recorded meaning is the denylist may be RELEASED by
+  // the resolved live list. Every other baked gate keeps the manifest value.
+  releaseBakedDisabledToolGate({ manifest, gates, liveDisabledTools, diagnostics })
   return { gates: Object.freeze(gates), diagnostics }
+}
+
+// --- Native V2 denylist policy (LIVE vs BAKED) ---
+// WHERE each `disabled_*` denylist's value comes from at RUNTIME. The manifest is
+// baked at INSTALL time, so a runtime that reads only the manifest answers an
+// edited `~/.omo/omo.jsonc` with the stale install-time list: removing an agent
+// from `disabled_agents` could not re-enable it without a reinstall, and a newly
+// disabled command kept registering from the baked copy.
+//
+// A LIVE list is re-resolved from the same user+project chain the generator used
+// (`resolveNativePluginConfig`), so a live edit takes effect on the next setup.
+//
+// `disabled_mcps` is LIVE too, but with a different SCOPE rule, so it carries its
+// own policy value: MCP blocking is the one deny surface where the layered chain
+// has a user baseline and project hardening besides the installed default. A USER
+// declaration replaces the installed list (an explicit `[]` is the only release
+// path), while a PROJECT declaration may only ADD a deny. See
+// `resolveLiveMcpDenyList`.
+export const NATIVE_DISABLED_LIST_POLICY = Object.freeze({
+  tools: "live",
+  agents: "live",
+  skills: "live",
+  hooks: "live",
+  commands: "live",
+  mcps: "live-harden-only",
+})
+
+/** The declaration path that publishes each denylist's presence. */
+const DISABLED_LIST_DECLARATIONS = Object.freeze({
+  tools: "disabled_tools",
+  agents: "disabled_agents",
+  skills: "disabled_skills",
+  hooks: "disabled_hooks",
+  commands: "disabled_commands",
+  mcps: "disabled_mcps",
+})
+
+/** Every denylist the installed manifest materializes, normalized. */
+function readBakedDisabledLists(manifest) {
+  const disabled = readNativeDisabled(manifest)
+  return {
+    tools: disabled.tools,
+    agents: disabled.agents,
+    skills: disabled.skills,
+    hooks: disabled.hooks,
+    commands: disabled.commands,
+    mcps: readNativeMcpPolicy(manifest).disabled,
+  }
+}
+
+/**
+ * Read one list out of the resolved view. `disabled_mcps` sits beside the
+ * `disabled` block (V1 parity), not inside it, so the accessor is explicit
+ * instead of a string-keyed lookup that would silently miss it.
+ */
+function readLiveDisabledList(view, name) {
+  if (name === "mcps") return view?.disabled_mcps
+  return view?.disabled?.[name]
+}
+
+/**
+ * Read the LIVE value of every denylist a layer declared.
+ *
+ * Same shape as `readLiveGatesSource`, with the same split per list:
+ * - `resolved.lists` carries ONLY the lists a layer declared. A list absent from
+ *   it is undeclared and the caller keeps the install-time value, so nothing is
+ *   invented here.
+ * - `resolved.failedClosed` names the lists the chain could have declared but
+ *   could not confirm: a value the schema refused, or a resolved value that is
+ *   not a string list. The caller must never release a protection on those.
+ * - `error` means a LAYER of the chain could not be read, or the chain could not
+ *   be resolved at all.
+ *
+ * `error` still carries `lists`, and that is deliberate: `loadFailures` is
+ * per-FILE, so one unreadable layer does not invalidate the layers that WERE
+ * read. Nothing here is authoritative in that state, because the unreadable
+ * layer may have declared or overridden any of them, so the caller may only ADD
+ * what was confirmed. Discarding the confirmed entries instead is what released
+ * a live protection: with an installed denylist of `[]`, a readable user
+ * `disabled_mcps: ["context7"]` beside a broken project layer enforced nothing.
+ * A read that throws outright reports no `lists` at all.
+ *
+ * Values always come from the resolved view, never from the raw layer, so a live
+ * list can never disagree with what a fresh install would bake from the same
+ * file. Every list is reported here, including the ones the policy keeps BAKED,
+ * so the policy is the ONLY thing that decides which list is enforced.
+ */
+export function readLiveDisabledListsSource(options = {}) {
+  try {
+    const view = resolveNativePluginConfig(options)
+    const failure = Array.isArray(view?.loadFailures) ? view.loadFailures[0] : undefined
+    const lists = {}
+    const failedClosed = {}
+    for (const [name, key] of Object.entries(DISABLED_LIST_DECLARATIONS)) {
+      const declaration = view?.declarations?.[key]
+      if (declaration === undefined || declaration.state === "undeclared") continue
+      if (declaration.state === "error") {
+        failedClosed[name] = "declared value was refused by the schema"
+        continue
+      }
+      const value = readLiveDisabledList(view, name)
+      if (!Array.isArray(value)) {
+        failedClosed[name] = "resolved value is not a string list"
+        continue
+      }
+      lists[name] = [...value]
+    }
+    if (failure !== undefined) {
+      return { state: "error", path: failure.path, reason: failure.reason, lists, failedClosed, mcpScope: readMcpDisabledScope(view) }
+    }
+    return { state: "resolved", lists, failedClosed, mcpScope: readMcpDisabledScope(view) }
+  } catch (error) {
+    return { state: "error", reason: readFailureReason(error) }
+  }
+}
+
+/**
+ * Normalize the per-scope `disabled_mcps` record the fold published. A view from
+ * an older assembly (or a caller's own object) degrades to "no scope declared
+ * anything", which keeps the installed denylist.
+ */
+function readMcpDisabledScope(view) {
+  const raw = view?.mcpDisabledScope
+  const entry = (value) => ({ declared: value?.declared === true, refused: value?.refused === true })
+  return { user: entry(raw?.user), project: entry(raw?.project) }
+}
+
+/**
+ * Compose the LIVE `disabled_mcps` list.
+ *
+ * The value always comes from the resolved view (`source.lists.mcps`), so a live
+ * list can never disagree with what a fresh install would bake from the same
+ * file; only the scope PRESENCE comes from `source.mcpScope`.
+ *
+ * Scope rules, in the fail-closed direction a denylist requires:
+ * - a USER declaration is the baseline. Its list replaces the installed one, and
+ *   an explicit `[]` is the ONLY way a protection is released;
+ * - a PROJECT declaration may only add. A project `[]` adds nothing, so it can
+ *   never release the installed list, a user deny, or another layer's deny;
+ * - a refused declaration leaves the user baseline UNCONFIRMED: nothing is
+ *   released, the installed list is kept, and every valid deny is unioned on.
+ *
+ * `unconfirmed` reaches the same fail-closed state from the other direction: a
+ * layer of the chain could not be read, so the user baseline is unconfirmed as
+ * well. The confirmed denies are still real protections, so they are unioned
+ * onto the installed list, and a `[]` release is NOT honored because the layer
+ * that could not be read may have contradicted it.
+ */
+function resolveLiveMcpDenyList({ baked, source, diagnostics, unconfirmed }) {
+  const declared = Array.isArray(source.lists?.mcps) ? source.lists.mcps : []
+  const scope = source.mcpScope ?? { user: { declared: false, refused: false }, project: { declared: false, refused: false } }
+  const userConfirmed = unconfirmed === undefined && scope.user.declared && !scope.user.refused
+  const effective = userConfirmed ? [...declared] : mergeUniqueStrings(baked, declared)
+  if (!userConfirmed) {
+    if (unconfirmed !== undefined) {
+      // Only worth a line of its own when a confirmed deny actually outlived the
+      // failure: otherwise the installed list alone applies and the caller's
+      // "kept the installed denylist" line already says so.
+      if (JSON.stringify(effective) !== JSON.stringify(baked)) {
+        const where = typeof unconfirmed.path === "string" ? `${unconfirmed.path}: ` : ""
+        diagnostics.push(`Native V2 disabled lists: disabled_mcps kept the installed denylist plus every deny a readable layer confirmed, so [${effective.join(", ")}] apply (${where}${unconfirmed.reason ?? "unknown"}); a layer the chain could not read may not release a protection`)
+      }
+    } else if (scope.user.refused) {
+      diagnostics.push(`Native V2 disabled lists: disabled_mcps kept the installed denylist (the user-scope declared value was refused by the schema); project declarations may only add to it`)
+    } else if (scope.project.refused) {
+      diagnostics.push(`Native V2 disabled lists: disabled_mcps ignored a project-scope declaration refused by the schema; the installed denylist is kept and only valid project denies apply`)
+    }
+  }
+  if (unconfirmed === undefined && JSON.stringify(effective) !== JSON.stringify(baked)) {
+    diagnostics.push(`Native V2 disabled lists: disabled_mcps is [${effective.join(", ")}] in the live config but [${baked.join(", ")}] in the installed manifest; using the live list. Reinstall to resync the manifest`)
+  }
+  return effective
+}
+
+/**
+ * Resolve the denylists the runtime must enforce, plus the drift to report.
+ *
+ * A denylist is a PROTECTION, so its fail-closed direction is the OPPOSITE of a
+ * boolean gate's:
+ * - an unreadable chain, a refused value, or a value that is not a string list
+ *   KEEPS the installed denylist. Falling back to "nothing is disabled" would
+ *   release a protection the runtime could not confirm.
+ * - a deny a READABLE layer confirmed is UNIONED onto that installed list. The
+ *   installed list is a floor, not a ceiling: dropping a confirmed deny because
+ *   an unrelated layer failed to parse released a protection with no evidence
+ *   that anyone asked for it, and a `[]` release stays unconfirmed for the same
+ *   reason.
+ * - an UNDECLARED list keeps the install-time value, which is the backward-
+ *   compatible half: an install that never edited anything behaves exactly as
+ *   before.
+ * - a DECLARED list REPLACES it, `[]` included, when every layer was readable.
+ *   An explicit empty list is the user saying "nothing is disabled", never an
+ *   absence.
+ *
+ * BAKED lists never read the chain, and every disagreement the runtime actually
+ * applies is reported once so a silent override cannot happen.
+ *
+ * `disabled_mcps` is the exception that proves the rule: it is LIVE but
+ * HARDEN-ONLY across scope, so its value comes from `resolveLiveMcpDenyList`
+ * instead of the plain replace below.
+ */
+export function resolveNativeDisabledLists({ manifest, ...options } = {}) {
+  const baked = readBakedDisabledLists(manifest)
+  const source = readLiveDisabledListsSource({ manifest, ...options })
+  const diagnostics = []
+  const lists = { ...baked }
+  const live = {}
+  const liveNames = Object.keys(DISABLED_LIST_DECLARATIONS)
+    .filter((name) => NATIVE_DISABLED_LIST_POLICY[name] !== "baked")
+  if (source.state === "error") {
+    // An unreadable layer invalidates AUTHORITY, never a deny another layer
+    // confirmed: the installed list is a floor, so the confirmed denies are
+    // unioned onto it instead of replacing it.
+    if (liveNames.length > 0) {
+      diagnostics.push(`Native V2 disabled lists: live config unreadable (${source.reason ?? "unknown"}); ${liveNames.map((name) => DISABLED_LIST_DECLARATIONS[name]).join(", ")} kept the installed denylist instead of dropping protections`)
+    }
+    for (const [name, value] of Object.entries(source.lists ?? {})) live[name] = [...value]
+    for (const name of liveNames) {
+      if (name === "mcps") {
+        lists.mcps = resolveLiveMcpDenyList({ baked: baked.mcps, source, diagnostics, unconfirmed: { path: source.path, reason: source.reason } })
+        continue
+      }
+      const confirmed = Array.isArray(source.lists?.[name]) ? source.lists[name] : []
+      if (confirmed.length === 0) continue
+      lists[name] = mergeUniqueStrings(baked[name], confirmed)
+      diagnostics.push(`Native V2 disabled lists: ${DISABLED_LIST_DECLARATIONS[name]} kept the installed denylist plus the denies a readable layer confirmed ([${confirmed.join(", ")}]) even though a layer of the chain could not be read`)
+    }
+    return { lists: deepFreeze(lists), live: deepFreeze(live), diagnostics }
+  }
+  for (const [name, value] of Object.entries(source.lists ?? {})) live[name] = [...value]
+  for (const name of liveNames) {
+    if (name === "mcps") {
+      lists.mcps = resolveLiveMcpDenyList({ baked: baked.mcps, source, diagnostics })
+      continue
+    }
+    const failure = source.failedClosed?.[name]
+    if (typeof failure === "string") {
+      diagnostics.push(`Native V2 disabled lists: ${DISABLED_LIST_DECLARATIONS[name]} kept the installed denylist (${failure})`)
+      continue
+    }
+    if (!Object.prototype.hasOwnProperty.call(source.lists ?? {}, name)) continue
+    const value = source.lists[name]
+    lists[name] = [...value]
+    if (JSON.stringify(value) !== JSON.stringify(baked[name])) {
+      diagnostics.push(`Native V2 disabled lists: ${DISABLED_LIST_DECLARATIONS[name]} is [${value.join(", ")}] in the live config but [${baked[name].join(", ")}] in the installed manifest; using the live list. Reinstall to resync the manifest`)
+    }
+  }
+  return { lists: deepFreeze(lists), live: deepFreeze(live), diagnostics }
 }
 
 export function readNativeMcpPolicy(manifest) {
@@ -1547,6 +2193,72 @@ export function readNativeMcpPolicy(manifest) {
   const source = isPlainObject(raw) ? raw : {}
   const normalize = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "string") : []
   return { disabled: normalize(source.disabled), envAllowlist: normalize(source.envAllowlist) }
+}
+
+// --- Native V2 MCP env allowlist policy (user-only, fail-closed) ---
+// `mcp_env_allowlist` names the env vars a tier-2 `.mcp.json` may expand. It is a
+// GRANT list, so its fail-closed direction is the OPPOSITE of a denylist's: an
+// unconfirmed read must grant NOTHING. A tier-2 `.mcp.json` can live in a PROJECT
+// directory, so a grant set resurrected from an unconfirmed read is exactly the
+// leak this allowlist exists to stop.
+//
+// SCOPE is a hard boundary, not a preference: the fold collects the key from
+// user-scope placements only (layer root, `[opencode]`, the user's own profile),
+// so a project layer can never extend it, and a project placement is not even a
+// declaration.
+
+/**
+ * Read the LIVE user-scope `mcp_env_allowlist`.
+ *
+ * Same three states as every other live-read authority here:
+ * - `declared`: a user placement authored the key and the value survived, so the
+ *   live list outranks the install-time manifest. `[]` is a declaration.
+ * - `undeclared`: no user placement authored it; the caller keeps the installed
+ *   allowlist, which is the backward-compatible half.
+ * - `error`: the chain could not be read, or the authored value was refused.
+ *   The caller must grant nothing.
+ */
+export function readLiveMcpEnvAllowlistSource(options = {}) {
+  try {
+    const view = resolveNativePluginConfig(options)
+    const failure = Array.isArray(view?.loadFailures) ? view.loadFailures[0] : undefined
+    if (failure !== undefined) return { state: "error", path: failure.path, scope: failure.scope, reason: failure.reason }
+    const declaration = view?.declarations?.mcp_env_allowlist
+    if (declaration === undefined || declaration.state === "undeclared") return { state: "undeclared" }
+    if (declaration.state === "error") {
+      return { state: "error", at: "mcp_env_allowlist", reason: "declared value was refused by the schema" }
+    }
+    const values = view?.mcp_env_allowlist
+    if (!Array.isArray(values)) {
+      return { state: "error", at: "mcp_env_allowlist", reason: "resolved value is not a string list" }
+    }
+    return { state: "declared", values: [...values], sources: declaration.sources }
+  } catch (error) {
+    return { state: "error", reason: readFailureReason(error) }
+  }
+}
+
+/**
+ * Resolve the MCP env allowlist the runtime must enforce, plus the drift to
+ * report. A confirmation failure grants nothing; only an ABSENT key falls back to
+ * the installed value.
+ */
+export function resolveNativeMcpEnvAllowlist({ manifest, ...options } = {}) {
+  const baked = readNativeMcpPolicy(manifest).envAllowlist
+  const live = readLiveMcpEnvAllowlistSource({ manifest, ...options })
+  const diagnostics = []
+  if (live.state === "declared") {
+    if (JSON.stringify(live.values) !== JSON.stringify(baked)) {
+      diagnostics.push(`Native V2 MCP env allowlist: mcp_env_allowlist is [${live.values.join(", ")}] in the live config but [${baked.join(", ")}] in the installed manifest; using the live value. Reinstall to resync the manifest`)
+    }
+    return { state: live.state, allowlist: [...live.values], diagnostics }
+  }
+  if (live.state === "error") {
+    const where = typeof live.path === "string" ? `${live.path}: ` : ""
+    diagnostics.push(`Native V2 MCP env allowlist: ${where}could not confirm mcp_env_allowlist (${live.reason ?? "unknown"}); no MCP env reference may expand (fail-closed)`)
+    return { state: live.state, allowlist: [], diagnostics }
+  }
+  return { state: live.state, allowlist: [...baked], diagnostics }
 }
 
 /**
@@ -1614,13 +2326,91 @@ export function readNativeMaxTools(manifest) {
 }
 
 /**
+ * The V1 threshold the preemptive trigger falls back to when nothing declares
+ * one. It duplicates `rigel-v2-native-preemptive-compaction.mjs`
+ * `PREEMPTIVE_COMPACTION_THRESHOLD` because that module is a pure port with no
+ * imports; `rigel-v2-native-config.test.mjs` pins the two copies equal so the
+ * duplication cannot drift.
+ */
+export const NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT = 0.78
+
+const PREEMPTIVE_THRESHOLD_DECLARATION = "experimental.preemptive_compaction_threshold"
+
+function isPreemptiveThreshold(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1
+}
+
+/**
  * Read the materialized `experimental.preemptive_compaction_threshold` (T34).
  * Returns undefined when unset or out of the (0, 1] range, so the runtime keeps
  * the V1 0.78 default instead of guessing.
  */
 export function readNativePreemptiveThreshold(manifest) {
   const value = manifest?.metadata?.global?.preemptiveCompactionThreshold
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1 ? value : undefined
+  return isPreemptiveThreshold(value) ? value : undefined
+}
+
+/**
+ * Read the LIVE `experimental.preemptive_compaction_threshold` from the
+ * user+project chain.
+ *
+ * Same three states as the other live-read authorities:
+ * - `declared`: a layer wrote the key and the schema accepted it, so the
+ *   resolved value outranks the install-time manifest.
+ * - `undeclared`: no layer wrote it; the caller keeps the manifest value.
+ * - `error`: the chain could not be resolved, a layer that exists could not be
+ *   read/parsed, or the key was authored but refused. A threshold drives a
+ *   compaction request, so an unconfirmed one is never used: the caller fails
+ *   closed to the documented default instead of the stale manifest.
+ */
+export function readLivePreemptiveThresholdSource(options = {}) {
+  try {
+    const view = resolveNativePluginConfig(options)
+    const failure = Array.isArray(view?.loadFailures) ? view.loadFailures[0] : undefined
+    if (failure !== undefined) {
+      return { state: "error", path: failure.path, scope: failure.scope, reason: failure.reason }
+    }
+    const declaration = view?.declarations?.[PREEMPTIVE_THRESHOLD_DECLARATION]
+    if (declaration === undefined || declaration.state === "undeclared") return { state: "undeclared" }
+    if (declaration.state === "error") {
+      return { state: "error", at: PREEMPTIVE_THRESHOLD_DECLARATION, reason: "declared value was refused by the schema" }
+    }
+    const value = view?.experimental?.preemptive_compaction_threshold
+    if (!isPreemptiveThreshold(value)) {
+      return { state: "error", at: PREEMPTIVE_THRESHOLD_DECLARATION, reason: "declared value is not a fraction in (0, 1]" }
+    }
+    return { state: "declared", value, sources: declaration.sources }
+  } catch (error) {
+    return { state: "error", reason: readFailureReason(error) }
+  }
+}
+
+/**
+ * Resolve the preemptive threshold the runtime must use, plus the transitions
+ * to report.
+ *
+ * Only a valid declaration from the live chain outranks the install-time
+ * manifest. An undeclared key keeps the manifest value, so an install that baked
+ * a custom threshold keeps it, and 0.78 is used only when neither source carries
+ * one. A chain that could not confirm the value FAILS CLOSED to 0.78 rather than
+ * to a manifest value the runtime could not verify.
+ */
+export function resolveNativePreemptiveThreshold({ manifest, ...options } = {}) {
+  const baked = readNativePreemptiveThreshold(manifest)
+  const live = readLivePreemptiveThresholdSource({ manifest, ...options })
+  const diagnostics = []
+  if (live.state === "declared") {
+    if (baked !== undefined && baked !== live.value) {
+      diagnostics.push(`Native V2 preemptive compaction: threshold is ${live.value} in the live config but ${baked} in the installed manifest; using the live value. Reinstall to resync the manifest`)
+    }
+    return { state: live.state, value: live.value, diagnostics }
+  }
+  if (live.state === "error") {
+    const where = typeof live.path === "string" ? `${live.path}: ` : ""
+    diagnostics.push(`Native V2 preemptive compaction: ${where}live config could not confirm the threshold (${live.reason}); using the documented ${NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT} default instead of the installed manifest`)
+    return { state: live.state, value: NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT, diagnostics }
+  }
+  return { state: live.state, value: baked ?? NATIVE_PREEMPTIVE_COMPACTION_THRESHOLD_DEFAULT, diagnostics }
 }
 
 /**

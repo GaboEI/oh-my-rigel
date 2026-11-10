@@ -71,19 +71,22 @@ function isPositiveLimit(value) {
 /**
  * Resolve the model's actual context window for the preemptive threshold.
  *
- * The Anthropic branch mirrors V1 exactly: an explicit 1M env override wins, a
- * GA-1M model reads the model row's `limit.context` when present, otherwise it
- * defaults to the 1M GA limit, and any other Anthropic model defaults to the
- * 200k V1 limit. The non-Anthropic branch uses the V2 model row's `limit.context`
- * (`modelContextLimit`) and returns `null` when the row carries no usable limit,
- * so the trigger degrades to a no-op exactly like V1 when the limit is unknown.
+ * The catalog row (`limit.context`) is the REAL window and wins for every
+ * provider, Anthropic included: the id-regex fallbacks exist only for a row that
+ * carries no usable limit. A new Anthropic model that the regex does not know
+ * (`claude-sonnet-5-5`) would otherwise be pinned to the 200k V1 default while
+ * its real window is 1M, and the trigger would compact five times too early.
+ *
+ * An explicit 1M env override still wins first (V1 parity). The non-Anthropic
+ * branch returns `null` when the row carries no usable limit, so the trigger
+ * degrades to a no-op exactly like V1 when the limit is unknown.
  */
 export function resolveNativeContextLimit({ providerID, modelID, modelContextLimit, env } = {}) {
   const environment = env ?? {}
   if (isAnthropicProvider(providerID, modelID)) {
     const explicit1M = environment.ANTHROPIC_1M_CONTEXT === "true" || environment.VERTEX_ANTHROPIC_1M_CONTEXT === "true"
     if (explicit1M) return ANTHROPIC_GA_1M_LIMIT
-    if (hasGA1MContext(modelID) && isPositiveLimit(modelContextLimit)) return modelContextLimit
+    if (isPositiveLimit(modelContextLimit)) return modelContextLimit
     if (hasGA1MContext(modelID)) return ANTHROPIC_GA_1M_LIMIT
     return DEFAULT_ANTHROPIC_ACTUAL_LIMIT
   }

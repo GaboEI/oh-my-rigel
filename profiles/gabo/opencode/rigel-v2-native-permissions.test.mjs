@@ -40,10 +40,73 @@ test("maps V1 write and apply_patch onto the native edit action", async () => {
   expect(rules.some((rule) => rule.action === "write" || rule.action === "apply_patch")).toBe(false)
 })
 
-test("accepts the V1 todoread permission the task system emits instead of aborting", async () => {
+test("gates the V1 todowrite and todoread task-system permissions by tool name", async () => {
   const { translateV1Permissions } = await load()
   const { toolGates } = translateV1Permissions({ todowrite: "deny", todoread: "deny" })
+  // The host rule alone does not govern the `todowrite` tool the runtime
+  // registers, so the same V1 deny must also be a real tool-name gate.
+  expect(toolGates).toContainEqual({ pattern: "todowrite", effect: "deny" })
   expect(toolGates).toContainEqual({ pattern: "todoread", effect: "deny" })
+})
+
+test("live task-system normalization removes only the V1-injected entries", async () => {
+  const { applyLiveTaskSystemGlobalTools, applyLiveTaskSystemPermission } = await load()
+
+  // given a manifest baked with the task system ON, where the todo deny and the
+  // `task_*` allow are the V1 overlay and the todowrite ask shape is not
+  const declared = { task: "allow", "task_*": "allow", todowrite: { "*": "ask" }, todoread: "deny" }
+
+  // when the live gate is off
+  const off = applyLiveTaskSystemPermission("Sisyphus - ultraworker", declared, false, true)
+
+  // then the injected entries go and the agent declaration survives
+  expect(off).toEqual({ task: "allow", todowrite: { "*": "ask" } })
+
+  // and an agent outside the task family is returned untouched
+  const librarian = { task: "deny", "grep_app_*": "allow" }
+  expect(applyLiveTaskSystemPermission("librarian", librarian, true)).toBe(librarian)
+
+  // A user-declared global todowrite enable is not revoked by a gate flip, even
+  // from a manifest baked ON.
+  expect(applyLiveTaskSystemGlobalTools({ "task_*": true, todowrite: true }, false, true)).toEqual({ "task_*": false, todowrite: true })
+})
+
+// Regression for the Codex finding: a manifest baked with the task system OFF
+// carries no V1 todo overlay, so an identical `todowrite` / `todoread` deny in
+// that manifest is a user declaration. The live normalization must prove the
+// entry was generated (baked gate ON) before removing it, or it silently
+// deletes a restriction the user asked for.
+test("live task-system normalization preserves a user todo deny a baked-OFF manifest never injected", async () => {
+  const { applyLiveTaskSystemGlobalTools, applyLiveTaskSystemPermission } = await load()
+
+  // given a manifest baked with the task system OFF plus an explicit todo deny
+  const declared = { task: "allow", "task_*": "allow", todowrite: "deny", todoread: "deny" }
+
+  // when the live gate is also off
+  const off = applyLiveTaskSystemPermission("Sisyphus - ultraworker", declared, false, false)
+
+  // then the explicit todo denies survive
+  expect(off).toEqual({ task: "allow", todowrite: "deny", todoread: "deny" })
+
+  // and the same holds for Hephaestus, who never receives `task_*`
+  expect(applyLiveTaskSystemPermission("Hephaestus - Deep Agent", { task: "allow", todowrite: "deny" }, false, false))
+    .toEqual({ task: "allow", todowrite: "deny" })
+
+  // and for the global tool record, where the baked-OFF bake wrote no todo false
+  expect(applyLiveTaskSystemGlobalTools({ "task_*": false, todowrite: false, todoread: false }, false, false))
+    .toEqual({ "task_*": false, todowrite: false, todoread: false })
+
+  // baked ON is the proof those identical entries came from the V1 overlay
+  expect(applyLiveTaskSystemPermission("Sisyphus - ultraworker", declared, false, true))
+    .toEqual({ task: "allow" })
+  expect(applyLiveTaskSystemGlobalTools({ "task_*": true, todowrite: false, todoread: false }, false, true))
+    .toEqual({ "task_*": false })
+
+  // a live ON gate still applies the generated overlay over a baked-OFF manifest
+  expect(applyLiveTaskSystemPermission("Sisyphus - ultraworker", { task: "allow" }, true, false))
+    .toEqual({ task: "allow", "task_*": "allow", todowrite: "deny", todoread: "deny" })
+  expect(applyLiveTaskSystemGlobalTools({ "task_*": false }, true, false))
+    .toEqual({ "task_*": true, todowrite: false, todoread: false })
 })
 
 test("maps the remaining native V1 actions to their V2 action names", async () => {
