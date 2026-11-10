@@ -13,10 +13,13 @@
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve as resolvePath } from "node:path"
 import plugin, { createDisabledToolEditor, createNativePermissionWiring } from "./rigel-v2-native.mjs"
+import { registerNativeAgents } from "./rigel-v2-native-agents.mjs"
+import { resolveNativeGates } from "./rigel-v2-native-config.mjs"
 import {
   TOOL_DISABLED_BY_CONFIG,
+  TOOL_PERMISSION_DENIED,
   createDisabledToolSet,
   createNativeToolPermissionGate,
 } from "./rigel-v2-native-permissions.mjs"
@@ -283,5 +286,272 @@ test("#given the live omo.jsonc declares no disabled_tools #when the runtime set
     } finally {
       await dispose()
     }
+  })
+})
+
+// --- Release parity: a baked entry must not outlive the live list that wrote it ---
+
+// Both findings share one defect shape: an install-time bake turned a denylist
+// entry into a PERMANENT restriction. `interactive_bash` bakes only "the denylist
+// did not forbid it", and V1 `applyToolConfig` writes the `question` deny on the
+// ask-surface agents only while `question` is on the denylist. Removing the entry
+// therefore has to undo both, or the documented `disabled_tools: []` release needs
+// a reinstall. Host availability and every independently authored permission stay
+// authoritative.
+
+const HOME = resolvePath("/home/rigeltest")
+const PROJECT = join(HOME, "proj")
+const PROJECT_CONFIG = join(PROJECT, ".omo", "omo.jsonc")
+const GATE_RECORD = { interactive_bash: false, task_system: false, goal: false, monitor: false, team_mode: false, hashline_edit: false, preemptive_compaction: false }
+
+// A deterministic chain: the review must never depend on the host's real
+// `~/.omo/omo.jsonc`, and a hard-coded POSIX prefix never matches on Windows, so
+// the fixture keys are built with the same `join` the resolver uses.
+function memoryFileSystem(files) {
+  const entries = new Map(Object.entries(files))
+  return {
+    existsSync: (path) => entries.has(path),
+    lstatSync: () => ({ isSymbolicLink: () => false }),
+    readFileSync: (path) => {
+      const value = entries.get(path)
+      if (value === undefined) throw new Error(`ENOENT: ${path}`)
+      return value
+    },
+    realpathSync: (path) => path,
+  }
+}
+
+const UNREADABLE = {
+  existsSync: () => {
+    throw new Error("EACCES: cannot resolve the config chain")
+  },
+  lstatSync: () => ({ isSymbolicLink: () => false }),
+  readFileSync: () => {
+    throw new Error("EACCES")
+  },
+  realpathSync: (path) => path,
+}
+
+function declaring(block) {
+  return memoryFileSystem({ [PROJECT_CONFIG]: JSON.stringify({ "[opencode]": block }) })
+}
+
+// The exact manifest a bake produces when `disabled_tools` named
+// `interactive_bash`: the gate is false and the denylist record proves why.
+function bakedDenylistManifest(disabledTools) {
+  return { metadata: { global: { gates: { ...GATE_RECORD }, disabled: { tools: disabledTools } } } }
+}
+
+describe("#given the bake disabled interactive_bash through disabled_tools", () => {
+  test("#when the live list releases it #then the gate turns back on and the family registers on a supported backend", () => {
+    // given
+    const manifest = bakedDenylistManifest(["interactive_bash"])
+    // when
+    const resolution = resolveNativeGates({ manifest, directory: PROJECT, env: { HOME }, fileSystem: declaring({ disabled_tools: [] }) })
+    const built = buildConditionalToolDefinitions({ gates: resolution.gates, terminalFactory: () => ({}) })
+    // then
+    expect(resolution.gates.interactive_bash).toBe(true)
+    expect(built.names).toEqual(["interactive_bash"])
+    // the release is reported, so a silent flip cannot happen
+    expect(resolution.diagnostics.some((line) => line.includes("interactive_bash") && line.includes("released"))).toBe(true)
+  })
+
+  test("#when the live list still names it #then the gate stays off and the family never registers", () => {
+    // given
+    const manifest = bakedDenylistManifest(["interactive_bash"])
+    // when
+    const resolution = resolveNativeGates({ manifest, directory: PROJECT, env: { HOME }, fileSystem: declaring({ disabled_tools: ["interactive_bash"] }) })
+    const built = buildConditionalToolDefinitions({ gates: resolution.gates, terminalFactory: () => ({}) })
+    // then
+    expect(resolution.gates.interactive_bash).toBe(false)
+    expect(built.names).toEqual([])
+    expect(resolution.diagnostics).toEqual([])
+  })
+
+  test("#when no layer declares the list #then the baked protection is kept", () => {
+    // given: an undeclared list is not a release
+    const manifest = bakedDenylistManifest(["interactive_bash"])
+    // when
+    const resolution = resolveNativeGates({ manifest, directory: PROJECT, env: { HOME }, fileSystem: memoryFileSystem({}) })
+    // then
+    expect(resolution.gates.interactive_bash).toBe(false)
+  })
+
+  test("#when the live chain cannot be read #then the released gate fails closed instead of restoring the tool", () => {
+    // given: the chain may have released the tool, so the runtime cannot confirm it
+    const manifest = bakedDenylistManifest(["interactive_bash"])
+    // when
+    const resolution = resolveNativeGates({ manifest, directory: PROJECT, env: { HOME }, fileSystem: UNREADABLE })
+    // then
+    expect(resolution.gates.interactive_bash).toBe(false)
+    expect(resolution.diagnostics.some((line) => line.includes("unreadable"))).toBe(true)
+  })
+
+  test("#when the baked gate is off but the bake never named it #then an unknown bake is not a release", () => {
+    // given: no recorded denylist entry proves the gate was denylist-produced
+    const manifest = bakedDenylistManifest([])
+    // when
+    const resolution = resolveNativeGates({ manifest, directory: PROJECT, env: { HOME }, fileSystem: declaring({ disabled_tools: [] }) })
+    // then
+    expect(resolution.gates.interactive_bash).toBe(false)
+  })
+
+  test("#when the live list releases it but the host has no backend #then the gate is on and availability still decides", () => {
+    // given: no persistent-terminal factory, no tmux, no pty runner
+    const manifest = bakedDenylistManifest(["interactive_bash"])
+    const unavailable = []
+    // when
+    const resolution = resolveNativeGates({ manifest, directory: PROJECT, env: { HOME }, fileSystem: declaring({ disabled_tools: [] }) })
+    const built = buildConditionalToolDefinitions({
+      gates: resolution.gates,
+      onUnavailable: (family, reason) => unavailable.push([family, reason]),
+    })
+    // then: a released gate never overrides host capability
+    expect(resolution.gates.interactive_bash).toBe(true)
+    expect(built.names).toEqual([])
+    expect(unavailable).toEqual([["interactive_bash", "tmux is not available on PATH"]])
+  })
+})
+
+// V1 `applyToolConfig` writes `question: "deny"` onto the three ask-surface
+// agents while `disabled_tools` names `question`, so the manifest bakes a deny the
+// live list cannot reach: `question` belongs to the HOST, and the live denylist is
+// only an exact-name removal for tools this runtime registers. The bake's own
+// `disabled.tools` record is the proof the entry was generated, and `atlas` is
+// never written by V1, so an identical deny there is the user's own declaration.
+const QUESTION_OVERLAY_AGENTS = ["Sisyphus - ultraworker", "Hephaestus - Deep Agent", "Prometheus - Plan Builder"]
+
+function bakedQuestionManifest({ globalPermission, extraAgents = {} } = {}) {
+  const askDeny = { task: "allow", call_omo_agent: "deny", question: "deny" }
+  return {
+    agents: {
+      sisyphus: { name: "Sisyphus - ultraworker", mode: "primary", permission: { ...askDeny, "task_*": "allow", teammate: "allow" } },
+      hephaestus: { name: "Hephaestus - Deep Agent", mode: "primary", permission: { ...askDeny, teammate: "allow" } },
+      prometheus: { name: "Prometheus - Plan Builder", mode: "primary", permission: { ...askDeny, "task_*": "allow", teammate: "allow" } },
+      // V1 never writes `question` here, so this deny can only be the user's.
+      atlas: { name: "Atlas - Plan Executor", mode: "primary", permission: { task: "allow", question: "deny" } },
+      ...extraAgents,
+    },
+    metadata: {
+      global: {
+        gates: {},
+        disabled: { tools: ["question"] },
+        ...(globalPermission === undefined ? {} : { permission: globalPermission }),
+      },
+    },
+  }
+}
+
+// The real registration path: every agent definition goes through the same
+// pre-translation overlay and the same permission wiring the runtime uses, so the
+// assertions cover the tool-name gate AND the host rules the agent is registered
+// with.
+async function registerQuestionAgents(manifest, disabledTools) {
+  const wiring = createNativePermissionWiring({ manifest, disabledTools })
+  const captured = new Map()
+  const agentDomain = {
+    transform: async (callback) => {
+      callback({
+        update: (id, apply) => {
+          const agent = { request: { headers: {}, body: {} }, permissions: [] }
+          apply(agent)
+          captured.set(id, agent)
+        },
+        default() {},
+      })
+      return { dispose() {} }
+    },
+    reload: async () => {},
+  }
+  await registerNativeAgents(agentDomain, manifest, {
+    disabledAgents: [],
+    disabledTools,
+    onAgentPermissions: (id, permissions) => wiring.onAgentPermissions(id, permissions),
+  })
+  return { wiring, captured }
+}
+
+async function questionOutcome(wiring, agent) {
+  try {
+    await wiring.before({ tool: "question", agent })
+    return "allowed"
+  } catch (error) {
+    return error.code
+  }
+}
+
+describe("#given the bake denied question because disabled_tools named it", () => {
+  test("#when the live list releases it #then the generated deny is gone from both enforcement surfaces", async () => {
+    // given
+    const manifest = bakedQuestionManifest()
+    // when
+    const { wiring, captured } = await registerQuestionAgents(manifest, [])
+    // then: the generated deny no longer gates the ask surface...
+    for (const agent of QUESTION_OVERLAY_AGENTS) expect(await questionOutcome(wiring, agent), agent).toBe("allowed")
+    // ...and it is gone from the host rules the agent registers with.
+    for (const id of ["sisyphus", "hephaestus", "prometheus"]) {
+      expect(captured.get(id).permissions.some((rule) => rule.action === "question"), id).toBe(false)
+    }
+    // The V1 grants V1 also wrote there are untouched.
+    expect(captured.get("sisyphus").permissions).toEqual([{ action: "subagent", resource: "*", effect: "allow" }])
+  })
+
+  test("#when the live list still names it #then the deny is kept", async () => {
+    // given
+    const manifest = bakedQuestionManifest()
+    // when
+    const { wiring, captured } = await registerQuestionAgents(manifest, ["question"])
+    // then: the live configuration deny is enforced ahead of every permission
+    // layer, and the generated agent entry was NOT stripped on the way.
+    expect(await questionOutcome(wiring, QUESTION_OVERLAY_AGENTS[0])).toBe(TOOL_DISABLED_BY_CONFIG)
+    for (const id of ["sisyphus", "hephaestus", "prometheus"]) {
+      expect(captured.get(id).permissions.some((rule) => rule.action === "question"), id).toBe(true)
+    }
+  })
+
+  test("#when the live list names it only AFTER the bake #then the deny is still refused as a config deny", async () => {
+    // given: the bake never named `question`, so there is no generated entry to clean
+    const manifest = bakedQuestionManifest()
+    manifest.metadata.global.disabled.tools = []
+    // when
+    const { wiring } = await registerQuestionAgents(manifest, ["question"])
+    // then: the live denylist is enforced ahead of every permission layer
+    expect(await questionOutcome(wiring, QUESTION_OVERLAY_AGENTS[0])).toBe(TOOL_DISABLED_BY_CONFIG)
+  })
+
+  test("#when the release happens #then a deny V1 never wrote on that agent survives", async () => {
+    // given
+    const manifest = bakedQuestionManifest()
+    // when
+    const { wiring, captured } = await registerQuestionAgents(manifest, [])
+    // then
+    expect(await questionOutcome(wiring, "Atlas - Plan Executor")).toBe(TOOL_PERMISSION_DENIED)
+    expect(captured.get("atlas").permissions).toEqual([
+      { action: "subagent", resource: "*", effect: "allow" },
+      { action: "question", resource: "*", effect: "deny" },
+    ])
+  })
+
+  test("#when the user also denied question globally #then the release leaves that deny in the host rules", async () => {
+    // given: the global permission overlay is a separate, authored layer
+    const manifest = bakedQuestionManifest({ globalPermission: { question: "deny" } })
+    // when
+    const { captured } = await registerQuestionAgents(manifest, [])
+    // then: the generated agent entry is gone, the global deny still reaches the
+    // host ahead of the agent layer (merge order: baseline, global, agent).
+    expect(captured.get("sisyphus").permissions).toEqual([
+      { action: "question", resource: "*", effect: "deny" },
+      { action: "subagent", resource: "*", effect: "allow" },
+    ])
+  })
+
+  test("#when the manifest carries no disabled_tools record #then an identical deny is treated as authored and kept", async () => {
+    // given: without the recorded bake there is no proof the deny was generated
+    const manifest = bakedQuestionManifest()
+    delete manifest.metadata.global.disabled
+    // when
+    const { wiring } = await registerQuestionAgents(manifest, [])
+    // then
+    for (const agent of QUESTION_OVERLAY_AGENTS) expect(await questionOutcome(wiring, agent), agent).toBe(TOOL_PERMISSION_DENIED)
   })
 })

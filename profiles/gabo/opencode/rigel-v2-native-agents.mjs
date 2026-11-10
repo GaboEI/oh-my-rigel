@@ -14,7 +14,7 @@
 
 import { agentChain, resolveFallbackModel } from "./rigel-v2-native-model-chains.mjs"
 import { resolveAgentDelegationModel } from "./rigel-v2-native-explicit-chain.mjs"
-import { applyLiveTaskSystemPermission, frontierToolSchemaPermission, mergePermissionRules, translateV1Permissions } from "./rigel-v2-native-permissions.mjs"
+import { applyLiveDisabledToolPermission, applyLiveTaskSystemPermission, frontierToolSchemaPermission, mergePermissionRules, translateV1Permissions } from "./rigel-v2-native-permissions.mjs"
 import { evaluateHephaestusGate, isHephaestusAgentId } from "./rigel-v2-native-hephaestus.mjs"
 import { canonicalAgentKey, sortAgentsByCanonicalOrder } from "./rigel-v2-native-agent-order.mjs"
 
@@ -285,7 +285,48 @@ export function bakedTaskSystemGate(manifest) {
   return manifest?.metadata?.global?.gates?.task_system === true
 }
 
-export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, onAgentRequest, onAgentPermissions, onHephaestusGateSkipped, chainFallback, taskSystemEnabled } = {}) {
+/**
+ * The `disabled_tools` denylist the install-time manifest was generated under.
+ *
+ * `applyToolConfig` wrote its generated `question` deny only while this list named
+ * `question`, so it is the recorded proof that an entry in the manifest is that
+ * overlay instead of a user declaration. Nothing else records the bake. An absent
+ * or malformed record proves nothing and yields an empty list.
+ */
+export function bakedDisabledToolList(manifest) {
+  const list = manifest?.metadata?.global?.disabled?.tools
+  return Array.isArray(list) ? list.filter((entry) => typeof entry === "string") : []
+}
+
+/**
+ * Apply every LIVE overlay a manifest permission can carry, before translation.
+ *
+ * Two independent V1 `applyToolConfig` writes are re-derived here from the live
+ * authority that owns each one: the `experimental.task_system` overlay, and the
+ * generated `question` deny the `disabled_tools` denylist produced. They touch
+ * disjoint keys, so ONE pass keeps the translation single-source.
+ */
+function withLivePermissions(id, definition, context) {
+  const taskAdjusted = withLiveTaskSystemPermission(id, definition, context.taskSystemEnabled, context.bakedTaskSystemEnabled)
+  return withLiveDisabledToolPermission(id, taskAdjusted, context)
+}
+
+/**
+ * Drop the generated `question` deny when the LIVE denylist stops naming
+ * `question`. Same shape as the task-system seam: the manifest object is never
+ * mutated, and a definition the live list does not change keeps its exact
+ * reference.
+ */
+function withLiveDisabledToolPermission(id, definition, { liveDisabledTools, bakedDisabledTools }) {
+  const source = definition && typeof definition === "object" ? definition : {}
+  const key = source.permissions === undefined || source.permissions === null ? "permission" : "permissions"
+  if (!Object.prototype.hasOwnProperty.call(source, key)) return definition
+  const permission = applyLiveDisabledToolPermission(id, source[key], { liveDisabledTools, bakedDisabledTools })
+  if (permission === source[key]) return definition
+  return { ...source, [key]: permission }
+}
+
+export async function registerNativeAgents(agentDomain, manifest, { listModels, explicitAgentModels, disabledAgents, disabledTools, onAgentRequest, onAgentPermissions, onHephaestusGateSkipped, chainFallback, taskSystemEnabled } = {}) {
   if (typeof agentDomain?.transform !== "function" || typeof agentDomain?.reload !== "function") {
     throw new Error("OpenCode V2 agent.transform/agent.reload is unavailable")
   }
@@ -305,6 +346,15 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
   // The manifest records the gate it was generated under; only that value proves
   // which todo entries are the install-time overlay (see the authority).
   const bakedTaskSystemEnabled = bakedTaskSystemGate(manifest)
+  // One record of the bake feeds the generated-overlay authority: the installed
+  // `disabled_tools` list. `disabledTools` is the LIVE effective list, so a live
+  // release is decided by the same value registration already enforces.
+  const livePermissionContext = {
+    taskSystemEnabled,
+    bakedTaskSystemEnabled,
+    liveDisabledTools: disabledTools,
+    bakedDisabledTools: bakedDisabledToolList(manifest),
+  }
   // Inventory is read once, before the transform, so the whole roster resolves
   // against a single consistent snapshot. A failed read degrades to manifest
   // models instead of blocking agent registration.
@@ -345,7 +395,7 @@ export async function registerNativeAgents(agentDomain, manifest, { listModels, 
         }
       }
       editor.update(id, (agent) => {
-        const permissions = applyLegacyAgentDefinition(agent, id, withLiveTaskSystemPermission(id, definition, taskSystemEnabled, bakedTaskSystemEnabled), globalRules)
+        const permissions = applyLegacyAgentDefinition(agent, id, withLivePermissions(id, definition, livePermissionContext), globalRules)
         // Two steps on purpose. `applyLegacyAgentDefinition` keeps its public
         // contract: it sets `agent.model` from the definition AND derives the
         // frontier permission from that same model, so its exported behavior is

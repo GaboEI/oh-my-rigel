@@ -376,6 +376,46 @@ export function applyLiveTaskSystemGlobalTools(tools, taskSystemEnabled, bakedTa
   return next
 }
 
+/**
+ * Canonical ids V1 `applyToolConfig` writes its generated `question` decision onto.
+ *
+ * `atlas` is deliberately absent: V1 never wrote `question` there, so an identical
+ * deny on any other agent is the user's own declaration and is never touched.
+ */
+const QUESTION_OVERLAY_AGENT_IDS = Object.freeze(["sisyphus", "hephaestus", "prometheus"])
+
+/**
+ * Rebuild the `question` permission an ask-surface agent carries under the LIVE
+ * `disabled_tools` denylist.
+ *
+ * V1 `applyToolConfig` writes `question: "deny"` on Sisyphus, Hephaestus and
+ * Prometheus while the INSTALL-time `disabled_tools` named `question`, so the
+ * manifest can hold a deny the user no longer wants. The live denylist cannot
+ * remove it: that path is an exact-name registration/execution removal for tools
+ * THIS runtime registers, while `question` belongs to the host and is governed
+ * here as an agent permission. Without this the documented `disabled_tools: []`
+ * release would need a reinstall, which is the defect.
+ *
+ * The recorded proof that the entry was GENERATED is the bake's own denylist
+ * (`bakedDisabledTools`): V1 wrote the deny only while `question` was on it. A
+ * manifest whose bake never named `question` turned the entry off for another
+ * reason (a bake-time CLI run, an inline host permission), and a shape other than
+ * the exact `"deny"` string V1 wrote is a user declaration; both are returned
+ * unchanged. An explicit user deny also still wins through the global permission
+ * overlay, which this never touches, and a live list that still names `question`
+ * (or no live list at all) keeps the deny.
+ */
+export function applyLiveDisabledToolPermission(id, permission, { liveDisabledTools, bakedDisabledTools } = {}) {
+  if (!isPlainObject(permission)) return permission
+  if (!QUESTION_OVERLAY_AGENT_IDS.includes(canonicalAgentKey(id))) return permission
+  if (permission.question !== "deny") return permission
+  if (!Array.isArray(bakedDisabledTools) || !bakedDisabledTools.includes("question")) return permission
+  if (!Array.isArray(liveDisabledTools) || liveDisabledTools.includes("question")) return permission
+  const next = { ...permission }
+  delete next.question
+  return next
+}
+
 export const TOOL_PERMISSION_DENIED = "RIGEL_TOOL_PERMISSION_DENIED"
 export const TOOL_PERMISSION_APPROVAL_REQUIRED = "RIGEL_TOOL_PERMISSION_APPROVAL_REQUIRED"
 export const TOOL_PERMISSION_IDENTITY_UNRESOLVED = "RIGEL_TOOL_PERMISSION_IDENTITY_UNRESOLVED"

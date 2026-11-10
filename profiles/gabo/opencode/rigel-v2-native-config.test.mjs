@@ -1210,6 +1210,76 @@ describe("#given an unconfirmed declaration", () => {
   })
 })
 
+// A parse failure in ONE layer says nothing about the layers that were read: the
+// denies they confirmed are still real protections. "Keep the installed
+// denylist" is a FLOOR, never a ceiling, so a confirmed deny has to be unioned
+// onto it. Dropping it released a protection because of an unrelated failure:
+// with an installed list of `[]`, a user `disabled_mcps: ["context7"]` beside a
+// broken project layer enforced nothing at all.
+describe("#given a confirmed deny beside a layer that cannot be parsed", () => {
+  test("#when a USER denies an MCP and the project layer is broken #then the confirmed deny survives", () => {
+    // given: the user layer is readable and the installed manifest denies
+    // nothing, so keeping only the installed denylist would enforce NO deny.
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": ["context7"] } }`)
+    fixture.writeProject(`{ "[opencode]": `)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest({ disabled: [] }))
+    // then: the deny a readable layer confirmed outlives the unrelated failure
+    expect(resolved.lists.mcps).toEqual(["context7"])
+    expect(resolved.diagnostics.some((line) => line.includes("disabled_mcps") && line.includes("context7"))).toBe(true)
+  })
+
+  test("#when a USER deny sits beside a broken project layer and an installed deny #then both apply", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_mcps": ["ssh"] } }`)
+    fixture.writeProject(`{ "[opencode]": `)
+    // when
+    const resolved = resolveLists(fixture, mcpManifest())
+    // then: union, never replacement: the installed deny is the floor
+    expect(resolved.lists.mcps).toEqual(["context7", "ssh"])
+  })
+
+  test("#when a plain denylist is confirmed beside a broken layer #then it is unioned onto the installed list", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_agents": ["oracle"] } }`)
+    fixture.writeProject(`{ "[opencode]": `)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then
+    expect(resolved.lists.agents).toEqual(["baked_agent", "oracle"])
+    // A list no readable layer declared still keeps its installed value.
+    expect(resolved.lists.skills).toEqual(["baked_skill"])
+    expect(resolved.lists.commands).toEqual(["baked_command"])
+  })
+
+  test("#when the installed denylists are empty #then only the confirmed deny applies", () => {
+    // given
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_agents": ["oracle"], "disabled_mcps": ["ssh"] } }`)
+    fixture.writeProject(`not json`)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest({}, []))
+    // then: nothing is invented for the lists no layer declared
+    expect(resolved.lists).toEqual({ tools: [], agents: ["oracle"], skills: [], hooks: [], commands: [], mcps: ["ssh"] })
+  })
+
+  test("#when the USER releases an installed deny and another layer is broken #then the release is not honored", () => {
+    // given: a release is the only path that drops a protection, so it stays
+    // unconfirmed while a layer the chain could not read might contradict it
+    const fixture = makeFixture()
+    fixture.writeUser(`{ "[opencode]": { "disabled_agents": [], "disabled_mcps": [] } }`)
+    fixture.writeProject(`{ "[opencode]": `)
+    // when
+    const resolved = resolveLists(fixture, disabledManifest())
+    // then
+    expect(resolved.lists.agents).toEqual(["baked_agent"])
+    expect(resolved.lists.mcps).toEqual(["context7"])
+  })
+})
+
 describe("#given the user and project layers both declare a denylist", () => {
   test("#when the view is resolved #then the lists union across layers and placements", () => {
     // given

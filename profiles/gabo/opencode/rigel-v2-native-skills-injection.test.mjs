@@ -192,7 +192,13 @@ describe("#given a live omo.jsonc that disables a discovered skill", () => {
         await task.execute({ subagent_type: "explore", prompt: "Read only.", load_skills: ["beta"], run_in_background: true }, { sessionID: "ses_parent" })
         const childPrompt = prompts.find((entry) => typeof entry.text === "string" && entry.text.includes("Read only."))
         expect(childPrompt.text).not.toContain("LIVE_DISABLED_SECRET_BODY")
-        expect(childPrompt.text).toContain("<rigel-requested-skills>Before working, load these native skills if available: beta</rigel-requested-skills>")
+        // the fallback sentinel names the withheld skill, and it stays a sentinel:
+        // no `<skill>` block is fabricated for a skill the live list denies
+        const fallback = childPrompt.text.match(/<rigel-requested-skills>([\s\S]*?)<\/rigel-requested-skills>/)
+        expect(fallback).not.toBeNull()
+        expect(fallback[1]).toContain("beta")
+        expect(fallback[1]).not.toContain("alpha")
+        expect(childPrompt.text).not.toContain('<skill name="beta">')
         // a name the live list does not carry still injects, so the deny is not a
         // blanket injection failure
         await task.execute({ subagent_type: "explore", prompt: "Alpha only.", load_skills: ["alpha"], run_in_background: true }, { sessionID: "ses_parent" })

@@ -633,7 +633,11 @@ export default {
     // Resolved BEFORE agent registration on purpose: `task_system` decides both the
     // tools this setup registers and the permissions each agent is registered with,
     // so the registered roster and the task tools must read ONE live value.
-    const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env })
+    //
+    // The ALREADY RESOLVED denylist travels with it: `interactive_bash` bakes only
+    // whether the install-time `disabled_tools` forbade it, so the live list is the
+    // only thing that can release that baked `false` without a reinstall.
+    const gateResolution = resolveNativeGates({ manifest, directory: location.directory, env: process.env, disabledTools: disabledLists.tools })
     for (const diagnostic of gateResolution.diagnostics) console.error(`[oh-my-rigel] ${diagnostic}`)
     const nativeGates = gateResolution.gates
     const permissionWiring = createNativePermissionWiring({
@@ -645,7 +649,9 @@ export default {
       // user disabled after install must be refused here or it stays callable
       // from the stale baked copy. Enforced ahead of every permission layer, and
       // it is also the only surface for a HOST-owned tool this runtime does not
-      // register (V1 reaches `question` the same way, through a permission).
+      // register (V1 reaches `question` the same way, through a permission). The
+      // same live list also RELEASES the `question` deny the bake generated from
+      // it, so removing the entry needs no reinstall.
       disabledTools: disabledLists.tools,
     })
     // The exact names this setup must never register. Built once from the live
@@ -671,6 +677,9 @@ export default {
       // V1 `disabled_agents`: a disabled agent is never registered, so a switch
       // onto it is impossible.
       disabledAgents: disabledLists.agents,
+      // The LIVE `disabled_tools` list: the generation-side authority that drops
+      // the `question` deny the install-time bake wrote from an older list.
+      disabledTools: disabledLists.tools,
       onAgentRequest: (id, body) => {
         agentRequestBodies.set(id.toLocaleLowerCase(), body)
         const name = manifest.agents?.[id]?.name

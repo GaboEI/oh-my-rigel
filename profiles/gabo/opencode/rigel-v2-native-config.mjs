@@ -1747,7 +1747,11 @@ function openclawIdentityDiff(from, to) {
 //   second path to a gate that is deliberately forced `false`.
 // - `interactive_bash`: its truth is host availability (a persistent-terminal
 //   factory or a `tmux` on PATH), not a config key; the baked value records only
-//   that `disabled_tools` does not forbid the family.
+//   that `disabled_tools` does not forbid the family. That ONE recorded fact is
+//   re-resolved at runtime: `releaseBakedDisabledToolGate` clears a baked `false`
+//   when the EFFECTIVE live denylist stops naming the tool, so an explicit
+//   `disabled_tools: []` re-enables the family without a reinstall. Host
+//   availability is still probed where the family registers, never assumed.
 export const NATIVE_GATE_POLICY = Object.freeze({
   monitor: "live",
   team_mode: "live",
@@ -1845,6 +1849,31 @@ export function readLiveGatesSource(options = {}) {
 }
 
 /**
+ * Release the single BAKED gate whose recorded meaning IS a denylist.
+ *
+ * `deriveNativeGates` bakes `interactive_bash` from one fact only: whether the
+ * install-time `disabled_tools` forbade the family. Host availability is never
+ * baked (the runtime probes it), so a `disabled_tools` edit is the only way that
+ * gate can change without a reinstall. Keeping a stale `false` made the documented
+ * `disabled_tools: []` release impossible: the live list reached registration as
+ * an exact-name removal, but the family was never built in the first place.
+ *
+ * `liveDisabledTools` is the EFFECTIVE list `resolveNativeDisabledLists` produced,
+ * so every fail-closed path arrives here as the installed list and keeps the gate
+ * off: an unreadable chain, a refused value, and an undeclared list all preserve
+ * the protection. A live list that still names the tool keeps it off too, and so
+ * does a baked `false` the denylist never produced (an unknown bake is not proof
+ * of a release).
+ */
+function releaseBakedDisabledToolGate({ manifest, gates, liveDisabledTools, diagnostics }) {
+  if (gates.interactive_bash !== false) return
+  if (!readNativeDisabled(manifest).tools.includes("interactive_bash")) return
+  if (!Array.isArray(liveDisabledTools) || liveDisabledTools.includes("interactive_bash")) return
+  gates.interactive_bash = true
+  diagnostics.push("Native V2 gate policy: interactive_bash is released by the live disabled_tools list (it no longer names the tool, the installed manifest did); host availability is still probed where the family registers")
+}
+
+/**
  * Resolve the feature gates at RUNTIME under {@link NATIVE_GATE_POLICY}.
  *
  * `readNativeGates` stays the pure manifest reader: the materializer contract pins
@@ -1865,10 +1894,22 @@ export function readLiveGatesSource(options = {}) {
  * `diagnostics` and the live value is used: that is the whole point of a LIVE
  * gate, and the diagnostic is what the silent version was missing. `diagnostics`
  * is empty when the live chain agrees with the manifest or declares nothing.
+ *
+ * `disabledTools` is the EFFECTIVE live `disabled_tools` list, passed in already
+ * resolved so this resolver never reads the chain twice. It releases the one
+ * BAKED gate the denylist is the whole meaning of (`interactive_bash`); see
+ * `releaseBakedDisabledToolGate`. Without it that baked `false` outlives the list
+ * that produced it, so the documented `disabled_tools: []` release would need a
+ * reinstall.
  */
-export function resolveNativeGates({ manifest, ...options } = {}) {
+export function resolveNativeGates({ manifest, disabledTools: suppliedDisabledTools, ...options } = {}) {
   const baked = readNativeGates(manifest)
   const live = readLiveGatesSource({ manifest, ...options })
+  // A caller that already resolved the denylist passes it in (setup does, so the
+  // chain is read once). Omitting it must not silently lose the release, so the
+  // same authority is consulted here instead of treating "absent" as "declared
+  // empty".
+  const liveDisabledTools = suppliedDisabledTools ?? resolveNativeDisabledLists({ manifest, ...options }).lists.tools
   const gates = { ...baked }
   const diagnostics = []
   const liveGates = GATE_KEYS.filter((gate) => NATIVE_GATE_POLICY[gate] === "live")
@@ -1893,6 +1934,9 @@ export function resolveNativeGates({ manifest, ...options } = {}) {
       diagnostics.push(`Native V2 gate drift: ${gate} is ${value} in the live config but ${baked[gate]} in the installed manifest; using the live value. Reinstall to resync the manifest`)
     }
   }
+  // The ONE baked gate whose recorded meaning is the denylist may be RELEASED by
+  // the resolved live list. Every other baked gate keeps the manifest value.
+  releaseBakedDisabledToolGate({ manifest, gates, liveDisabledTools, diagnostics })
   return { gates: Object.freeze(gates), diagnostics }
 }
 
@@ -1964,7 +2008,17 @@ function readLiveDisabledList(view, name) {
  * - `resolved.failedClosed` names the lists the chain could have declared but
  *   could not confirm: a value the schema refused, or a resolved value that is
  *   not a string list. The caller must never release a protection on those.
- * - `error` means the chain could not be read at all.
+ * - `error` means a LAYER of the chain could not be read, or the chain could not
+ *   be resolved at all.
+ *
+ * `error` still carries `lists`, and that is deliberate: `loadFailures` is
+ * per-FILE, so one unreadable layer does not invalidate the layers that WERE
+ * read. Nothing here is authoritative in that state, because the unreadable
+ * layer may have declared or overridden any of them, so the caller may only ADD
+ * what was confirmed. Discarding the confirmed entries instead is what released
+ * a live protection: with an installed denylist of `[]`, a readable user
+ * `disabled_mcps: ["context7"]` beside a broken project layer enforced nothing.
+ * A read that throws outright reports no `lists` at all.
  *
  * Values always come from the resolved view, never from the raw layer, so a live
  * list can never disagree with what a fresh install would bake from the same
@@ -1975,7 +2029,6 @@ export function readLiveDisabledListsSource(options = {}) {
   try {
     const view = resolveNativePluginConfig(options)
     const failure = Array.isArray(view?.loadFailures) ? view.loadFailures[0] : undefined
-    if (failure !== undefined) return { state: "error", path: failure.path, reason: failure.reason }
     const lists = {}
     const failedClosed = {}
     for (const [name, key] of Object.entries(DISABLED_LIST_DECLARATIONS)) {
@@ -1991,6 +2044,9 @@ export function readLiveDisabledListsSource(options = {}) {
         continue
       }
       lists[name] = [...value]
+    }
+    if (failure !== undefined) {
+      return { state: "error", path: failure.path, reason: failure.reason, lists, failedClosed, mcpScope: readMcpDisabledScope(view) }
     }
     return { state: "resolved", lists, failedClosed, mcpScope: readMcpDisabledScope(view) }
   } catch (error) {
@@ -2023,20 +2079,34 @@ function readMcpDisabledScope(view) {
  *   never release the installed list, a user deny, or another layer's deny;
  * - a refused declaration leaves the user baseline UNCONFIRMED: nothing is
  *   released, the installed list is kept, and every valid deny is unioned on.
+ *
+ * `unconfirmed` reaches the same fail-closed state from the other direction: a
+ * layer of the chain could not be read, so the user baseline is unconfirmed as
+ * well. The confirmed denies are still real protections, so they are unioned
+ * onto the installed list, and a `[]` release is NOT honored because the layer
+ * that could not be read may have contradicted it.
  */
-function resolveLiveMcpDenyList({ baked, source, diagnostics }) {
+function resolveLiveMcpDenyList({ baked, source, diagnostics, unconfirmed }) {
   const declared = Array.isArray(source.lists?.mcps) ? source.lists.mcps : []
   const scope = source.mcpScope ?? { user: { declared: false, refused: false }, project: { declared: false, refused: false } }
-  const userConfirmed = scope.user.declared && !scope.user.refused
+  const userConfirmed = unconfirmed === undefined && scope.user.declared && !scope.user.refused
+  const effective = userConfirmed ? [...declared] : mergeUniqueStrings(baked, declared)
   if (!userConfirmed) {
-    if (scope.user.refused) {
+    if (unconfirmed !== undefined) {
+      // Only worth a line of its own when a confirmed deny actually outlived the
+      // failure: otherwise the installed list alone applies and the caller's
+      // "kept the installed denylist" line already says so.
+      if (JSON.stringify(effective) !== JSON.stringify(baked)) {
+        const where = typeof unconfirmed.path === "string" ? `${unconfirmed.path}: ` : ""
+        diagnostics.push(`Native V2 disabled lists: disabled_mcps kept the installed denylist plus every deny a readable layer confirmed, so [${effective.join(", ")}] apply (${where}${unconfirmed.reason ?? "unknown"}); a layer the chain could not read may not release a protection`)
+      }
+    } else if (scope.user.refused) {
       diagnostics.push(`Native V2 disabled lists: disabled_mcps kept the installed denylist (the user-scope declared value was refused by the schema); project declarations may only add to it`)
     } else if (scope.project.refused) {
       diagnostics.push(`Native V2 disabled lists: disabled_mcps ignored a project-scope declaration refused by the schema; the installed denylist is kept and only valid project denies apply`)
     }
   }
-  const effective = userConfirmed ? [...declared] : mergeUniqueStrings(baked, declared)
-  if (JSON.stringify(effective) !== JSON.stringify(baked)) {
+  if (unconfirmed === undefined && JSON.stringify(effective) !== JSON.stringify(baked)) {
     diagnostics.push(`Native V2 disabled lists: disabled_mcps is [${effective.join(", ")}] in the live config but [${baked.join(", ")}] in the installed manifest; using the live list. Reinstall to resync the manifest`)
   }
   return effective
@@ -2050,11 +2120,17 @@ function resolveLiveMcpDenyList({ baked, source, diagnostics }) {
  * - an unreadable chain, a refused value, or a value that is not a string list
  *   KEEPS the installed denylist. Falling back to "nothing is disabled" would
  *   release a protection the runtime could not confirm.
+ * - a deny a READABLE layer confirmed is UNIONED onto that installed list. The
+ *   installed list is a floor, not a ceiling: dropping a confirmed deny because
+ *   an unrelated layer failed to parse released a protection with no evidence
+ *   that anyone asked for it, and a `[]` release stays unconfirmed for the same
+ *   reason.
  * - an UNDECLARED list keeps the install-time value, which is the backward-
  *   compatible half: an install that never edited anything behaves exactly as
  *   before.
- * - a DECLARED list REPLACES it, `[]` included. An explicit empty list is the
- *   user saying "nothing is disabled", never an absence.
+ * - a DECLARED list REPLACES it, `[]` included, when every layer was readable.
+ *   An explicit empty list is the user saying "nothing is disabled", never an
+ *   absence.
  *
  * BAKED lists never read the chain, and every disagreement the runtime actually
  * applies is reported once so a silent override cannot happen.
@@ -2072,10 +2148,24 @@ export function resolveNativeDisabledLists({ manifest, ...options } = {}) {
   const liveNames = Object.keys(DISABLED_LIST_DECLARATIONS)
     .filter((name) => NATIVE_DISABLED_LIST_POLICY[name] !== "baked")
   if (source.state === "error") {
+    // An unreadable layer invalidates AUTHORITY, never a deny another layer
+    // confirmed: the installed list is a floor, so the confirmed denies are
+    // unioned onto it instead of replacing it.
     if (liveNames.length > 0) {
       diagnostics.push(`Native V2 disabled lists: live config unreadable (${source.reason ?? "unknown"}); ${liveNames.map((name) => DISABLED_LIST_DECLARATIONS[name]).join(", ")} kept the installed denylist instead of dropping protections`)
     }
-    return { lists: deepFreeze(lists), live, diagnostics }
+    for (const [name, value] of Object.entries(source.lists ?? {})) live[name] = [...value]
+    for (const name of liveNames) {
+      if (name === "mcps") {
+        lists.mcps = resolveLiveMcpDenyList({ baked: baked.mcps, source, diagnostics, unconfirmed: { path: source.path, reason: source.reason } })
+        continue
+      }
+      const confirmed = Array.isArray(source.lists?.[name]) ? source.lists[name] : []
+      if (confirmed.length === 0) continue
+      lists[name] = mergeUniqueStrings(baked[name], confirmed)
+      diagnostics.push(`Native V2 disabled lists: ${DISABLED_LIST_DECLARATIONS[name]} kept the installed denylist plus the denies a readable layer confirmed ([${confirmed.join(", ")}]) even though a layer of the chain could not be read`)
+    }
+    return { lists: deepFreeze(lists), live: deepFreeze(live), diagnostics }
   }
   for (const [name, value] of Object.entries(source.lists ?? {})) live[name] = [...value]
   for (const name of liveNames) {
