@@ -100,14 +100,26 @@ function hasSeparatorAfter(text, offset) {
   return text[skipTriviaAt(text, offset).index] === ","
 }
 
+/**
+ * Append one rendered entry to a single-line container. A container the author
+ * ended with a trailing separator (`["a",]`) already has a comma after its last
+ * element, so the entry goes AFTER that separator and the separator is written
+ * once more after the entry: inserting at the element's own end would put two
+ * values next to each other with no separator, which the re-parse then refuses.
+ */
+function appendInlineEntryEdits(text, lastEnd, entry) {
+  const after = skipTriviaAt(text, lastEnd).index
+  if (text[after] !== ",") return [{ start: lastEnd, end: lastEnd, replacement: `, ${entry}` }]
+  return [{ start: after + 1, end: after + 1, replacement: ` ${entry},` }]
+}
+
 function insertMemberEdits(text, object, key, value, format) {
   const multiline = /[\r\n]/.test(text.slice(object.start, object.end))
   const last = object.members.at(-1)
   if (!multiline) {
     const entry = `${JSON.stringify(key)}: ${serializeJsoncValue(value, { inline: true })}`
     if (last === undefined) return [{ start: object.start + 1, end: object.start + 1, replacement: entry }]
-    const separator = hasSeparatorAfter(text, last.end) ? "" : ","
-    return [{ start: last.end, end: last.end, replacement: `${separator} ${entry}` }]
+    return appendInlineEntryEdits(text, last.end, entry)
   }
   const closeAt = object.end - 1
   const memberIndent = last === undefined ? `${indentOfLine(text, object.start)}${format.indent}` : indentOfLine(text, last.start)
@@ -124,8 +136,7 @@ function insertItemEdits(text, array, item, format) {
   if (!multiline) {
     const entry = serializeJsoncValue(item, { inline: true })
     if (last === undefined) return [{ start: array.start + 1, end: array.start + 1, replacement: entry }]
-    const separator = hasSeparatorAfter(text, last.end) ? "" : ","
-    return [{ start: last.end, end: last.end, replacement: `${separator} ${entry}` }]
+    return appendInlineEntryEdits(text, last.end, entry)
   }
   const closeAt = array.end - 1
   const itemIndent = last === undefined ? `${indentOfLine(text, array.start)}${format.indent}` : indentOfLine(text, last.start)
@@ -221,12 +232,16 @@ export function unsetJsoncPath(text, path) {
   return spliceDocument(source, removeElementEdits(source, siblings, located.sibling))
 }
 
-/** Append `item` to the list at `path`. No-op when the item is already present. */
+/** Append `item` to the list at `path`, creating the list when the path is absent. No-op when the item is already present. */
 export function addJsoncListItem(text, path, item) {
   const source = typeof text === "string" ? text : ""
   const located = locate(source, path)
   if (!located.ok) return located
-  if (!located.found) return failResult("LIST_MISSING", "list path is absent")
+  // An absent list is INITIALIZED, not refused: the layer simply does not carry
+  // the key yet, so this item is its first entry. Creating it through
+  // `setJsoncPath` reuses the same span-splicing creation path (and the same
+  // refusals when the parent cannot hold a new key) instead of a second writer.
+  if (!located.found) return setJsoncPath(source, path, [item])
   if (located.node.kind !== "array") return failResult("NOT_A_LIST", "target path is not a list")
   if (located.node.value.some((entry) => deepEqual(entry, item))) return { ok: true, changed: false, text: source }
   return spliceDocument(source, insertItemEdits(source, located.node, item, detectJsoncFormat(source)))

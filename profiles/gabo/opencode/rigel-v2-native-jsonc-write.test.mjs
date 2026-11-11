@@ -202,6 +202,82 @@ describe("jsonc span splicing", () => {
     expect(readJsoncValue(result.text, ["disabled_agents"]).value).toEqual(["forja", "prometheus"])
   })
 
+  test("#given an inline list the author closed with a trailing separator #when an item is added #then the separator is re-emitted instead of two values sharing none", () => {
+    // given
+    const source = '{\n  // agents to skip\n  "disabled_agents": ["forja",],\n}\n'
+
+    // when
+    const result = addJsoncListItem(source, ["disabled_agents"], "prometheus")
+
+    // then
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("// agents to skip")
+    expect(result.text).toContain('["forja", "prometheus",]')
+    expect(readJsoncValue(result.text, ["disabled_agents"]).value).toEqual(["forja", "prometheus"])
+  })
+
+  test("#given an inline list whose trailing separator carries a block comment #when an item is added #then the comment survives and the list still parses", () => {
+    // given
+    const source = '{ "disabled_agents": ["forja", /* keep */] }'
+
+    // when
+    const result = addJsoncListItem(source, ["disabled_agents"], "prometheus")
+
+    // then
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("/* keep */")
+    expect(readJsoncValue(result.text, ["disabled_agents"]).value).toEqual(["forja", "prometheus"])
+  })
+
+  test("#given a document without the list #when an item is added #then the list is initialized instead of refused", () => {
+    // given
+    const source = '{\n  // profile notes\n  "profiles": {\n    "gabo": {}\n  }\n}\n'
+
+    // when
+    const result = addJsoncListItem(source, ["profiles", "gabo", "[opencode]", "disabled_agents"], "forja")
+
+    // then
+    expect(result.ok).toBe(true)
+    expect(result.changed).toBe(true)
+    expect(result.text).toContain("// profile notes")
+    expect(readJsoncValue(result.text, ["profiles", "gabo", "[opencode]", "disabled_agents"]).value).toEqual(["forja"])
+  })
+
+  test("#given a list this planner just created #when the same item is added again #then nothing changes", () => {
+    // given
+    const first = addJsoncListItem('{\n}\n', ["disabled_agents"], "forja")
+
+    // when
+    const second = addJsoncListItem(first.text, ["disabled_agents"], "forja")
+
+    // then
+    expect(second.ok).toBe(true)
+    expect(second.changed).toBe(false)
+    expect(second.text).toBe(first.text)
+  })
+
+  test("#given an absent element of a list #when an item is added there #then the path is refused as unwritable", () => {
+    // when
+    const result = addJsoncListItem('{ "list": ["a"] }', ["list", 4], "forja")
+
+    // then
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe("PATH_NOT_WRITABLE")
+  })
+
+  test("#given an inline object the author closed with a trailing separator #when a member is added #then the separator is re-emitted and the document still parses", () => {
+    // given
+    const source = '{ "goal": { "enabled": false, }, }\n'
+
+    // when
+    const result = setJsoncPath(source, ["goal", "max"], 3)
+
+    // then
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain('"enabled": false, "max": 3,')
+    expect(readJsoncValue(result.text, ["goal"]).value).toEqual({ enabled: false, max: 3 })
+  })
+
   test("#given an item already present #when added again #then the list is untouched", () => {
     // given
     const source = '{\n  "disabled_agents": ["forja"],\n}\n'
