@@ -281,7 +281,7 @@ describe("setting write placement", () => {
     applySettingEdit({ env: space.env, home: space.home, directory: space.directory, fileSystem: fs, setting: GOAL_ENABLED, value: true, confirm: true })
 
     // then
-    expect(fs.statSync(space.userConfig).mode & 0o777).toBe(0o600)
+    if (process.platform !== "win32") expect(fs.statSync(space.userConfig).mode & 0o777).toBe(0o600)
     expect(JSON.parse(fs.readFileSync(space.userConfig, "utf8"))).toEqual({ profiles: { gabo: { "[opencode]": { goal: { enabled: true } } } } })
   })
 
@@ -534,7 +534,7 @@ describe("setting write commit, backup, and rollback", () => {
     // then
     expect(result.backupPath).toBe(`${space.userConfig}.bak.2026-01-02T03-04-05-678Z`)
     expect(fs.readFileSync(result.backupPath, "utf8")).toBe(original)
-    expect(fs.statSync(result.backupPath).mode & 0o777).toBe(0o600)
+    if (process.platform !== "win32") expect(fs.statSync(result.backupPath).mode & 0o777).toBe(0o600)
     expect(fs.readFileSync(space.userConfig, "utf8")).toContain('"enabled": true')
   })
 

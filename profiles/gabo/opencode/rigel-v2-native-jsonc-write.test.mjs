@@ -456,7 +456,8 @@ describe("jsonc file system boundary", () => {
 
     // then
     expect(fs.readFileSync(file, "utf8")).toBe('{\n}\n')
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+    // POSIX mode bits are not represented on Windows; the writer still requests 0600.
+    if (process.platform !== "win32") expect(fs.statSync(file).mode & 0o777).toBe(0o600)
     expect(fs.readdirSync(path.dirname(file))).toEqual(["omo.jsonc"])
   })
 
