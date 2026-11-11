@@ -85,6 +85,8 @@ import { registerBuiltinCommands } from "./rigel-v2-native-builtin-commands.mjs"
 import { registerMcpOAuthCommand } from "./rigel-v2-native-mcp-oauth-command.mjs"
 import { registerOpenclawStatusCommand } from "./rigel-v2-native-openclaw-status-command.mjs"
 import { registerModelsCommand } from "./rigel-v2-native-models-command.mjs"
+import { registerSettingCommand } from "./rigel-v2-native-setting-command.mjs"
+import { createSettingTool, registerSettingTool } from "./rigel-v2-native-setting-tool.mjs"
 import { createTeamModePromptHandler, registerTeamModeCommand, teamCreatePortFromTool, TEAM_MODE_COMMAND_NAME } from "./rigel-v2-native-team-mode-command.mjs"
 import { createNativeContextLimitRecovery, createNativeIdleContinuations, createNativeIdleGate } from "./rigel-v2-native-phase4-events.mjs"
 import { createNativeTeamEventHandlers } from "./rigel-v2-team-events.mjs"
@@ -2067,6 +2069,24 @@ export default {
       if (typeof context?.command?.list === "function") {
         editor.add(createSlashcommandTool({ listCommands: () => context.command.list() }))
       }
+      // `/rigel_setting` deterministic tool: the structured read/write surface
+      // the guided command drives. It resolves the profile and the layer chain
+      // from the same environment the reader uses, refuses an inert or
+      // engine-owned key, and delegates every mutation to the settings writer, so
+      // one confirmation-gated write authority exists for this surface. The
+      // filtered editor above keeps `disabled_tools` authoritative over the name.
+      registerSettingTool(editor, {
+        disabledTools: disabledLists.tools,
+        definition: createSettingTool({
+          env: process.env,
+          home: process.env.HOME,
+          directory: location.directory,
+          // The same materialized manifest the reader folds as the LAST
+          // source of the active profile, so a runtime launched without
+          // `OMO_PROFILE` still targets the profile baked at install time.
+          manifest,
+        }),
+      })
       // V1-parity `glob`/`grep`. The host builtins diverge from the V1 owner
       // contract (`packages/omo-opencode/src/tools/{glob,grep}`): hidden default,
       // follow and depth, output modes, per-file limits and the result format all
@@ -2540,6 +2560,28 @@ export default {
         disabledCommands: disabledLists.commands,
       })
     }
+    // The `/rigel_setting` guided command: explain or change one catalogued
+    // setting of the layered omo config. Additive like `/rmo-models`: it renders
+    // the catalog, the active profile and the reader's layer order, injects the
+    // working instruction and hands the write to the `rigel_setting` tool. It
+    // never restarts, stops or reloads anything; the turn ends by naming the
+    // reload commands and leaves running them to the user. Gated by the same
+    // `disabled_commands` denylist as every other native command.
+    let settingCommandRegistration
+    if (typeof context?.command?.transform === "function") {
+      settingCommandRegistration = await registerSettingCommand({
+        context,
+        // The command renders the reader's own ground truth, so it needs the
+        // same inputs the reader uses: without them `resolveSettingPaths`
+        // cannot resolve `home` at all and the turn reports an unresolved
+        // layer chain instead of the active profile.
+        env: process.env,
+        home: process.env.HOME,
+        directory: location.directory,
+        manifest,
+        disabledCommands: disabledLists.commands,
+      })
+    }
     // The `/team-mode` front door: `/team-mode <objective>` decides deterministically
     // whether the team definition is complete, and only then creates it. It is
     // V2-native and double-gated: the materialized `team_mode` gate decides whether
@@ -2618,6 +2660,7 @@ export default {
       await mcpOAuthCommandRegistration?.dispose?.()
       await openclawStatusCommandRegistration?.dispose?.()
       await modelsCommandRegistration?.dispose?.()
+      await settingCommandRegistration?.dispose?.()
       await teamModeCommandRegistration?.dispose?.()
       autoSlashCommand.clear()
       disposeClaudeCodeHooks()

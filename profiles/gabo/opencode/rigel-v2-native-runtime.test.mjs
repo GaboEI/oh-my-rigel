@@ -1586,6 +1586,112 @@ test("native runtime omits hashline_edit when the manifest gate is absent", asyn
   expect(added).not.toContain("hashline_edit")
   await dispose()
 })
+// `/rigel_setting` is one surface in TWO registries: a command that injects the
+// guided turn and a deterministic tool the turn calls. The command name is the
+// same string, which is legal because the registries are separate, so the proof
+// is that setup reaches both and that teardown disposes the command entry.
+test("native runtime registers the /rigel_setting command and its deterministic tool", async () => {
+  const { context, added } = editorCaptureContext()
+  const registered = []
+  const disposed = []
+  const dispose = await plugin.setup({
+    ...context,
+    command: {
+      transform: async (callback) => {
+        const names = []
+        callback({ add: (definition) => { names.push(definition.name); registered.push(definition.name) } })
+        return { dispose() { disposed.push(...names) } }
+      },
+    },
+  })
+  try {
+    expect(added).toContain("rigel_setting")
+    expect(registered).toContain("rigel_setting")
+  } finally {
+    await dispose()
+  }
+  expect(disposed).toContain("rigel_setting")
+})
+
+// The reader resolves the active profile as `OMO_PROFILE` -> `OCX_PROFILE` ->
+// the `profiles/<name>` tail of `OPENCODE_CONFIG_DIR` -> the materialized
+// manifest's `metadata.profile`. Both `/rigel_setting` surfaces must fold the
+// SAME chain: the guided command renders it and the deterministic tool writes
+// into it. This drives the real setup with a sandboxed home, no profile env and
+// a manifest profile, so the fallback (and the explicit env precedence over it)
+// is proven on the registered surfaces rather than on a fixture.
+test("native runtime hands the /rigel_setting surfaces the manifest profile when the env declares none", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "rigel-setting-wiring-")))
+  const home = join(root, "home")
+  const directory = join(root, "project")
+  const userConfig = join(home, ".omo", "omo.jsonc")
+  mkdirSync(join(home, ".omo"), { recursive: true })
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(userConfig, `{\n  "profiles": { "gabo": { "[opencode]": { "monitor": { "enabled": false } } } }\n}\n`)
+  const savedEnv = { OMO_PROFILE: process.env.OMO_PROFILE, OCX_PROFILE: process.env.OCX_PROFILE, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, HOME: process.env.HOME }
+  const originalMetadata = nativeManifest.metadata
+  delete process.env.OMO_PROFILE
+  delete process.env.OCX_PROFILE
+  delete process.env.OPENCODE_CONFIG_DIR
+  process.env.HOME = home
+  nativeManifest.metadata = { profile: "gabo" }
+  const added = []
+  const commands = new Map()
+  const deliveries = []
+  try {
+    const dispose = await plugin.setup({
+      ...editorCaptureContext().context,
+      location: { directory },
+      tool: {
+        transform: async (callback) => {
+          callback({ add: (definition) => added.push(definition), get: () => undefined })
+          return { dispose() {} }
+        },
+      },
+      command: {
+        transform: async (callback) => {
+          callback({ add: (definition) => commands.set(definition.name, definition) })
+          return { dispose() {} }
+        },
+      },
+      session: {
+        hook: async () => ({ dispose() {} }),
+        create: async () => ({ data: { id: "ses_native" } }),
+        prompt: async (arg) => { deliveries.push(arg); return { data: {} } },
+      },
+    })
+    try {
+      const tool = added.find((definition) => definition?.name === "rigel_setting")
+      expect(typeof tool?.execute).toBe("function")
+      const read = async () => JSON.parse((await tool.execute({ action: "get", key: "[opencode].monitor.enabled" })).content)
+      const fromManifest = await read()
+      expect(fromManifest.ok).toBe(true)
+      expect(fromManifest.profileName).toBe("gabo")
+      expect(fromManifest.layers).toEqual([{ path: userConfig, scope: "user", exists: true, ok: true }])
+      // An explicit `OMO_PROFILE` still wins over the manifest fallback.
+      process.env.OMO_PROFILE = "explicit"
+      expect((await read()).profileName).toBe("explicit")
+      delete process.env.OMO_PROFILE
+      // The command folds the same layers: the resolved sandbox user config it
+      // renders can only appear when setup handed it `env`/`home`/`manifest`.
+      const command = commands.get("rigel_setting")
+      expect(typeof command?.execute).toBe("function")
+      await command.execute({ sessionID: "ses_native", prompt: { text: "" } })
+      expect(deliveries).toHaveLength(1)
+      expect(deliveries[0].text).toContain(userConfig)
+    } finally {
+      await dispose()
+    }
+  } finally {
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 // The inherited Goal is quarantined. Forcing the manifest gate on must still
 // register NOTHING: no `/goal` command (N1), no legacy goal tool (N2), no goal
