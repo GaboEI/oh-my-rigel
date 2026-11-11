@@ -625,6 +625,16 @@ jobs:
         if: needs.ci-mode.outputs.run_heavy == 'true'
         run: bun test --timeout 20000 profiles/gabo/opencode
 
+      # The native `/rigel_setting` surface, pinned by name in
+      # script/rigel-native-settings-ci.mjs. That helper builds a disposable sandbox with
+      # profiles/gabo/isolated-v2-env.mjs, so this run cannot reach the runner's HOME,
+      # XDG roots, or OpenCode state. The discovery run above cannot notice a suite that
+      # stopped matching its glob; this step fails when a pinned suite no longer exists.
+      - name: Run native /rigel_setting suites in an isolated sandbox
+        id: rigel-setting-tests
+        if: needs.ci-mode.outputs.run_heavy == 'true'
+        run: node script/rigel-native-settings-ci.mjs
+
       # A leg whose test steps were all skipped must never look like a pass.
       - name: Check that this leg ran its tests
         if: always()
@@ -632,7 +642,7 @@ jobs:
         env:
           LEG_OS: ubuntu-latest
           LEG_JOB_STATUS: ${{ job.status }}
-          TEST_OUTCOMES: ${{ steps.rigel-tests.outcome }}
+          TEST_OUTCOMES: ${{ steps.rigel-tests.outcome }} ${{ steps.rigel-setting-tests.outcome }}
           RUN_HEAVY: ${{ needs.ci-mode.outputs.run_heavy }}
           FULL_MATRIX: ${{ needs.ci-mode.outputs.full_matrix }}
           WINDOWS_MATRIX: ${{ needs.ci-mode.outputs.windows_matrix }}
@@ -648,6 +658,7 @@ jobs:
           JOB_SUMMARY_DETAILS: |
             - Pins the fork's native V2 runtime suite (`profiles/gabo/opencode`) into CI.
             - Runs the hermetic unit/contract layer; the live lab acceptance lane stays local, gated on `opencode-v2-lab.service`.
+            - Runs the native `/rigel_setting` suites inside a disposable sandbox (isolation built by `profiles/gabo/isolated-v2-env.mjs`, never the runner's HOME/XDG state).
           JOB_SUMMARY_NEXT: Inspect the first failing native V2 runtime or contract test in profiles/gabo/opencode.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
 

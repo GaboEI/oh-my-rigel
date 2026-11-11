@@ -2659,3 +2659,9 @@ export function deriveNativeGates(view) {
 }
 
 export { GATE_KEYS }
+
+// The schema-backed setting catalog is published from the settings authority so
+// lab staging ships it with the runtime it documents. It registers nothing,
+// reads no file and changes no resolution: `/rigel_setting` consumes it in a
+// later change.
+export * from "./rigel-v2-native-setting-catalog.mjs"
