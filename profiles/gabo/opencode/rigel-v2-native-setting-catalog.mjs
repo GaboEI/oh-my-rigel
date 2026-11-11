@@ -76,6 +76,7 @@ function completeEntry(record) {
     evidence: deepFreeze([...record.evidence]),
     note: record.note,
     coversChildren: record.coversChildren === true,
+    ...(typeof record.runtimeMaximum === "number" ? { runtimeMaximum: record.runtimeMaximum } : {}),
   }
   if (record.kind === "list") {
     entry.list = deepFreeze({

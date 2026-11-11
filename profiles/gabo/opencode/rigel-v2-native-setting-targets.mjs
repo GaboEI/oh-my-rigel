@@ -29,6 +29,7 @@ import { SETTING_WRITE_ERRORS, SettingWriteError } from "./rigel-v2-native-setti
 
 const MAX_PROJECT_CONFIG_DIRECTORY_DEPTH = 256
 const HARNESS_BLOCK = "[opencode]"
+const REPLACED_SECTION_ROOTS = new Set(["monitor", "goal", "experimental", "team_mode", "default_mode"])
 
 function isLoadableConfigFile(file, fileSystem) {
   return fileSystem.existsSync(file) && !isSymlinkPath(file, fileSystem)
@@ -148,6 +149,9 @@ export function settingPlacement(profileName) {
 export function chooseSettingWriteTarget({ layers, profileName, settingPath, placement: requestedPlacement } = {}) {
   const placement = Array.isArray(requestedPlacement) ? [...requestedPlacement] : settingPlacement(profileName)
   const fullPath = [...placement, ...settingPath]
+  const sectionPath = settingPath.length > 1 && REPLACED_SECTION_ROOTS.has(settingPath[0])
+    ? [...placement, settingPath[0]]
+    : undefined
   const conflicts = []
   for (const layer of layers) {
     if (layer.scope !== "project") continue
@@ -158,12 +162,14 @@ export function chooseSettingWriteTarget({ layers, profileName, settingPath, pla
         { path: layer.path, reason: layer.reason },
       )
     }
-    if (readJsoncValue(layer.text, fullPath).found === true) conflicts.push(layer.path)
+    const leafDeclared = readJsoncValue(layer.text, fullPath).found === true
+    const sectionDeclared = sectionPath !== undefined && readJsoncValue(layer.text, sectionPath).found === true
+    if (leafDeclared || sectionDeclared) conflicts.push(layer.path)
   }
   if (conflicts.length > 0) {
     throw new SettingWriteError(
       SETTING_WRITE_ERRORS.AMBIGUOUS_LAYER,
-      `the setting is also declared by a nearer project layer: ${conflicts.join(", ")}`,
+      `the setting or its replacement section is declared by a nearer project layer: ${conflicts.join(", ")}`,
       { placement, settingPath, conflicts },
     )
   }

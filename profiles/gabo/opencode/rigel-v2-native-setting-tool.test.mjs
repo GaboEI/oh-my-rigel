@@ -232,6 +232,19 @@ describe("#given a union denylist declared in several placements", () => {
       sources: [{ path: space.userConfig, at: "[opencode].disabled_tools" }],
     })
   })
+
+  test("#when removing a duplicate denylist item would leave an inherited restriction #then it refuses before writing", async () => {
+    const space = layeredSandbox({
+      userText: `{ "[opencode]": { "disabled_tools": ["alpha"] }, "profiles": { "gabo": { "[opencode]": { "disabled_tools": ["alpha"] } } } }`,
+      projectText: "{}",
+    })
+    const before = fs.readFileSync(space.userConfig, "utf8")
+    const { payload } = await run(toolFor(space), { action: "remove", key: "[opencode].disabled_tools", value: "alpha", confirm: true })
+    expect(payload.ok).toBe(false)
+    expect(payload.error.code).toBe(SETTING_WRITE_ERRORS.EFFECTIVE_UNION_REMAINS)
+    expect(payload.error.details.effective).toEqual(["alpha"])
+    expect(fs.readFileSync(space.userConfig, "utf8")).toBe(before)
+  })
 })
 
 describe("#given the rigel_setting tool validate action", () => {
@@ -250,10 +263,12 @@ describe("#given the rigel_setting tool validate action", () => {
     const tool = toolFor(space)
     const wrongType = await run(tool, { action: "validate", key: MONITOR_ENABLED, value: "yes" })
     const outOfRange = await run(tool, { action: "validate", key: MONITOR_CAP, value: 99 })
+    const nativeMaxTools = await run(tool, { action: "validate", key: "[opencode].experimental.max_tools", value: 2000 })
 
     expect(wrongType.payload.valid).toBe(false)
     expect(wrongType.payload.error.code).toBe(SETTING_WRITE_ERRORS.INVALID_VALUE)
     expect(outOfRange.payload.error.code).toBe(SETTING_WRITE_ERRORS.VALUE_OUT_OF_RANGE)
+    expect(nativeMaxTools.payload.error.code).toBe(SETTING_WRITE_ERRORS.VALUE_OUT_OF_RANGE)
   })
 
   test("#when validate is asked about an inert key #then the tier refusal wins over value checking", async () => {
@@ -418,6 +433,30 @@ describe("#given the rigel_setting tool refusal policy", () => {
     expect(payload.error.details.section).toBe("monitor")
     expect(payload.error.details.shadowedSources).toEqual([{ path: space.userConfig, placement: ["[opencode]"] }])
     expect(fs.readFileSync(space.userConfig, "utf8")).toContain('"max_runtime_ms": 1000')
+  })
+
+  test("#when a project replacement section omits the leaf #then the user edit is refused as shadowed", async () => {
+    const space = sandbox(`{
+  "profiles": { "gabo": { "[opencode]": { "monitor": { "enabled": false } } } }
+}`)
+    const shadow = path.join(space.directory, ".omo", "omo.jsonc")
+    fs.mkdirSync(path.dirname(shadow), { recursive: true })
+    fs.writeFileSync(shadow, `{ "profiles": { "gabo": { "[opencode]": { "monitor": { "max_runtime_ms": 5000 } } } } }`)
+    const { payload } = await run(toolFor(space), { action: "set", key: MONITOR_ENABLED, value: true, confirm: true })
+    expect(payload.ok).toBe(false)
+    expect(payload.error.code).toBe(SETTING_WRITE_ERRORS.AMBIGUOUS_LAYER)
+  })
+
+  test("#when Prometheus calls the tool #then reads work but every mutation is refused before the writer", async () => {
+    const space = sandbox()
+    const fileSystem = recordingFileSystem()
+    const tool = toolFor(space, { fileSystem, resolveAgent: async () => "Prometheus - Plan Builder" })
+    const read = await run(tool, { action: "get", key: MONITOR_ENABLED })
+    const write = await run(tool, { action: "set", key: MONITOR_ENABLED, value: true, confirm: true })
+    expect(read.payload.ok).toBe(true)
+    expect(write.payload.ok).toBe(false)
+    expect(write.payload.error.code).toBe("SETTING_PROMETHEUS_MD_ONLY")
+    expect(fileSystem.mutations).toEqual([])
   })
 })
 

@@ -194,6 +194,7 @@ export function toSettingDescriptor(entry) {
   const validation = entry.validation
   if (typeof validation.minimum === "number") descriptor.minimum = validation.minimum
   if (typeof validation.maximum === "number") descriptor.maximum = validation.maximum
+  if (typeof entry.runtimeMaximum === "number") descriptor.maximum = Math.min(descriptor.maximum ?? entry.runtimeMaximum, entry.runtimeMaximum)
   if (Array.isArray(validation.values)) descriptor.values = [...validation.values]
   if (Object.hasOwn(validation, "default") && validation.default !== undefined) descriptor.default = validation.default
   return descriptor

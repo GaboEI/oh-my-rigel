@@ -137,6 +137,7 @@ function mutateAction(input, options) {
     fileSystem: options.fileSystem,
     now: options.now,
     setting: toSettingDescriptor(entry),
+    catalogEntry: entry,
     placement: settingWritePlacementFor(entry.key, readProfileName(options)),
     operation: input.action,
     value: input.value,

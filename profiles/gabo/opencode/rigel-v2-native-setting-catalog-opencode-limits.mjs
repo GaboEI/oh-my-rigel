@@ -280,8 +280,9 @@ export const OPENCODE_LIMIT_SETTINGS = Object.freeze([
     tier: "baked",
     kind: "value",
     validation: { type: "integer", minimum: 1, maximum: 9007199254740991 },
+    runtimeMaximum: 1000,
     evidence: [`${MANIFEST}:284`, `${CONFIG}:2443`],
-    note: "Trimmed against the manifest cap, so raising or lowering it lands on the next reinstall.",
+    note: "The native reader accepts at most 1000; values above that are ignored even though the schema permits larger integers.",
   },
   {
     key: "[opencode].experimental.disable_live_parent_wake_routing",

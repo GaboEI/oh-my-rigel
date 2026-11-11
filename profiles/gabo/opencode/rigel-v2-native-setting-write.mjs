@@ -34,6 +34,7 @@ import { assertSafeJsoncTarget, JsoncWriteError, readJsoncFile, writeJsoncTextAt
 import { createSettingBackup, discardSettingBackup, restorePreviousBytes } from "./rigel-v2-native-setting-backup.mjs"
 import { SETTING_WRITE_ERRORS, SettingWriteError } from "./rigel-v2-native-setting-errors.mjs"
 import { assertPlacementShape, resolveSettingTarget } from "./rigel-v2-native-setting-targets.mjs"
+import { readEffectiveSetting } from "./rigel-v2-native-setting-descriptor.mjs"
 
 const LIST_TYPES = new Set(["string-list"])
 
@@ -73,6 +74,20 @@ function sectionShadowRefusal({ descriptor, target, layers, profileName, operati
       profileName,
       operation,
     },
+  )
+}
+
+function effectiveUnionRemovalRefusal({ options, descriptor, target, layers, profileName, planned }) {
+  if (options.operation !== "remove" || descriptor.type !== "string-list" || options.catalogEntry === undefined) return null
+  const projectedLayers = (layers ?? []).map((layer) => layer.path === target.path
+    ? { ...layer, text: planned.text, exists: true, ok: true }
+    : layer)
+  const effective = readEffectiveSetting({ entry: options.catalogEntry, profileName, layers: projectedLayers })
+  if (!effective.found || !Array.isArray(effective.value) || !effective.value.includes(options.value)) return null
+  return new SettingWriteError(
+    SETTING_WRITE_ERRORS.EFFECTIVE_UNION_REMAINS,
+    `removing ${JSON.stringify(options.value)} from this layer does not release the effective denylist; another layer still contributes it`,
+    { path: planned.fullPath, value: options.value, effective: effective.value, sources: effective.sources ?? [], rolledBack: false },
   )
 }
 
@@ -240,6 +255,8 @@ export function previewSettingEdit(options = {}) {
   const sectionRefusal = sectionShadowRefusal({ descriptor, target, layers, profileName, operation: options.operation })
   if (sectionRefusal !== null) throw sectionRefusal
   const planned = planSettingEdit({ descriptor, operation: options.operation, value: options.value, text: baseText, prefix: target.placement })
+  const unionRemovalRefusal = effectiveUnionRemovalRefusal({ options, descriptor, target, layers, profileName, planned })
+  if (unionRemovalRefusal !== null) throw unionRemovalRefusal
   return {
     ok: true,
     changed: planned.changed,
@@ -291,6 +308,8 @@ export function applySettingEdit(options = {}) {
   if (sectionRefusal !== null) throw sectionRefusal
   assertPlacementShape(read.value ?? {}, target.placement)
   const planned = planSettingEdit({ descriptor, operation: options.operation, value: options.value, text: baseText, prefix: target.placement })
+  const unionRemovalRefusal = effectiveUnionRemovalRefusal({ options, descriptor, target, layers, profileName, planned })
+  if (unionRemovalRefusal !== null) throw unionRemovalRefusal
   const result = {
     ok: true,
     changed: planned.changed,
