@@ -30,6 +30,7 @@
  * Pure by contract: no file system, no environment, no clock.
  */
 import { readJsoncValue } from "./rigel-v2-native-jsonc-edit.mjs"
+import { isPlainObject } from "./rigel-v2-native-jsonc-parse.mjs"
 import { lookupSetting, normalizeSettingKey } from "./rigel-v2-native-setting-catalog.mjs"
 
 /** The harness block a catalog key may be nested under. */
@@ -70,6 +71,53 @@ const PROFILE_ROOT_UNION_KEYS = Object.freeze(["disabled_skills"])
  * can never extend the MCP env allowlist (V1 parity, `collectUserMcpEnvAllowlist`).
  */
 const USER_SCOPE_UNION_KEYS = Object.freeze(["mcp_env_allowlist"])
+
+const REPLACED_SECTION_ROOT_KEYS = Object.freeze(["monitor", "goal", "experimental", "team_mode", "default_mode"])
+
+function replacedSectionRootFor(entry) {
+  if (entry === null || typeof entry !== "object" || entry.kind === "list") return undefined
+  const settingPath = settingPathFor(entry.key)
+  return settingPath.length > 1 && REPLACED_SECTION_ROOT_KEYS.includes(settingPath[0]) ? settingPath[0] : undefined
+}
+
+function rawLeafMatchesValidation(validation, value) {
+  if (validation === null || typeof validation !== "object") return false
+  if (validation.type === "boolean") return typeof value === "boolean"
+  if (validation.type === "integer") return typeof value === "number" && Number.isInteger(value)
+  if (validation.type === "number") return typeof value === "number" && Number.isFinite(value)
+  if (validation.type === "string") return typeof value === "string"
+  if (validation.type === "array") return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+  return true
+}
+
+/**
+ * Read a leaf from a schema-normalized replacement section. A later valid
+ * section declaration replaces the prior section, and omitted leaves receive
+ * the catalog's schema default instead of falling through to a lower section.
+ */
+function readReplacedSectionSetting({ entry, profileName, layers }) {
+  const settingPath = settingPathFor(entry.key)
+  const section = settingPath[0]
+  const leaf = settingPath[1]
+  const validation = entry.validation
+  let sectionFound = false
+  let found = false
+  let value
+  let source
+  for (const placement of settingPlacementsFor(entry.key, profileName)) {
+    for (const layer of layers) {
+      if (layer === null || typeof layer !== "object" || layer.ok === false) continue
+      const read = readJsoncValue(layer.text, [...placement, section])
+      if (read.ok !== true || read.found !== true || !isPlainObject(read.value)) continue
+      sectionFound = true
+      const hasLeaf = Object.hasOwn(read.value, leaf) && rawLeafMatchesValidation(validation, read.value[leaf])
+      found = hasLeaf || Object.hasOwn(validation, "default")
+      value = hasLeaf ? read.value[leaf] : validation.default
+      source = layer.path
+    }
+  }
+  return { found: sectionFound && found, value: sectionFound && found ? value : undefined, source }
+}
 
 /** Refusals owned by the projection, using the writer's stable code vocabulary. */
 export const SETTING_SURFACE_ERRORS = Object.freeze({
@@ -285,6 +333,7 @@ function readUnionSetting({ entry, profileName, layers }) {
  */
 export function readEffectiveSetting({ entry, profileName, layers = [] } = {}) {
   if (entry === null || entry === undefined) return { found: false, value: undefined, source: undefined }
+  if (replacedSectionRootFor(entry) !== undefined) return readReplacedSectionSetting({ entry, profileName, layers })
   if (isUnionSettingEntry(entry)) return readUnionSetting({ entry, profileName, layers })
   const settingPath = settingPathFor(entry.key)
   let found = false

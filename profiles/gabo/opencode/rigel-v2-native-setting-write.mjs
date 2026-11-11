@@ -37,6 +37,45 @@ import { assertPlacementShape, resolveSettingTarget } from "./rigel-v2-native-se
 
 const LIST_TYPES = new Set(["string-list"])
 
+const REPLACED_SECTION_ROOTS = new Set(["monitor", "goal", "experimental", "team_mode", "default_mode"])
+const HARNESS_BLOCK = "[opencode]"
+
+function sectionShadowRefusal({ descriptor, target, layers, profileName, operation }) {
+  if (operation !== "set" && operation !== "add") return null
+  if (!Array.isArray(target?.placement) || target.placement[0] !== "profiles") return null
+  const section = descriptor.path[0]
+  if (!REPLACED_SECTION_ROOTS.has(section)) return null
+  const targetSection = readJsoncValue(target.target?.text ?? "", [...target.placement, section])
+  if (targetSection.found === true) return null
+  const sources = []
+  const placements = [[HARNESS_BLOCK], ["profiles", profileName, HARNESS_BLOCK]]
+  for (const placement of placements) {
+    if (placement.includes(undefined)) continue
+    for (const layer of layers ?? []) {
+      if (layer?.ok === false) continue
+      const read = readJsoncValue(layer.text, [...placement, section])
+      if (read.ok === true && read.found === true && isPlainObject(read.value)) {
+        sources.push({ path: layer.path, placement, section: read.value })
+      }
+    }
+  }
+  if (sources.length === 0) return null
+  return new SettingWriteError(
+    SETTING_WRITE_ERRORS.SECTION_SHADOW,
+    `the profile section ${section} is absent; writing only ${descriptor.path.join(".")} would replace effective sibling settings`,
+    {
+      section,
+      requestedPath: [...target.placement, ...descriptor.path],
+      targetPath: target.path,
+      targetPlacement: target.placement,
+      shadowedSources: sources.map(({ path, placement }) => ({ path, placement })),
+      effectiveSection: sources.at(-1).section,
+      profileName,
+      operation,
+    },
+  )
+}
+
 /** Resolve a catalog descriptor from a `Map`, a record, or a `getSetting()` provider. */
 export function resolveSettingDescriptor(catalog, key) {
   if (catalog === undefined || catalog === null) return undefined
@@ -197,7 +236,9 @@ function resolveRequest(options) {
 
 /** Preview an edit: everything a commit decides, with no backup and no write. */
 export function previewSettingEdit(options = {}) {
-  const { descriptor, target, baseText } = resolveRequest(options)
+  const { descriptor, target, profileName, layers, baseText } = resolveRequest(options)
+  const sectionRefusal = sectionShadowRefusal({ descriptor, target, layers, profileName, operation: options.operation })
+  if (sectionRefusal !== null) throw sectionRefusal
   const planned = planSettingEdit({ descriptor, operation: options.operation, value: options.value, text: baseText, prefix: target.placement })
   return {
     ok: true,
@@ -245,7 +286,9 @@ export function applySettingEdit(options = {}) {
     throw new SettingWriteError(SETTING_WRITE_ERRORS.CONFIRMATION_REQUIRED, "a settings write requires explicit confirmation")
   }
   const { fileSystem, now } = options
-  const { descriptor, target, read, baseText } = resolveRequest(options)
+  const { descriptor, target, read, profileName, layers, baseText } = resolveRequest(options)
+  const sectionRefusal = sectionShadowRefusal({ descriptor, target, layers, profileName, operation: options.operation })
+  if (sectionRefusal !== null) throw sectionRefusal
   assertPlacementShape(read.value ?? {}, target.placement)
   const planned = planSettingEdit({ descriptor, operation: options.operation, value: options.value, text: baseText, prefix: target.placement })
   const result = {

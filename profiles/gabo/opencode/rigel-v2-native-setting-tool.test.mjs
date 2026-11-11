@@ -142,6 +142,18 @@ describe("#given the rigel_setting tool read path", () => {
     expect(payload.layers).toEqual([{ path: space.userConfig, scope: "user", exists: true, ok: true }])
   })
 
+  test("#when a higher profile section omits a scalar leaf #then replacement defaults win over the lower section", async () => {
+    const space = sandbox(`{
+  "[opencode]": { "monitor": { "enabled": true, "max_runtime_ms": 1000 } },
+  "profiles": { "gabo": { "[opencode]": { "monitor": { "live_mode_enabled": false } } } }
+}`)
+    const tool = toolFor(space)
+    const enabled = await run(tool, { action: "get", key: MONITOR_ENABLED })
+    const runtime = await run(tool, { action: "get", key: MONITOR_CAP })
+    expect(enabled.payload.current).toEqual({ found: true, value: false, source: space.userConfig })
+    expect(runtime.payload.current).toEqual({ found: true, value: 3, source: space.userConfig })
+  })
+
   test("#when get reads a shared root key #then the profile-root placement is folded", async () => {
     const space = sandbox()
     const { payload } = await run(toolFor(space), { action: "get", key: SHARED_SKILLS })
@@ -331,14 +343,14 @@ describe("#given the rigel_setting tool mutation path", () => {
     expect(fs.readFileSync(space.userConfig, "utf8")).toBe(before)
   })
 
-  test("#when a scalar remove is confirmed #then the key is deleted so the catalog default applies", async () => {
+  test("#when a scalar remove is confirmed #then the key is deleted and the normalized section default applies", async () => {
     const space = sandbox()
     const { payload } = await run(toolFor(space), { action: "remove", key: MONITOR_ENABLED, confirm: true })
     const current = await run(toolFor(space), { action: "get", key: MONITOR_ENABLED })
 
     expect(payload.ok).toBe(true)
     expect(payload.written).toBe(true)
-    expect(current.payload.current.found).toBe(false)
+    expect(current.payload.current).toMatchObject({ found: true, value: false, source: space.userConfig })
   })
 })
 
@@ -393,6 +405,19 @@ describe("#given the rigel_setting tool refusal policy", () => {
 
     expect(payload.ok).toBe(false)
     expect(payload.error.code).toBe(SETTING_WRITE_ERRORS.AMBIGUOUS_LAYER)
+  })
+
+  test("#when creating a profile section would replace inherited siblings #then the writer refuses with the impact sources", async () => {
+    const space = sandbox(`{
+  "[opencode]": { "monitor": { "max_runtime_ms": 1000 } },
+  "profiles": { "gabo": { "[opencode]": {} } }
+}`)
+    const { payload } = await run(toolFor(space), { action: "set", key: MONITOR_ENABLED, value: true, confirm: true })
+    expect(payload.ok).toBe(false)
+    expect(payload.error.code).toBe(SETTING_WRITE_ERRORS.SECTION_SHADOW)
+    expect(payload.error.details.section).toBe("monitor")
+    expect(payload.error.details.shadowedSources).toEqual([{ path: space.userConfig, placement: ["[opencode]"] }])
+    expect(fs.readFileSync(space.userConfig, "utf8")).toContain('"max_runtime_ms": 1000')
   })
 })
 
