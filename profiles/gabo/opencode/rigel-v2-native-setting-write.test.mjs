@@ -91,6 +91,67 @@ function tamperingFileSystem(targetPath, transform) {
   }
 }
 
+/**
+ * A real file system whose committed value is corrupted after the write lands
+ * AND whose restore write then fails, so the rollback itself cannot land.
+ */
+function failedRestoreFileSystem(targetPath, transform) {
+  let committed = false
+  let targetRenames = 0
+  return {
+    existsSync: fs.existsSync,
+    lstatSync: fs.lstatSync,
+    realpathSync: fs.realpathSync,
+    closeSync: fs.closeSync,
+    mkdirSync: fs.mkdirSync,
+    openSync: fs.openSync,
+    writeFileSync: fs.writeFileSync,
+    fsyncSync: fs.fsyncSync,
+    rmSync: fs.rmSync,
+    renameSync: (from, to) => {
+      if (to !== targetPath) return fs.renameSync(from, to)
+      targetRenames += 1
+      if (targetRenames > 1) throw new Error("restore rename failed")
+      fs.renameSync(from, to)
+      committed = true
+    },
+    readFileSync: (file, encoding) => {
+      const text = fs.readFileSync(file, encoding)
+      return committed && file === targetPath ? transform(text) : text
+    },
+  }
+}
+
+/**
+ * A real file system whose commit is unparseable on read AND whose restore
+ * removal fails, so a created config cannot be taken back.
+ */
+function failedRemoveFileSystem(targetPath) {
+  let committed = false
+  return {
+    existsSync: fs.existsSync,
+    lstatSync: fs.lstatSync,
+    realpathSync: fs.realpathSync,
+    closeSync: fs.closeSync,
+    mkdirSync: fs.mkdirSync,
+    openSync: fs.openSync,
+    writeFileSync: fs.writeFileSync,
+    fsyncSync: fs.fsyncSync,
+    renameSync: (from, to) => {
+      fs.renameSync(from, to)
+      if (to === targetPath) committed = true
+    },
+    rmSync: (file, options) => {
+      if (file === targetPath) throw new Error("restore remove failed")
+      return fs.rmSync(file, options)
+    },
+    readFileSync: (file, encoding) => {
+      const text = fs.readFileSync(file, encoding)
+      return committed && file === targetPath ? "{ broken" : text
+    },
+  }
+}
+
 function failureOf(run) {
   try {
     run()
@@ -539,6 +600,44 @@ describe("setting write commit, backup, and rollback", () => {
     expect(fs.readdirSync(path.dirname(space.userConfig))).toEqual(["omo.jsonc"])
   })
 
+  test("#given a restore that cannot land #when verification fails #then the backup is kept and the modified state is reported", () => {
+    // given
+    const space = sandbox()
+    const original = '{\n  "profiles": {\n    "gabo": {\n      "[opencode]": {\n        "goal": { "enabled": false }\n      }\n    }\n  }\n}\n'
+    writeFile(space.userConfig, original)
+    const failing = failedRestoreFileSystem(space.userConfig, (text) => text.replace('"enabled": true', '"enabled": false'))
+
+    // when
+    const error = failureOf(() => applySettingEdit({ env: space.env, home: space.home, directory: space.directory, fileSystem: failing, setting: GOAL_ENABLED, value: true, confirm: true, now: () => new Date("2026-01-02T03:04:05.678Z") }))
+
+    // then
+    expect(error?.code).toBe(SETTING_WRITE_ERRORS.ROLLBACK_FAILED)
+    expect(error?.details.rolledBack).toBe(false)
+    expect(error?.details.configModified).toBe(true)
+    expect(error?.details.backupPath).toBe(`${space.userConfig}.bak.2026-01-02T03-04-05-678Z`)
+    expect(fs.readFileSync(error.details.backupPath, "utf8")).toBe(original)
+    expect(fs.readFileSync(space.userConfig, "utf8")).toContain('"enabled": true')
+    expect(error?.cause?.code).toBe(SETTING_WRITE_ERRORS.ROLLBACK_FAILED)
+    expect(fs.readdirSync(path.dirname(space.userConfig)).sort()).toEqual(["omo.jsonc", "omo.jsonc.bak.2026-01-02T03-04-05-678Z"])
+  })
+
+  test("#given a created config whose restore remove fails #when verification fails #then no backup exists and the stray file is reported", () => {
+    // given
+    const space = sandbox()
+    const failing = failedRemoveFileSystem(space.userConfig)
+
+    // when
+    const error = failureOf(() => applySettingEdit({ env: space.env, home: space.home, directory: space.directory, fileSystem: failing, setting: GOAL_ENABLED, value: true, confirm: true }))
+
+    // then
+    expect(error?.code).toBe(SETTING_WRITE_ERRORS.ROLLBACK_FAILED)
+    expect(error?.details.rolledBack).toBe(false)
+    expect(error?.details.configModified).toBe(true)
+    expect(error?.details.backupPath).toBeNull()
+    expect(fs.readFileSync(space.userConfig, "utf8")).toContain('"enabled": true')
+    expect(fs.readdirSync(path.dirname(space.userConfig))).toEqual(["omo.jsonc"])
+  })
+
   test("#given a created config the file system corrupts #when verified #then the created file is removed", () => {
     // given
     const space = sandbox()
@@ -567,6 +666,20 @@ describe("setting write commit, backup, and rollback", () => {
     // then
     expect(afterAdd).toEqual(["forja", "prometheus"])
     expect(afterRemove).toEqual(["prometheus"])
+  })
+
+  test("#given a config without the list #when an entry is added #then the list is created, verified, and written", () => {
+    // given
+    const space = sandbox()
+    writeFile(space.userConfig, '{\n  "profiles": {\n    "gabo": {}\n  }\n}\n')
+
+    // when
+    const result = applySettingEdit({ env: space.env, home: space.home, directory: space.directory, fileSystem: fs, setting: DISABLED_AGENTS, operation: "add", value: "forja", confirm: true })
+
+    // then
+    expect(result).toMatchObject({ changed: true, written: true, verified: true, after: ["forja"] })
+    expect(result.before).toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(space.userConfig, "utf8")).profiles.gabo["[opencode]"].disabled_agents).toEqual(["forja"])
   })
 
   test("#given a scalar removal #when committed #then the key is deleted and the default is reported as the effective value", () => {

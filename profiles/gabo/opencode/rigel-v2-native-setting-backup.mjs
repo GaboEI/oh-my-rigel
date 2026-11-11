@@ -5,8 +5,10 @@
  * The contract is deliberately strict. A backup that cannot be created is a
  * REFUSAL, not a warning: a settings edit without a restore point is not
  * allowed. A rollback restores from the bytes read before the write (not from
- * the backup) so a partially readable backup cannot corrupt the restore, and it
- * removes the backup it discards so a rolled-back edit leaves no trace.
+ * the backup) so a partially readable backup cannot corrupt the restore. The
+ * backup is removed only AFTER the restore has landed, so a restore that fails
+ * keeps its own restore point and reports it: a failed edit must never end with
+ * a modified config and no way back.
  */
 import { removeJsoncFile, writeTextAtomic } from "./rigel-v2-native-jsonc-write.mjs"
 import { SETTING_WRITE_ERRORS, SettingWriteError } from "./rigel-v2-native-setting-errors.mjs"
@@ -42,13 +44,28 @@ export function discardSettingBackup({ fileSystem, backupPath }) {
 
 /**
  * Restore the pre-write state: the previous bytes when the file existed, or no
- * file at all when the writer created it. The backup is discarded either way.
+ * file at all when the writer created it.
+ *
+ * The backup is discarded only after the restore has landed. If the restore
+ * itself fails, the backup is deliberately KEPT and the failure is a coded
+ * `ROLLBACK_FAILED` that reports the kept path and the still-modified state, so
+ * a caller can never report a rollback that did not happen.
  */
 export function restorePreviousBytes({ fileSystem, filePath, existed, originalText, backupPath, mode = 0o600 }) {
-  discardSettingBackup({ fileSystem, backupPath })
-  if (existed) {
-    writeTextAtomic({ fileSystem, filePath, text: originalText, mode })
-    return
+  try {
+    if (existed) {
+      writeTextAtomic({ fileSystem, filePath, text: originalText, mode })
+    } else {
+      removeJsoncFile({ fileSystem, filePath })
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    const kept = backupPath === null || backupPath === undefined ? "no backup was available" : `the backup was kept at ${backupPath}`
+    throw new SettingWriteError(
+      SETTING_WRITE_ERRORS.ROLLBACK_FAILED,
+      `could not restore ${filePath} (${kept}): ${reason}`,
+      { path: filePath, backupPath: backupPath ?? null, restored: false, configModified: true, cause: error },
+    )
   }
-  removeJsoncFile({ fileSystem, filePath })
+  discardSettingBackup({ fileSystem, backupPath })
 }

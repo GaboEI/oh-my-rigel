@@ -212,10 +212,33 @@ export function previewSettingEdit(options = {}) {
 }
 
 /**
+ * Roll back a commit that failed verification and return the error to report.
+ * A restore that lands is a clean `VERIFY_FAILED` with `rolledBack: true`; a
+ * restore that cannot land reports the kept backup path and the still-modified
+ * state, because a caller that claims a rollback which never happened is worse
+ * than useless to whoever reads the result.
+ */
+function verificationFailure({ fileSystem, filePath, existed, originalText, backupPath, message, details }) {
+  try {
+    restorePreviousBytes({ fileSystem, filePath, existed, originalText, backupPath })
+  } catch (rollbackError) {
+    const kept = rollbackError instanceof SettingWriteError ? (rollbackError.details.backupPath ?? null) : null
+    const restorePoint = kept === null ? "no backup was available" : `the backup was kept at ${kept}`
+    return new SettingWriteError(
+      SETTING_WRITE_ERRORS.ROLLBACK_FAILED,
+      `${message}; restoring the previous bytes also failed (${restorePoint}), so the config is still modified`,
+      { ...details, path: filePath, rolledBack: false, configModified: true, backupPath: kept, cause: rollbackError, verificationCause: details.cause },
+    )
+  }
+  return new SettingWriteError(SETTING_WRITE_ERRORS.VERIFY_FAILED, message, { ...details, path: filePath, rolledBack: true })
+}
+
+/**
  * Commit an edit. Refuses without `confirm: true`, writes nothing when the edit
  * changes nothing, backs up the current bytes at mode 0600 before a real change,
  * writes atomically, verifies the effective value read back from disk, and rolls
- * back to the previous bytes when that verification fails.
+ * back to the previous bytes when that verification fails. The backup survives
+ * the verification step and is removed only once the restore has landed.
  */
 export function applySettingEdit(options = {}) {
   if (options.confirm !== true) {
@@ -252,20 +275,22 @@ export function applySettingEdit(options = {}) {
     verified = readJsoncFile({ fileSystem, filePath: target.path })
     if (!verified.ok) throw new SettingWriteError(SETTING_WRITE_ERRORS.TARGET_UNPARSEABLE, "the written config could not be parsed", { path: target.path, reason: verified.reason })
   } catch (error) {
-    restorePreviousBytes({ fileSystem, filePath: target.path, existed: read.exists, originalText: read.text, backupPath: backupFile })
-    throw new SettingWriteError(SETTING_WRITE_ERRORS.VERIFY_FAILED, "the written config could not be verified", { path: target.path, rolledBack: true, cause: error })
+    throw verificationFailure({ fileSystem, filePath: target.path, existed: read.exists, originalText: read.text, backupPath: backupFile, message: "the written config could not be verified", details: { cause: error } })
   }
   const actual = readJsoncValue(verified.text, planned.fullPath)
   const matches = planned.expected.found
     ? actual.found === true && deepEqual(actual.value, planned.expected.value)
     : actual.found === false
   if (!matches) {
-    restorePreviousBytes({ fileSystem, filePath: target.path, existed: read.exists, originalText: read.text, backupPath: backupFile })
-    throw new SettingWriteError(
-      SETTING_WRITE_ERRORS.VERIFY_FAILED,
-      "the written value does not match the requested setting; the previous bytes were restored",
-      { path: target.path, expected: planned.expected, actual: actual.found ? actual.value : undefined, rolledBack: true },
-    )
+    throw verificationFailure({
+      fileSystem,
+      filePath: target.path,
+      existed: read.exists,
+      originalText: read.text,
+      backupPath: backupFile,
+      message: "the written value does not match the requested setting",
+      details: { expected: planned.expected, actual: actual.found ? actual.value : undefined },
+    })
   }
   return { ...result, written: true, backupPath: backupFile, verified: true }
 }
