@@ -21,7 +21,11 @@
  *    replaced wholesale by this surface.
  * 3. EFFECTIVE VALUE. The current value is folded exactly like the reader:
  *    placement-major (root, `[opencode]`, `profiles.<P>`, `profiles.<P>.[opencode]`)
- *    and layer-inner (nearest project wins).
+ *    and layer-inner (nearest project wins). A scalar or `replace` key keeps its
+ *    highest-precedence declaration, while a `union` list key ACCUMULATES every
+ *    declaration in that same fold order (first seen first), because that is the
+ *    list `mergeConfigViews` hands the runtime. Reporting only the last raw
+ *    declaration of a denylist reports a value the runtime never runs with.
  *
  * Pure by contract: no file system, no environment, no clock.
  */
@@ -33,6 +37,39 @@ export const SETTING_HARNESS_BLOCK = "[opencode]"
 
 /** The entry kinds this surface may mutate; a container is never replaced. */
 export const MUTABLE_SETTING_KINDS = Object.freeze(["toggle", "value", "list"])
+
+/**
+ * The list keys the reader's fold UNIONS instead of replacing, mirroring
+ * `DECLARATION_ROOT_KINDS` + `mergeConfigViews` in `rigel-v2-native-config.mjs`
+ * (which cannot be imported here: that module is the reader, this one is the
+ * pure projection over it). A union key accumulates every declaration of every
+ * placement, first-seen unique, so folding it like a scalar under-reports what
+ * the runtime actually denies.
+ */
+const UNION_SETTING_ROOT_KEYS = Object.freeze([
+  "disabled_tools",
+  "disabled_agents",
+  "disabled_skills",
+  "disabled_hooks",
+  "disabled_mcps",
+  "disabled_commands",
+  "mcp_env_allowlist",
+])
+
+/**
+ * The union keys the reader admits at a PROFILE ROOT (`profiles.<P>.<key>`). The
+ * fold's `profileRecord` keeps only `categories`, `disabled_skills`, `openclaw`
+ * and the harness blocks (`PROFILE_KEYS` in `rigel-v2-native-config.mjs`), so a
+ * `profiles.<P>.disabled_tools` declaration is never read by the runtime and must
+ * not be reported as an effective denial.
+ */
+const PROFILE_ROOT_UNION_KEYS = Object.freeze(["disabled_skills"])
+
+/**
+ * The union key the reader accepts from USER-scope layers only: a project layer
+ * can never extend the MCP env allowlist (V1 parity, `collectUserMcpEnvAllowlist`).
+ */
+const USER_SCOPE_UNION_KEYS = Object.freeze(["mcp_env_allowlist"])
 
 /** Refusals owned by the projection, using the writer's stable code vocabulary. */
 export const SETTING_SURFACE_ERRORS = Object.freeze({
@@ -160,14 +197,95 @@ export function mutableRefusal(entry) {
   return null
 }
 
+/** The root key of a catalog key: the first segment of its scope-relative path. */
+function unionRootKeyOf(key) {
+  return settingPathFor(key)[0]
+}
+
+/** Whether this entry is a union list the reader accumulates across declarations. */
+function isUnionSettingEntry(entry) {
+  if (entry === null || typeof entry !== "object") return false
+  if (entry.kind !== "list") return false
+  const validation = entry.validation
+  if (validation === null || typeof validation !== "object") return false
+  if (validation.type !== "array" || validation.itemType !== "string") return false
+  return UNION_SETTING_ROOT_KEYS.includes(unionRootKeyOf(entry.key))
+}
+
+/**
+ * Every placement the reader folds for a UNION key, lowest precedence first,
+ * each carrying the dotted `at` a declaration record would name. This is the
+ * reader's own `PLUGIN_PLACEMENTS` order restricted to what its fold actually
+ * admits for a union key, and the last entry is still the write target.
+ */
+function settingUnionPlacementsFor(key, profileName) {
+  const settingPath = settingPathFor(key)
+  const profile = typeof profileName === "string" && profileName !== "" ? profileName : undefined
+  const placements = [
+    { segments: [], at: "" },
+    { segments: [SETTING_HARNESS_BLOCK], at: `${SETTING_HARNESS_BLOCK}.` },
+  ]
+  if (profile !== undefined) {
+    if (PROFILE_ROOT_UNION_KEYS.includes(settingPath[0])) {
+      placements.push({ segments: ["profiles", profile], at: `profiles.${profile}.` })
+    }
+    placements.push({ segments: ["profiles", profile, SETTING_HARNESS_BLOCK], at: `profiles.${profile}.${SETTING_HARNESS_BLOCK}.` })
+  }
+  return placements.map((placement) => ({
+    segments: [...placement.segments, ...settingPath],
+    at: `${placement.at}${settingPath.join(".")}`
+  }))
+}
+
+/**
+ * The effective value of a UNION list: every declaration the reader folds,
+ * deduped first-seen in the reader's own placement-major / layer-inner order.
+ *
+ * `sources` names every contributing placement, lowest precedence first, and
+ * `source` the highest-precedence contributor, so a merged answer is never
+ * mistaken for one file's value. A declaration the parser refuses (a non-array,
+ * or non-string members) contributes nothing and never resets the list, exactly
+ * like `parseConfigView`; `found` still reports that a layer authored the key,
+ * so an explicit `[]` (which releases a deny) never reads as undeclared.
+ */
+function readUnionSetting({ entry, profileName, layers }) {
+  const userScopeOnly = USER_SCOPE_UNION_KEYS.includes(unionRootKeyOf(entry.key))
+  const collected = []
+  const sources = []
+  let found = false
+  for (const placement of settingUnionPlacementsFor(entry.key, profileName)) {
+    for (const layer of layers) {
+      if (layer === null || typeof layer !== "object" || layer.ok === false) continue
+      if (userScopeOnly && layer.scope !== "user") continue
+      const read = readJsoncValue(layer.text, placement.segments)
+      if (read.ok !== true || read.found !== true) continue
+      if (!Array.isArray(read.value)) continue
+      found = true
+      for (const item of read.value) if (typeof item === "string") collected.push(item)
+      sources.push({ path: layer.path, at: placement.at })
+    }
+  }
+  return {
+    found,
+    value: found ? [...new Set(collected)] : undefined,
+    source: sources.at(-1)?.path,
+    sources,
+    union: true,
+  }
+}
+
 /**
  * The CURRENT effective value of one entry, folded like the reader. `layers`
  * must be in the reader's own order (user first, then projects farthest-first)
  * and carry the parsed `text` of each loaded layer; an unreadable layer is
  * skipped here because this is a read, not a write decision.
+ *
+ * A `union` list key is accumulated (`readUnionSetting`); every other key keeps
+ * its highest-precedence declaration, which is what a `replace` fold carries.
  */
 export function readEffectiveSetting({ entry, profileName, layers = [] } = {}) {
   if (entry === null || entry === undefined) return { found: false, value: undefined, source: undefined }
+  if (isUnionSettingEntry(entry)) return readUnionSetting({ entry, profileName, layers })
   const settingPath = settingPathFor(entry.key)
   let found = false
   let value

@@ -2,10 +2,14 @@
  * Budget and limit leaves of the `[opencode]` setting catalog.
  *
  * `monitor`, `team_mode` and `experimental` are the three sections whose leaves
- * differ from their own gate: the `enabled` switches are re-read live, while the
+ * differ from their own gate: the `enabled` switches are re-read live, while most
  * caps, budgets and delivery tuning around them are materialized into the
- * installed manifest. Splitting them out keeps that tier difference reviewable
- * instead of burying it in one long table.
+ * installed manifest. `team_mode` is the exception that must stay visible: the
+ * native validator keeps only `enabled`, `tmux_visualization` and `max_members`
+ * and warns away every other limit, so those keys are catalogued `inert` and a
+ * reinstall is never promised for a value the manifest drops. Splitting the
+ * sections out keeps those tier differences reviewable instead of burying them
+ * in one long table.
  *
  * Tiers and the validation projection follow the same contract as
  * `rigel-v2-native-setting-catalog-opencode.mjs`; the parity suite pins every
@@ -120,11 +124,11 @@ export const OPENCODE_LIMIT_SETTINGS = Object.freeze([
   },
   {
     key: "[opencode].team_mode.max_parallel_members",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "integer", default: 4, minimum: 1, maximum: 8 },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Team tooling reads the whole team block from the manifest, so member caps change on the next reinstall.",
+    evidence: [`${CONFIG}:715`, `${CONFIG}:752`],
+    note: "Member parallelism is fixed by the runtime, not here: validateTeamMode drops this key with a warning and the manifest never carries it, so no reinstall makes it take effect.",
   },
   {
     key: "[opencode].team_mode.max_members",
@@ -136,59 +140,59 @@ export const OPENCODE_LIMIT_SETTINGS = Object.freeze([
   },
   {
     key: "[opencode].team_mode.max_messages_per_run",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "integer", default: 10000, minimum: 1, maximum: 9007199254740991 },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Team mailbox budget; read from the baked team block.",
+    evidence: [`${CONFIG}:717`, `${CONFIG}:752`],
+    note: "Mailbox message budget the native runtime never reads: validateTeamMode drops this key with a warning, so a value here never takes effect.",
   },
   {
     key: "[opencode].team_mode.max_wall_clock_minutes",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "integer", default: 120, minimum: 1, maximum: 9007199254740991 },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Team wall-clock budget; read from the baked team block.",
+    evidence: [`${CONFIG}:718`, `${CONFIG}:752`],
+    note: "Wall-clock budget the native runtime never reads: validateTeamMode drops this key with a warning, so a value here never takes effect.",
   },
   {
     key: "[opencode].team_mode.max_member_turns",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "integer", default: 500, minimum: 1, maximum: 9007199254740991 },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Per-member turn budget; read from the baked team block.",
+    evidence: [`${CONFIG}:719`, `${CONFIG}:752`],
+    note: "Per-member turn budget the native runtime never reads: validateTeamMode drops this key with a warning, so a value here never takes effect.",
   },
   {
     key: "[opencode].team_mode.base_dir",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "string" },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Team storage root override; read from the baked team block.",
+    evidence: [`${CONFIG}:720`, `${CONFIG}:752`],
+    note: "Team storage root is not overridable here: validateTeamMode drops this key with a warning, so the runtime keeps its own base directory.",
   },
   {
     key: "[opencode].team_mode.message_payload_max_bytes",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "integer", default: 32768, minimum: 1024, maximum: 9007199254740991 },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Message payload bound; read from the baked team block.",
+    evidence: [`${CONFIG}:721`, `${CONFIG}:752`],
+    note: "Message payload bound the native runtime never reads: validateTeamMode drops this key with a warning, so a value here never takes effect.",
   },
   {
     key: "[opencode].team_mode.recipient_unread_max_bytes",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "integer", default: 262144, minimum: 1024, maximum: 9007199254740991 },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Unread mailbox bound; read from the baked team block.",
+    evidence: [`${CONFIG}:722`, `${CONFIG}:752`],
+    note: "Unread mailbox bound the native runtime never reads: validateTeamMode drops this key with a warning, so a value here never takes effect.",
   },
   {
     key: "[opencode].team_mode.mailbox_poll_interval_ms",
-    tier: "baked",
+    tier: "inert",
     kind: "value",
     validation: { type: "integer", default: 3000, minimum: 500, maximum: 9007199254740991 },
-    evidence: [`${CONFIG}:1534`, `${MANIFEST}:297`],
-    note: "Mailbox poll interval; read from the baked team block.",
+    evidence: [`${CONFIG}:723`, `${CONFIG}:752`],
+    note: "Mailbox poll interval the native runtime never reads: validateTeamMode drops this key with a warning, so a value here never takes effect.",
   },
   {
     key: "[opencode].experimental.aggressive_truncation",

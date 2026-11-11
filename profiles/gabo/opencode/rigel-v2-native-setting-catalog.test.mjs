@@ -23,6 +23,7 @@ import {
   normalizeSettingKey,
   settingValidation,
 } from "./rigel-v2-native-setting-catalog.mjs"
+import { SETTING_SURFACE_ERRORS, mutableRefusal } from "./rigel-v2-native-setting-descriptor.mjs"
 
 describe("#given the catalog data", () => {
   test("#when its internal consistency is checked #then it reports no problem", () => {
@@ -132,6 +133,36 @@ describe("#given the refusal rules", () => {
       .map((entry) => entry.key)
     // when / then
     expect(listEditableSettingKeys()).toEqual(expected)
+  })
+
+  test("#when a team_mode limit the native validator drops is looked up #then it is inert and refused", () => {
+    // given: validateTeamMode keeps only enabled, tmux_visualization and max_members
+    const unhonored = [
+      "[opencode].team_mode.max_parallel_members",
+      "[opencode].team_mode.max_messages_per_run",
+      "[opencode].team_mode.max_wall_clock_minutes",
+      "[opencode].team_mode.max_member_turns",
+      "[opencode].team_mode.base_dir",
+      "[opencode].team_mode.message_payload_max_bytes",
+      "[opencode].team_mode.recipient_unread_max_bytes",
+      "[opencode].team_mode.mailbox_poll_interval_ms",
+    ]
+    // when
+    const editable = new Set(listEditableSettingKeys())
+    // then: no reinstall and no edit may be promised for a value the manifest never carries
+    for (const key of unhonored) {
+      const entry = lookupSetting(key)
+      expect(entry?.tier).toBe("inert")
+      expect(entry?.writable).toBe(false)
+      expect(entry?.activation).toBe("informational")
+      expect(mutableRefusal(entry).code).toBe(SETTING_SURFACE_ERRORS.INERT)
+      expect(editable.has(key)).toBe(false)
+    }
+    // then: the only team_mode limit the runtime reads is the member cap
+    const bakedTeamModeKeys = listSettings({ tier: "baked" })
+      .map((entry) => entry.key)
+      .filter((key) => key.startsWith("[opencode].team_mode."))
+    expect(bakedTeamModeKeys).toEqual(["[opencode].team_mode.max_members"])
   })
 
   test("#when default_mode.ultrawork is looked up #then it is an ordinary editable live setting", () => {

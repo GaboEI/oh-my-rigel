@@ -41,6 +41,20 @@ function sandbox(text = USER_CONFIG_TEMPLATE) {
   return { root, home, directory, userConfig, env: { OMO_PROFILE: "gabo" } }
 }
 
+/**
+ * A home with one project NESTED inside it, so the reader's upward layer walk
+ * stops at the home boundary instead of climbing out of the sandbox. Two layers
+ * is the smallest chain that can prove a union fold.
+ */
+function layeredSandbox({ userText, projectText }) {
+  const space = sandbox(userText)
+  const directory = path.join(space.home, "project")
+  const projectConfig = path.join(directory, ".omo", "omo.jsonc")
+  fs.mkdirSync(path.dirname(projectConfig), { recursive: true })
+  fs.writeFileSync(projectConfig, projectText)
+  return { ...space, directory, projectConfig }
+}
+
 /** Every mutating file-system call, in order, so "no write" is provable. */
 function recordingFileSystem() {
   const mutations = []
@@ -148,6 +162,63 @@ describe("#given the rigel_setting tool read path", () => {
     expect(inert.payload.setting.mutable).toBe(false)
     expect(inert.payload.setting.refusal.code).toBe(SETTING_SURFACE_ERRORS.INERT)
     expect(engine.payload.setting.refusal.code).toBe(SETTING_SURFACE_ERRORS.ENGINE_OWNED)
+  })
+})
+
+describe("#given a union denylist declared in several placements", () => {
+  test("#when get folds a user and a project layer #then the merged unique list and every contributing source are reported", async () => {
+    const space = layeredSandbox({
+      userText: `{
+  "[opencode]": { "disabled_tools": ["alpha"] },
+  "profiles": { "gabo": { "[opencode]": { "disabled_tools": ["profile_only"] } } }
+}`,
+      projectText: `{
+  "disabled_tools": ["gamma"],
+  "[opencode]": { "disabled_tools": ["beta", "alpha"] }
+}`
+    })
+    const { payload } = await run(toolFor(space), { action: "get", key: "[opencode].disabled_tools" })
+
+    expect(payload.ok).toBe(true)
+    expect(payload.current).toEqual({
+      found: true,
+      // Placement-major, layer-inner: the project ROOT list is folded first, then
+      // the user harness block, then the nearer project block (its duplicate
+      // `alpha` collapses), then the user profile block.
+      value: ["gamma", "alpha", "beta", "profile_only"],
+      source: space.userConfig,
+      union: true,
+      sources: [
+        { path: space.projectConfig, at: "disabled_tools" },
+        { path: space.userConfig, at: "[opencode].disabled_tools" },
+        { path: space.projectConfig, at: "[opencode].disabled_tools" },
+        { path: space.userConfig, at: "profiles.gabo.[opencode].disabled_tools" },
+      ],
+    })
+  })
+
+  test("#when a project layer declares the MCP env allowlist #then only the user declaration is effective", async () => {
+    const space = layeredSandbox({
+      userText: `{ "[opencode]": { "mcp_env_allowlist": ["HOME_TOKEN"] } }`,
+      projectText: `{ "[opencode]": { "mcp_env_allowlist": ["PROJECT_TOKEN"] } }`,
+    })
+    const { payload } = await run(toolFor(space), { action: "get", key: "[opencode].mcp_env_allowlist" })
+
+    expect(payload.current.value).toEqual(["HOME_TOKEN"])
+    expect(payload.current.sources).toEqual([{ path: space.userConfig, at: "[opencode].mcp_env_allowlist" }])
+  })
+
+  test("#when the only declaration is an explicit empty list #then it reads as an authored release, not as undeclared", async () => {
+    const space = sandbox(`{ "[opencode]": { "disabled_tools": [] } }`)
+    const { payload } = await run(toolFor(space), { action: "get", key: "[opencode].disabled_tools" })
+
+    expect(payload.current).toEqual({
+      found: true,
+      value: [],
+      source: space.userConfig,
+      union: true,
+      sources: [{ path: space.userConfig, at: "[opencode].disabled_tools" }],
+    })
   })
 })
 
@@ -286,6 +357,23 @@ describe("#given the rigel_setting tool refusal policy", () => {
     expect(container.payload.error.code).toBe(SETTING_SURFACE_ERRORS.CONTAINER_NOT_MUTABLE)
     expect(union.payload.error.code).toBe(SETTING_SURFACE_ERRORS.UNSUPPORTED_TYPE)
     expect(fileSystem.mutations).toEqual([])
+  })
+
+  test("#when a team_mode limit the native validator drops is set #then it refuses before any write", async () => {
+    const space = sandbox()
+    const fileSystem = recordingFileSystem()
+    const before = fs.readFileSync(space.userConfig, "utf8")
+    const { payload } = await run(toolFor(space, { fileSystem }), {
+      action: "set",
+      key: "[opencode].team_mode.max_parallel_members",
+      value: 6,
+      confirm: true,
+    })
+
+    expect(payload.ok).toBe(false)
+    expect(payload.error.code).toBe(SETTING_SURFACE_ERRORS.INERT)
+    expect(fileSystem.mutations).toEqual([])
+    expect(fs.readFileSync(space.userConfig, "utf8")).toBe(before)
   })
 
   test("#when the action is unknown #then a stable code is returned instead of a thrown error", async () => {
