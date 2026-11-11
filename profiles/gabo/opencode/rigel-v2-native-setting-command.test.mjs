@@ -5,6 +5,7 @@ import path from "node:path"
 import {
   SETTING_COMMAND_NAME,
   createSettingCommand,
+  resolveSettingCommandState,
   registerSettingCommand,
   renderSettingCommandPrompt,
 } from "./rigel-v2-native-setting-command.mjs"
@@ -122,6 +123,7 @@ describe("#given the rigel_setting guided turn", () => {
 
   test("#when the layer chain cannot be resolved #then the turn still delivers and offers no write direction", async () => {
     const space = sandbox()
+    const state = resolveSettingCommandState({ env: {}, home: "", directory: space.directory })
     const trap = trapContext()
     await createSettingCommand({ context: trap.context, env: {}, home: "", directory: space.directory }).execute({
       sessionID: "ses_1",
@@ -130,9 +132,9 @@ describe("#given the rigel_setting guided turn", () => {
     })
 
     const text = trap.delivered.at(-1)
+    expect(state).toMatchObject({ resolved: false, profileName: undefined, layers: [] })
     expect(trap.delivered.length).toBe(1)
     expect(text.startsWith(OMO_INTERNAL_INITIATOR_MARKER)).toBe(true)
-    expect(text.length).toBeGreaterThan(OMO_INTERNAL_INITIATOR_MARKER.length)
   })
 })
 

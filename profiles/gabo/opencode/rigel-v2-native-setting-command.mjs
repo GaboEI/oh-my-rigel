@@ -130,7 +130,7 @@ export function renderSettingCommandPrompt({ userText = "", profileName, layers 
 }
 
 /** The profile and layer state the prompt renders. A resolution failure is reported, not thrown. */
-function readCommandState({ env, home, directory, accountHome, manifest, fileSystem }) {
+export function resolveSettingCommandState({ env, home, directory, accountHome, manifest, fileSystem }) {
   try {
     const paths = resolveSettingPaths({ env, home, directory, accountHome, manifest, fileSystem })
     const layers = paths.layers.map((layer) => {
@@ -157,7 +157,7 @@ export function createSettingCommand({ context, env, home, directory, accountHom
       if (typeof context?.session?.prompt !== "function") return
       const base = prompt !== null && typeof prompt === "object" ? prompt : {}
       const userText = typeof prompt === "string" ? prompt : typeof prompt?.text === "string" ? prompt.text : ""
-      const state = readCommandState({ env, home, directory, accountHome, manifest, fileSystem: fsm })
+      const state = resolveSettingCommandState({ env, home, directory, accountHome, manifest, fileSystem: fsm })
       const text = renderSettingCommandPrompt({ userText, catalog, ...state })
       await context.session.prompt({ ...base, sessionID, text, delivery })
     },

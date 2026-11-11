@@ -2085,6 +2085,7 @@ export default {
           // source of the active profile, so a runtime launched without
           // `OMO_PROFILE` still targets the profile baked at install time.
           manifest,
+          resolveAgent: sessionAgentResolver,
         }),
       })
       // V1-parity `glob`/`grep`. The host builtins diverge from the V1 owner

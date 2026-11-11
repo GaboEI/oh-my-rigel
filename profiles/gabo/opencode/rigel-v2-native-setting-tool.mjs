@@ -16,11 +16,22 @@
  */
 import fs from "node:fs"
 import { SETTING_KINDS, SETTING_TIERS, normalizeSettingKey } from "./rigel-v2-native-setting-catalog.mjs"
+import { isPrometheusAgent } from "./rigel-v2-native-prometheus-md-only.mjs"
 import { SETTING_TOOL_ACTIONS, runSettingAction } from "./rigel-v2-native-setting-actions.mjs"
 
 export const SETTING_TOOL_NAME = "rigel_setting"
 
 export { SETTING_TOOL_ACTIONS }
+
+const PROMETHEUS_MUTATION_ERROR = Object.freeze({
+  code: "SETTING_PROMETHEUS_MD_ONLY",
+  message: "Prometheus is a planning agent and cannot mutate configuration through rigel_setting",
+  details: { allowed: "read-only inspection; write changes only through an .omo/*.md plan" },
+})
+
+function isMutatingAction(action) {
+  return action === "set" || action === "add" || action === "remove"
+}
 
 const SETTING_TOOL_DESCRIPTION = [
   "Inspect and change a catalogued Rigel V2 setting in the layered omo config.",
@@ -52,15 +63,24 @@ const SETTING_TOOL_INPUT = Object.freeze({
  * is injected (`env`, `home`, `directory`, `fileSystem`), so a test can drive the
  * real decision path inside a disposable sandbox.
  */
-export function createSettingTool({ env, home, directory, accountHome, manifest, fileSystem, now } = {}) {
-  const options = { env, home, directory, accountHome, manifest, fileSystem: fileSystem ?? fs, now }
+export function createSettingTool({ env, home, directory, accountHome, manifest, fileSystem, now, resolveAgent } = {}) {
+  const options = { env, home, directory, accountHome, manifest, fileSystem: fileSystem ?? fs, now, resolveAgent }
   return {
     name: SETTING_TOOL_NAME,
     options: { codemode: false },
     description: SETTING_TOOL_DESCRIPTION,
     input: { ...SETTING_TOOL_INPUT, properties: { ...SETTING_TOOL_INPUT.properties } },
-    execute: async (input) => {
+    execute: async (input, toolContext = {}) => {
       const request = input !== null && typeof input === "object" ? input : {}
+      if (isMutatingAction(request.action) && typeof resolveAgent === "function") {
+        const agent = await resolveAgent({ sessionID: toolContext?.sessionID })
+        if (isPrometheusAgent(agent)) {
+          return {
+            content: JSON.stringify({ ok: false, action: request.action, key: normalizeSettingKey(request.key), error: PROMETHEUS_MUTATION_ERROR }, null, 2),
+            metadata: { ok: false, action: request.action, key: normalizeSettingKey(request.key) },
+          }
+        }
+      }
       const payload = runSettingAction(request, options)
       return {
         content: JSON.stringify(payload, null, 2),
