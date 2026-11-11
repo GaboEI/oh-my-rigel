@@ -166,8 +166,12 @@ function removeElementEdits(text, elements, index) {
     return [{ start: lineStart, end, replacement: "" }]
   }
   if (next !== undefined) return [{ start: target.start, end: next.start, replacement: "" }]
-  if (previous !== undefined) return [{ start: previous.end, end: target.end, replacement: "" }]
-  return [{ start: target.start, end: target.end, replacement: "" }]
+  if (previous === undefined) {
+    const afterValue = skipTriviaAt(text, target.end).index
+    const end = text[afterValue] === "," ? afterValue + 1 : target.end
+    return [{ start: target.start, end, replacement: "" }]
+  }
+  return [{ start: previous.end, end: target.end, replacement: "" }]
 }
 
 function applySplices(source, splices) {

@@ -304,6 +304,20 @@ describe("jsonc span splicing", () => {
     expect(absent.text).toBe(source)
   })
 
+  test("#given a sole inline list item with a trailing separator #when removed #then the empty list remains valid JSONC", () => {
+    const source = '{ "disabled_agents": ["forja",] }'
+    const result = removeJsoncListItem(source, ["disabled_agents"], "forja")
+    expect(result.ok).toBe(true)
+    expect(readJsoncValue(result.text, ["disabled_agents"]).value).toEqual([])
+  })
+
+  test("#given a sole inline object member with a trailing separator #when unset #then the empty object remains valid JSONC", () => {
+    const source = '{ "goal": { "enabled": false, }, }'
+    const result = unsetJsoncPath(source, ["goal", "enabled"])
+    expect(result.ok).toBe(true)
+    expect(readJsoncValue(result.text, ["goal"]).value).toEqual({})
+  })
+
   test("#given a CRLF document #when a member is inserted #then the inserted separator is CRLF too", () => {
     // given
     const source = '{\r\n  "goal": {\r\n    "enabled": true\r\n  }\r\n}\r\n'
