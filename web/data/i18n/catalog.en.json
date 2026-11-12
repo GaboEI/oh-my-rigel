@@ -980,10 +980,10 @@
     },
     "estadisticas-anonimas-de-uso": {
       "nombre": "Anonymous usage statistics",
-      "que_es": "Collects anonymous usage statistics to help improve the product.",
-      "modo_de_activacion": "Automatic",
-      "como_se_usa": "Automatic: collects anonymous usage data (without the content of your conversations). Setting: it's turned off with `telemetry: false` in your configuration.",
-      "cuando_sirve": "On a team with a strict data policy: you turn it off when installing and everything else keeps working the same.",
+      "que_es": "Collected anonymous usage statistics to help improve the product; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: there is no setting or notice that turns on usage collection, because this preview collects and sends no statistics.",
+      "cuando_sirve": "Not applicable: there is nothing to collect and nothing to turn off, so your daily use is unchanged.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },

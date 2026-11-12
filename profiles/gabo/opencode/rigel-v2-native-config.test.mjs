@@ -86,6 +86,25 @@ describe("#given plugin keys at the top level of a layer", () => {
   })
 })
 
+describe("#given a layer that declares the shared telemetry key", () => {
+  test("#when it is true, false or absent #then the plugin view never carries a telemetry key", () => {
+    // given
+    const layers = [`{ "telemetry": true }`, `{ "telemetry": { "enabled": false } }`, `{}`]
+    for (const layer of layers) {
+      const fixture = makeFixture()
+      fixture.writeUser(layer)
+      // when
+      const view = fixture.resolve()
+      // then
+      // The native V2 runtime records nothing: the shared key stays a silently
+      // accepted layer key that the resolver never projects into the view, so no
+      // gate can ever be built from it.
+      expect([layer, "telemetry" in view]).toEqual([layer, false])
+      expect([layer, Object.keys(view).includes("telemetry")]).toEqual([layer, false])
+    }
+  })
+})
+
 describe("#given plugin keys inside the [opencode] block", () => {
   test("#when the view is resolved #then every gate reflects the block", () => {
     // given

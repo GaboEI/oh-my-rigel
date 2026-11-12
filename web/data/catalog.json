@@ -6,8 +6,8 @@
     "totalFunctions": 107,
     "totalAreas": 14,
   "stateTotals": {
-    "activada": 77,
-    "desactivada": 13,
+    "activada": 76,
+    "desactivada": 14,
     "condicionada": 17
   }
   },
@@ -4862,14 +4862,14 @@
       "nombre": "Estadísticas anónimas de uso",
       "area": "M",
       "areaSlug": "seguimiento-del-funcionamiento-y-actualizaciones",
-      "estado": "activada",
-      "v2": "migrada",
-      "que_es": "Recopila estadísticas anónimas sobre el uso para ayudar a mejorar el producto.",
-      "como_se_activa": "Se puede desactivar.",
-      "como_se_usa": "Automático — recopila datos de uso anónimos (sin contenido de tus conversaciones). Ajuste — se apaga con `telemetry: false` en tu configuración.",
-      "cuando_sirve": "En un equipo con política estricta de datos: lo apagas al instalar y todo lo demás sigue funcionando igual.",
+      "estado": "desactivada",
+      "v2": "excluida",
+      "que_es": "Recopilaba estadísticas anónimas sobre el uso para ayudar a mejorar el producto; no forma parte de esta vista previa.",
+      "como_se_activa": "No disponible.",
+      "como_se_usa": "No expuesto todavía: no hay ajuste ni aviso que active una recopilación de uso, porque esta vista previa no recopila ni envía estadísticas.",
+      "cuando_sirve": "No aplica: no hay nada que recopilar ni nada que apagar, así que tu uso diario no cambia.",
       "url": "/catalogo/estadisticas-anonimas-de-uso/",
-      "modo_de_activacion": "Automático",
+      "modo_de_activacion": "No expuesto todavía",
       "requisitos": {
         "procedencia": "no_aplica",
         "razon": "El catálogo no declara requisito externo para esta función; su activación es automática, por ajuste, palabra clave, comando o panel (ver modo_de_activacion).",
@@ -4883,7 +4883,7 @@
       "ejemplos": {
         "procedencia": "derivado",
         "valor": [
-          "En un equipo con política estricta de datos: lo apagas al instalar y todo lo demás sigue funcionando igual."
+          "No aplica: no hay nada que recopilar ni nada que apagar, así que tu uso diario no cambia."
         ],
         "fuente": "catálogo: columna «Cuándo te sirve»"
       },
@@ -4898,9 +4898,12 @@
         "fuente": "Catalogo_Funciones_OMR_V2.md (sección «Alcance y límites»)"
       },
       "cambios_relevantes": {
-        "procedencia": "no_consta",
-        "razon": "El catálogo clasifica la función como migrada (comportamiento conservado) pero no describe un cambio concreto.",
-        "fuente": "catálogo: columna «Cómo está en V2»"
+        "procedencia": "derivado",
+        "valor": [
+          "Excluida: el producto no recopila ni envía estadísticas de uso.",
+          "No expuesto todavía: no hay vía real de uso porque el catálogo la declara activa solo como ajuste."
+        ],
+        "fuente": "catálogo: columna «Cómo está en V2» y celdas de uso"
       }
     },
     {
