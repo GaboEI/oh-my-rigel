@@ -59,7 +59,7 @@ import { createServerApi } from "./rigel-v2-native-http.mjs"
 import { createBtwContextInjector, resolveBtwReceiptPath, writeBtwInjectionReceipt } from "./rigel-v2-native-btw-context.mjs"
 import { createHashlineEditTool, createHashlineReadEnhancer } from "./rigel-v2-native-hashline.mjs"
 import { createNativeCategorySkillReminder } from "./rigel-v2-native-category-skill-reminder.mjs"
-import { createPersistentTerminalPort } from "./tools/terminal-driver.mjs"
+import { resolveInteractiveTerminalBackend } from "./rigel-v2-native-terminal-backend.mjs"
 import { createBlockingRuleRunner, runOrderedRules } from "./rigel-v2-native-hook-chain.mjs"
 import { createSessionStateRegistry } from "./rigel-v2-native-session-state.mjs"
 import { createKeywordState } from "./rigel-v2-keyword-state.mjs"
@@ -1847,8 +1847,12 @@ export default {
     // to the tool families, so a context that can enumerate in-process (or has no
     // resolvable local server) keeps today's behavior. The probe sends nothing
     // unless the origin is this host's own server and the credential from the
-    // host's own service handoff resolves (fails closed).
-    const needsServerApi = nativeGates.monitor === true || !hasInProcessSessionEnumeration(context)
+    // host's own service handoff resolves (fails closed). `interactive_bash` runs
+    // its persistent terminal over the same verified API, but that alone never
+    // changes what the tool families see: they get the API only under the
+    // conditions above, so session enumeration keeps its in-process path.
+    const familiesNeedServerApi = nativeGates.monitor === true || !hasInProcessSessionEnumeration(context)
+    const needsServerApi = familiesNeedServerApi || nativeGates.interactive_bash === true
     const serverApi = needsServerApi
       ? createServerApi({ argv: process.argv, env: process.env, context })
       : undefined
@@ -1860,6 +1864,19 @@ export default {
       }
     }
     const toolServerApi = serverApi?.available ? serverApi : undefined
+    const familiesServerApi = familiesNeedServerApi ? toolServerApi : undefined
+    // `interactive_bash` backend: the verified API's persistent PTY behind an
+    // `env -i` allowlist, rooted in the calling session's directory. Managed
+    // service topology only: `unavailable` (no verified API, a server password
+    // selector in the process environment, no env wrapper) blocks the family
+    // outright, and no legacy tmux/ctx.pty backend may stand in.
+    const interactiveBackend = nativeGates.interactive_bash === true
+      ? resolveInteractiveTerminalBackend({
+        serverApi: toolServerApi,
+        env: process.env,
+        resolveSessionDirectory: (sessionID) => resolveCallingSessionDirectory(context, sessionID),
+      })
+      : undefined
 
     const registration = await context.tool.transform((hostEditor) => {
       // The live `disabled_tools` denylist is a REGISTRATION filter here, exactly
@@ -2028,7 +2045,7 @@ export default {
         // Only a verified server API reaches the aggregator, which hands it
         // to the monitor terminal port and nothing else. Undefined when the host
         // exposes no verified loopback server, so the monitor family stays inert.
-        serverApi: toolServerApi,
+        serverApi: familiesServerApi,
         // The look_at child must resolve its start model the way the delegation
         // path does. JSON-only: a user pin is honored, and with no pin the child
         // inherits the OpenCode global (the resolver returns undefined). Without
@@ -2449,6 +2466,8 @@ export default {
       // conditional families cannot register from a stale baked value the runtime
       // already superseded.
       gates: nativeGates,
+      terminalFactory: interactiveBackend?.terminalFactory,
+      terminalUnavailableReason: interactiveBackend?.status === "unavailable" ? interactiveBackend.reason : undefined,
       // The same live denylist the core transform filtered with, so a conditional
       // family the user disabled after install (interactive_bash is the
       // documented example) does not register from the stale baked gate.

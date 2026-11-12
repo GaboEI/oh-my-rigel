@@ -2383,14 +2383,14 @@
       "estado": "condicionada",
       "v2": "migrada",
       "que_es": "Maneja sesiones de terminal para comandos que necesitan interacción.",
-      "como_se_activa": "Se activa si tienes instalado un programa que permite mantener y organizar varias terminales en una misma ventana.",
-      "como_se_usa": "Requisito externo — instala un organizador de terminales (por ejemplo, `tmux`) y enciende el apartado `tmux` de tu configuración; sin ambos no aparece. Después lo pides por chat.",
+      "como_se_activa": "Aparece sola cuando Oh My Rigel atiende la sesión desde el servicio de OpenCode V2 del equipo y ese servicio ofrece su API de terminales persistentes. Si el servicio no expone esa API, o si el proceso del servidor lleva un selector de contraseña en el entorno, la herramienta no aparece.",
+      "como_se_usa": "La pides por chat y trabajas con terminales que pertenecen a tu sesión: iniciar, enviar, leer, detener y listar. Los verbos de estilo tmux se traducen a esas acciones: `new-session` inicia, `send-keys` envía, `list-sessions` lista y `kill-session` detiene, mientras `capture-pane` queda bloqueado y `kill-server` queda prohibido. La terminal sobrevive al turno, así que tras una interrupción la misma sesión todavía puede leerla y detenerla. Con `shell` en `ask`, cada inicio y cada envío piden permiso; con `deny`, no arranca nada.",
       "cuando_sirve": "El agente necesita dejar un editor o un proceso vivo en marcha mientras sigue trabajando en otra terminal.",
       "url": "/catalogo/terminal-interactiva/",
       "modo_de_activacion": "Requisito externo",
       "requisitos": {
         "procedencia": "derivado",
-        "valor": "Se activa si tienes instalado un programa que permite mantener y organizar varias terminales en una misma ventana.",
+        "valor": "Necesita el modo servicio gestionado de OpenCode V2 con la API de terminales persistentes del host disponible, y el proceso del servidor sin selector de contraseña en su entorno. Si el servidor corre por fuera del servicio gestionado y no expone esa API, o si el entorno trae `OPENCODE_PASSWORD` o `OPENCODE_SERVER_PASSWORD`, la herramienta no está disponible.",
         "fuente": "catálogo: columna «Cómo se activa o condición»"
       },
       "valores_por_defecto": {

@@ -74,6 +74,10 @@ const EXACT_GATE_BY_KEY = Object.freeze({
   call_omo_agent: "call_omo_agent",
   look_at: "look_at",
   skill_mcp: "skill_mcp",
+  // Deny defense-in-depth only. A name-level `ask` here is a hard block pending
+  // approval (see `before`), never a prompt. The tool's real approval path is
+  // `context.permission.assert` with the `shell` action, asserted by the tool
+  // itself before every terminal start and write.
   interactive_bash: "interactive_bash",
   question: "question",
   // `todowrite` keeps its native action rule AND a real tool-name gate: V2

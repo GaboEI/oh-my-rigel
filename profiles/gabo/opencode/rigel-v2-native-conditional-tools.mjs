@@ -9,7 +9,8 @@
  * registered: a disabled tool can never be silently exposed.
  *
  * V2 primitives used:
- * - `ctx.pty`     -> interactive_bash command runner (never shell.exec)
+ * - `ctx.pty`     -> the V1 tmux-runner path of interactive_bash (never shell.exec);
+ *                    the persistent terminal backend arrives as `terminalFactory`
  * - `ctx.storage` -> task and goal persistence (never a fake in-memory store)
  * - `ctx.tool.transform` -> real tool registration
  * - `ctx.event.subscribe` + `ctx.session.prompt` -> goal idle continuation
@@ -54,10 +55,14 @@ function emptyResult() {
 /**
  * Build the enabled tool definitions for the resolved gates.
  *
- * `interactive_bash` is additionally gated on a real tmux executable; an enabled
- * gate with no tmux is therefore unavailable, not broken. Each family is only
- * built when its `ctx` domain is present; a missing domain is reported loudly
- * and the family is skipped rather than registered with a fake backend.
+ * `interactive_bash` is additionally gated on host availability. A
+ * `terminalFactory` (the session-owned persistent terminal) is a complete
+ * backend on its own, with no tmux at all; only when it is absent does a
+ * resolved tmux executable plus the PTY runner serve. A gate that is enabled
+ * with neither backend, or whose persistent terminal was refused outright, is
+ * unavailable rather than broken. Each family is only built when its `ctx`
+ * domain is present; a missing domain is reported loudly and the family is
+ * skipped rather than registered with a fake backend.
  *
  * `disabledTools` is the LIVE `disabled_tools` denylist, applied AFTER the family
  * builders by exact tool name. A gate being enabled only means the config
@@ -71,6 +76,8 @@ export function buildConditionalToolDefinitions({
   tmuxPath,
   ptyRunner,
   terminalFactory,
+  terminalUnavailableReason,
+  permission,
   taskStore,
   taskLock,
   goalStore,
@@ -95,8 +102,12 @@ export function buildConditionalToolDefinitions({
     // A persistent-terminal factory is the no-tmux backend; a resolved tmux path
     // plus a PTY runner is the V1 backend. Only when NEITHER exists is the
     // family unavailable.
-    if (typeof terminalFactory === "function") {
-      definitions[INTERACTIVE_BASH_TOOL_NAME] = createInteractiveBashTool({ terminalFactory, getSessionID })
+    if (typeof terminalUnavailableReason === "string" && terminalUnavailableReason) {
+      // The persistent-terminal backend was refused outright (for example a server
+      // credential in the process environment). No other backend may stand in.
+      onUnavailable("interactive_bash", terminalUnavailableReason)
+    } else if (typeof terminalFactory === "function") {
+      definitions[INTERACTIVE_BASH_TOOL_NAME] = createInteractiveBashTool({ terminalFactory, getSessionID, permission })
       names.push(INTERACTIVE_BASH_TOOL_NAME)
     } else if (typeof tmuxPath !== "string" || !tmuxPath) {
       onUnavailable("interactive_bash", "tmux is not available on PATH")
@@ -182,6 +193,7 @@ export async function registerConditionalNativeTools({
   tmuxPath,
   ptyRunner,
   terminalFactory,
+  terminalUnavailableReason,
   taskStore,
   taskLock,
   goalStore,
@@ -207,8 +219,9 @@ export async function registerConditionalNativeTools({
   // required); only when it is absent does PATH detection decide. The probe
   // runs only when the family is actually requested.
   const hasTerminalFactory = typeof terminalFactory === "function"
-  const resolvedTmuxPath = tmuxPath ?? (resolved.interactive_bash === true && !hasTerminalFactory ? detectTmuxAvailability() : undefined)
-  if (resolved.interactive_bash === true && !hasTerminalFactory && !resolvedTmuxPath) {
+  const terminalBlocked = typeof terminalUnavailableReason === "string" && terminalUnavailableReason.length > 0
+  const resolvedTmuxPath = tmuxPath ?? (resolved.interactive_bash === true && !hasTerminalFactory && !terminalBlocked ? detectTmuxAvailability() : undefined)
+  if (resolved.interactive_bash === true && !hasTerminalFactory && !terminalBlocked && !resolvedTmuxPath) {
     log("[oh-my-rigel] Native V2 interactive_bash requested but tmux is not available on PATH; family stays unregistered")
   }
 
@@ -288,6 +301,10 @@ export async function registerConditionalNativeTools({
     tmuxPath: resolvedTmuxPath,
     ptyRunner: runner,
     terminalFactory,
+    terminalUnavailableReason,
+    // The host's own permission service: the persistent terminal asserts the
+    // `shell` action through it before every start and write.
+    permission: context?.permission,
     taskStore: store,
     taskLock: taskLock ?? createTaskLock(),
     goalStore: resolvedGoalStore,

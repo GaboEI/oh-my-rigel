@@ -107,11 +107,11 @@ describe("createPersistentTerminalPort", () => {
             createTerminal: () => ({ ok: true, status: 200, data: { data: { id: "pty_1", title: "t" } }, error: null }),
           })
           const port = createPersistentTerminalPort({ serverApi: api, sessionID: "ses_1" })
-          const result = await port.start({ command: "bash", args: ["-l"], title: "t", env: { A: "1" }, size: { cols: 80, rows: 24 } })
+          const result = await port.start({ command: "bash", args: ["-l"], title: "t", env: { A: "1" }, cwd: "/work/dir", size: { cols: 80, rows: 24 } })
           expect(result).toEqual({ ok: true, ptyID: "pty_1", info: { id: "pty_1", title: "t" } })
           expect(api.calls.createTerminal[0]).toEqual({
             sessionID: "ses_1",
-            options: { command: "bash", args: ["-l"], title: "t", env: { A: "1" }, size: { cols: 80, rows: 24 } },
+            options: { command: "bash", args: ["-l"], title: "t", env: { A: "1" }, cwd: "/work/dir", size: { cols: 80, rows: 24 } },
           })
         })
       })
@@ -299,6 +299,24 @@ describe("createPersistentTerminalPort", () => {
           const api = fakeServerApi({ raw: () => ({ ok: false, status: null, data: null, error }) })
           const port = createPersistentTerminalPort({ serverApi: api, sessionID: "ses_1", closeGraceMs: 0, openSocket: () => { throw new Error("must not open") } })
           expect(await port.write({ ptyID: "pty_abc", data: "x" })).toEqual({ ok: false, error })
+        })
+      })
+    })
+
+    describe("#given the socket factory fails with a message that quotes the ticket-bearing URL", () => {
+      describe("#when write is called", () => {
+        test("#then the returned error never carries the ticket", async () => {
+          const api = fakeServerApi({ raw: () => ({ ok: true, status: 200, data: { data: { ticket: "secret-ticket-value" } }, error: null }) })
+          const port = createPersistentTerminalPort({
+            serverApi: api,
+            sessionID: "ses_1",
+            closeGraceMs: 0,
+            openSocket: (url) => { throw new Error(`Invalid URL: ${url}`) },
+          })
+          const result = await port.write({ ptyID: "pty_abc", data: "x" })
+          expect(result.ok).toBe(false)
+          expect(result.error.code).toBe("v2_terminal_write_error")
+          expect(result.error.message).not.toContain("secret-ticket-value")
         })
       })
     })

@@ -206,6 +206,22 @@ describe("registration on the V2 host", () => {
     expect(disabled.added).toEqual([])
   })
 
+  test("keeps interactive_bash unregistered when the terminal backend is blocked, even with tmux and a pty runner", async () => {
+    const pty = { create: async () => ({ data: { id: "p" } }), remove: async () => {} }
+    const fake = fakeContext({ pty })
+    const result = await registerConditionalNativeTools({
+      context: fake.context,
+      manifest: {},
+      gates: { interactive_bash: true },
+      tmuxPath: "/usr/bin/tmux",
+      terminalUnavailableReason: "a server credential selector is set in the process environment",
+      log: () => {},
+    })
+    expect(result.registered).toEqual([])
+    expect(fake.added).toEqual([])
+    expect(result.unavailable).toEqual([{ family: "interactive_bash", reason: "a server credential selector is set in the process environment" }])
+  })
+
   test("subscribes the goal continuation and aborts it on dispose", async () => {
     let subscriptions = 0
     const fake = fakeContext({ storage: memoryStorage(), onSubscription: () => { subscriptions += 1 } })

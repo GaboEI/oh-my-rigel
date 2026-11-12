@@ -3218,6 +3218,220 @@ test("native runtime builds the session HTTP authority with the monitor gate off
   }
 })
 
+// Row 42: `interactive_bash` is the persistent-terminal tool of the managed V2
+// service. The runtime must register it through the verified loopback server
+// API (host service-file handoff, no credential in the process environment),
+// start the PTY child under an allowlisted environment, root it in the calling
+// session's own directory, address only terminals that session owns, and assert
+// every shell step through the host's `context.permission`.
+// `gateOn` flips the baked gate, `handoff` writes (or omits) the host service
+// handoff that makes the server API trusted, `serverPassword` plants a credential
+// selector in the process environment, and `pty` gives the host a ctx.pty domain
+// (the legacy backend that must never stand in).
+async function withInteractiveBashRuntime({ inProcessList = false, permission, gateOn = true, handoff = true, serverPassword, pty } = {}, run) {
+  const sandbox = mkdtempSync(join(tmpdir(), "rigel-interactive-bash-"))
+  const home = join(sandbox, "home")
+  const origin = "http://127.0.0.1:49375"
+  const sessionDirectory = "/work/row42-session"
+  mkdirSync(join(home, ".local", "state", "opencode"), { recursive: true })
+  mkdirSync(join(home, ".config", "opencode"), { recursive: true })
+  if (handoff) {
+    writeFileSync(join(home, ".local", "state", "opencode", "service.json"), JSON.stringify({ url: origin, pid: process.pid, version: "2.0.27" }))
+    writeFileSync(join(home, ".config", "opencode", "service.json"), JSON.stringify({ hostname: "127.0.0.1", port: 49375, password: "svc-pw" }))
+  }
+  const jsonResponse = (body, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+  const envKeys = ["HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD", "ROW42_CANARY"]
+  const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]))
+  const previousFetch = globalThis.fetch
+  const originalMetadata = nativeManifest.metadata
+  process.env.HOME = home
+  for (const key of envKeys.slice(1, 5)) delete process.env[key]
+  if (serverPassword) process.env.OPENCODE_SERVER_PASSWORD = serverPassword
+  process.env.ROW42_CANARY = "canary-must-not-reach-the-child"
+  nativeManifest.metadata = { global: { gates: { interactive_bash: gateOn } } }
+  // One chronology for the host permission service and the server's terminal
+  // routes, so ordering is asserted on what actually happened.
+  const order = []
+  const terminalRequests = []
+  const serverPaths = []
+  globalThis.fetch = async (url, init = {}) => {
+    const href = String(url)
+    serverPaths.push(`${init.method ?? "GET"} ${new URL(href).pathname}`)
+    if (href.endsWith("/api/info")) return jsonResponse({ version: "2.0.27", pid: process.pid, urls: [origin] })
+    if (href.includes("/terminal") && init.method === "POST") {
+      order.push("create-terminal")
+      terminalRequests.push({ href, body: JSON.parse(init.body) })
+      return jsonResponse({ data: { id: "pty_row42" } })
+    }
+    if (href.includes("/terminal")) return jsonResponse({ data: [{ id: "pty_row42" }] })
+    return jsonResponse({})
+  }
+  const tools = {}
+  const context = {
+    location: { directory: "/native-v2" },
+    agent: {
+      list: async () => ({ data: [] }),
+      transform: async (callback) => { callback({ update() {}, default() {} }); return { dispose() {} } },
+      reload: async () => {},
+    },
+    model: { list: async () => ({ data: [] }) },
+    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
+    session: {
+      hook: async () => ({ dispose() {} }),
+      create: async () => ({ data: { id: "ses_child" } }),
+      prompt: async () => ({ data: {} }),
+      get: async ({ sessionID }) => ({ id: sessionID, directory: sessionDirectory }),
+      ...(inProcessList ? { list: typeof inProcessList === "function" ? inProcessList : async () => ({ data: [] }) } : {}),
+      // a function `inProcessList` is a full in-process session client
+      ...(typeof inProcessList === "function" ? { context: async () => ({ data: [{ id: "m1", role: "user", time: { created: 1 }, parts: [{ type: "text", text: "hello" }] }] }) } : {}),
+    },
+    ...(permission ? { permission: { ...permission, assert: async (request) => { order.push("assert"); return await permission.assert(request) } } } : {}),
+    ...(pty ? { pty } : {}),
+    tool: {
+      transform: async (callback) => {
+        callback({ add: (value) => { if (value?.name) tools[value.name] = value } })
+        return { dispose() {} }
+      },
+    },
+  }
+  try {
+    const dispose = await plugin.setup(context)
+    try {
+      await run({ tools, terminalRequests, serverPaths, order, origin, home, sessionDirectory })
+    } finally {
+      await dispose()
+    }
+  } finally {
+    globalThis.fetch = previousFetch
+    if (originalMetadata === undefined) delete nativeManifest.metadata
+    else nativeManifest.metadata = originalMetadata
+    for (const key of envKeys) {
+      if (previousEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = previousEnv[key]
+    }
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+}
+
+function hostPermission({ deny } = {}) {
+  const asserted = []
+  return {
+    asserted,
+    assert: async (request) => {
+      asserted.push(request)
+      if (deny) throw new Error("host denied the shell action")
+    },
+  }
+}
+
+const BASH_CALL = { sessionID: "ses_row42", agent: "sisyphus", messageID: "msg_row42", id: "call_row42" }
+
+// Both contexts prove the server API is built for the tool itself, with and
+// without an in-process session.list.
+for (const inProcessList of [false, true]) {
+  test(`native runtime registers interactive_bash over the verified server API with a sanitized child, the session directory and a host shell assertion (in-process session.list: ${inProcessList})`, async () => {
+    const permission = hostPermission()
+    await withInteractiveBashRuntime({ inProcessList, permission }, async ({ tools, terminalRequests, serverPaths, order, origin, home, sessionDirectory }) => {
+      expect(tools.interactive_bash).toBeDefined()
+      const started = await tools.interactive_bash.execute({ action: "start" }, BASH_CALL)
+      expect(started.content).toContain("pty_row42")
+      // the host assertion resolved before the server was asked for the terminal
+      expect(order).toEqual(["assert", "create-terminal"])
+      expect(terminalRequests).toHaveLength(1)
+      const [{ href, body }] = terminalRequests
+      expect(href).toBe(`${origin}/api/experimental/session/ses_row42/terminal`)
+      // no cwd given: the terminal is rooted in the calling session's own directory
+      expect(body.cwd).toBe(sessionDirectory)
+      expect(body.env).toEqual({})
+      // the PTY child runs behind an `env -i` wrapper that carries only the allowlist
+      expect(body.command).toMatch(/\/env$/)
+      expect(body.args.slice(0, 2)).toEqual(["-i", "--"])
+      expect(body.args.at(-1)).toBe("/bin/bash")
+      const assignments = Object.fromEntries(body.args.slice(2, -1).map((entry) => entry.split(/=(.*)/s).slice(0, 2)))
+      expect(assignments).toMatchObject({ PATH: process.env.PATH, HOME: home, TERM: "xterm-256color" })
+      expect(typeof assignments.LANG).toBe("string")
+      expect(JSON.stringify(body)).not.toContain("canary-must-not-reach-the-child")
+      expect(JSON.stringify(body)).not.toContain("svc-pw")
+      expect(permission.asserted).toHaveLength(1)
+      expect(permission.asserted[0]).toMatchObject({
+        sessionID: "ses_row42",
+        agent: "sisyphus",
+        source: { type: "tool", messageID: "msg_row42", id: "call_row42" },
+        action: "shell",
+        resources: ["/bin/bash"],
+      })
+      expect("save" in permission.asserted[0]).toBe(false)
+
+      // an explicit cwd is forwarded as the model gave it, after its own assertion
+      await tools.interactive_bash.execute({ action: "start", command: "htop", cwd: "/srv/explicit" }, BASH_CALL)
+      expect(terminalRequests[1].body.cwd).toBe("/srv/explicit")
+      expect(terminalRequests[1].body.args.at(-1)).toBe("htop")
+      expect(order).toEqual(["assert", "create-terminal", "assert", "create-terminal"])
+
+      // a terminal id the session does not own is refused with no PTY traffic
+      const before = serverPaths.length
+      const asserted = permission.asserted.length
+      const foreign = await tools.interactive_bash.execute({ action: "send", input: "id\n", target: "pty_foreign" }, BASH_CALL)
+      expect(foreign.content).toContain("does not belong to this session")
+      expect(serverPaths.slice(before).some((entry) => entry.includes("connect-token"))).toBe(false)
+      expect(permission.asserted).toHaveLength(asserted)
+    })
+  })
+}
+
+test("native runtime never creates a terminal when the host denies the shell action", async () => {
+  await withInteractiveBashRuntime({ permission: hostPermission({ deny: true }) }, async ({ tools, terminalRequests }) => {
+    await expect(tools.interactive_bash.execute({ action: "start" }, BASH_CALL)).rejects.toThrow("host denied the shell action")
+    expect(terminalRequests).toEqual([])
+  })
+})
+
+test("native runtime refuses to start a terminal when the host exposes no permission service", async () => {
+  await withInteractiveBashRuntime({}, async ({ tools, terminalRequests }) => {
+    const result = await tools.interactive_bash.execute({ action: "start" }, BASH_CALL)
+    expect(result.content).toContain("permission service is unavailable")
+    expect(terminalRequests).toEqual([])
+  })
+})
+
+// The terminal backend needing the verified server API must not change what the
+// tool families see: with an in-process `session.list` and the monitor off, the
+// session tools keep enumerating through that client, not over HTTP.
+test("native runtime keeps session enumeration in-process when only interactive_bash needs the server API", async () => {
+  const inProcess = [{ id: "ses_in_process", directory: "/native-v2", time: { created: 1, updated: 2 } }]
+  await withInteractiveBashRuntime({
+    inProcessList: async () => ({ data: inProcess }),
+    permission: hostPermission(),
+  }, async ({ tools, serverPaths }) => {
+    // the backend still got its verified API
+    expect(tools.interactive_bash).toBeDefined()
+    expect(serverPaths).toContain("GET /api/info")
+
+    const listed = await tools.session_list.execute({})
+
+    expect(listed.content).toContain("ses_in_process")
+    expect(serverPaths.filter((entry) => entry.startsWith("GET /api/session"))).toEqual([])
+  })
+})
+
+// The tool is offered only in the managed service topology. Each case below is a
+// host path that must leave it unregistered, with ctx.pty present so a fallback
+// to the legacy backend would be visible.
+const LEGACY_PTY = { create: async () => ({ data: { id: "legacy" } }), remove: async () => {} }
+for (const [label, options] of [
+  ["the gate is off", { gateOn: false }],
+  ["no verified server API exists", { handoff: false }],
+  ["a server password selector is set in the process environment", { serverPassword: "env-pw-secret" }],
+]) {
+  test(`native runtime does not register interactive_bash when ${label}`, async () => {
+    await withInteractiveBashRuntime({ permission: hostPermission(), pty: LEGACY_PTY, ...options }, async ({ tools, terminalRequests }) => {
+      expect(tools.interactive_bash).toBeUndefined()
+      expect(terminalRequests).toEqual([])
+    })
+  })
+}
+
 test("native runtime updates the host webfetch executor without replacing its definition", async () => {
   const nativeExecute = async () => ({ content: "host" })
   const webfetch = {
