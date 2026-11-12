@@ -22,9 +22,11 @@
  *     without the metadata is left byte-identical.
  *
  * Companion CLI entrypoint (`rigel-v2-native-cli.mjs` default `setup`, the
- * composed `./tui`): legacy notice, native-edition nudge and task-toast effects
- * are asserted on the real toasts/receipts, plus the btw `/btw` command opening
- * its picker. Deduplication, gates and child-skip are asserted as negatives.
+ * composed `./tui`): legacy notice and task-toast effects are asserted on the
+ * real toasts/receipts, plus the btw `/btw` command opening its picker.
+ * Deduplication, gates and child-skip are asserted as negatives. The retired
+ * native-edition nudge (row 60) leaves no surface behind: one verdict asserts an
+ * eligible root session produces no native-edition toast.
  *
  * Exit code is non-zero when any feature verdict fails.
  */
@@ -175,13 +177,6 @@ async function runCliPhase() {
       logFile: path.join(sandbox, "legacy.log"),
       now: () => FIXED,
     },
-    nativeEditionNudge: {
-      interactive: () => true,
-      now: () => FIXED,
-      stateDir: path.join(sandbox, "nudge-state"),
-      logFile: path.join(sandbox, "nudge.log"),
-      version: "test",
-    },
     taskToast: { now: () => FIXED, log: () => {} },
     btw: {
       getCurrentSessionID: () => "ses_root",
@@ -193,27 +188,14 @@ async function runCliPhase() {
   const dispose = plugin.setup(context)
   check("composite", "real ./tui entrypoint setup returned a disposer", typeof dispose === "function", `type=${typeof dispose}`)
 
-  // --- legacy notice + nudge on a root session.created ---
+  // --- legacy notice, and the retired nudge, on a root session.created ---
   emit({ type: "session.created", data: { sessionID: "ses_root" } })
   const legacyToast = toasts.find((t) => t.title === "Legacy Plugin Name Detected")
   check("legacy-plugin-toast", "positive: legacy config -> rename toast", Boolean(legacyToast) && legacyToast.variant === "warning", JSON.stringify(legacyToast))
   const legacyReceipt = readJsonSafe(path.join(receiptDir, "legacy-plugin-notice.json"))
   check("legacy-plugin-toast", "positive: durable receipt written", legacyReceipt?.entries?.length > 0, JSON.stringify(legacyReceipt))
-
-  const nudgeToast = toasts.find((t) => typeof t.title === "string" && t.title.includes("OmO Native"))
-  check("native-edition-nudge", "positive: eligible session -> nudge toast", Boolean(nudgeToast), JSON.stringify(nudgeToast))
-  const nudgeState = readJsonSafe(path.join(sandbox, "nudge-state", "native-nudge.json")) ?? readJsonSafe(path.join(stateHome, "oh-my-rigel", "native-nudge.json"))
-  check("native-edition-nudge", "positive: state records autoShows=1", nudgeState?.autoShows === 1, JSON.stringify(nudgeState))
-
-  // --- negatives: child session + dedup (count NUDGE toasts specifically:
-  // `session.created` for a parent-bearing session also drives the task-toast
-  // surface, which is expected and unrelated to the nudge gate) ---
-  const nudgeCount = () => toasts.filter((t) => typeof t.title === "string" && t.title.includes("OmO Native")).length
-  const beforeChild = nudgeCount()
-  emit({ type: "session.created", data: { sessionID: "ses_child" } })
-  check("native-edition-nudge", "negative: child session -> no nudge toast", nudgeCount() === beforeChild, `nudge ${beforeChild}->${nudgeCount()}`)
-  emit({ type: "session.created", data: { sessionID: "ses_root" } })
-  check("native-edition-nudge", "dedup: second root session -> no second nudge", nudgeCount() === 1, `nudge toasts=${nudgeCount()}`)
+  const nudgeToasts = toasts.filter((t) => typeof t.title === "string" && t.title.includes("OmO Native"))
+  check("native-edition-nudge", "retired: an eligible root session shows no native-edition toast", nudgeToasts.length === 0, JSON.stringify(nudgeToasts))
 
   // --- task-toast ---
   const toastsBeforeTask = toasts.length

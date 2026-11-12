@@ -6,8 +6,8 @@
     "totalFunctions": 107,
     "totalAreas": 14,
   "stateTotals": {
-    "activada": 76,
-    "desactivada": 14,
+    "activada": 75,
+    "desactivada": 15,
     "condicionada": 17
   }
   },
@@ -3692,14 +3692,14 @@
       "nombre": "Sugerencia de edición nativa",
       "area": "I",
       "areaSlug": "avisos-e-integraciones",
-      "estado": "activada",
-      "v2": "migrada",
-      "que_es": "Ofrece pasar a la edición nativa una sola vez.",
-      "como_se_activa": "Se puede silenciar.",
-      "como_se_usa": "Automático — el aviso de cambiar al modo de edición nativa se muestra una sola vez; puedes aceptarlo o silenciarlo y no vuelve a insistir.",
-      "cuando_sirve": "Te propone el modo de edición nativo al principio; si no te interesa, lo silencias y el chat sigue como siempre.",
+      "estado": "desactivada",
+      "v2": "excluida",
+      "que_es": "Ofrecía pasar a la edición nativa una sola vez; no forma parte de esta vista previa.",
+      "como_se_activa": "No disponible.",
+      "como_se_usa": "No expuesto todavía: no hay aviso ni sugerencia que aparezca en una sesión nueva, así que el chat sigue igual que siempre.",
+      "cuando_sirve": "No aplica: nada te propone un cambio al empezar, y tu uso diario no cambia.",
       "url": "/catalogo/sugerencia-de-edicion-nativa/",
-      "modo_de_activacion": "Automático",
+      "modo_de_activacion": "No expuesto todavía",
       "requisitos": {
         "procedencia": "no_aplica",
         "razon": "El catálogo no declara requisito externo para esta función; su activación es automática, por ajuste, palabra clave, comando o panel (ver modo_de_activacion).",
@@ -3713,7 +3713,7 @@
       "ejemplos": {
         "procedencia": "derivado",
         "valor": [
-          "Te propone el modo de edición nativo al principio; si no te interesa, lo silencias y el chat sigue como siempre."
+          "No aplica: nada te propone un cambio al empezar, y tu uso diario no cambia."
         ],
         "fuente": "catálogo: columna «Cuándo te sirve»"
       },
@@ -3728,9 +3728,12 @@
         "fuente": "Catalogo_Funciones_OMR_V2.md (sección «Alcance y límites»)"
       },
       "cambios_relevantes": {
-        "procedencia": "no_consta",
-        "razon": "El catálogo clasifica la función como migrada (comportamiento conservado) pero no describe un cambio concreto.",
-        "fuente": "catálogo: columna «Cómo está en V2»"
+        "procedencia": "derivado",
+        "valor": [
+          "Excluida: el producto no ofrece la sugerencia de edición nativa.",
+          "No expuesto todavía: no hay vía real de uso porque el aviso no se emite."
+        ],
+        "fuente": "catálogo: columna «Cómo está en V2» y celdas de uso"
       }
     },
     {

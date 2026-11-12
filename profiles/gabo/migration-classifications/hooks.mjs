@@ -175,10 +175,11 @@ export default {
   },
   "native-edition-nudge": {
     classification: "Migrar",
-    status: "Migrado",
+    status: "Incompatible (con evidencia)",
     rationale:
-      "El nudge V1 en `hooks/native-edition-nudge/hook.ts` decide y muestra un aviso de una sola vez. `rigel-v2-native-nudge-core.mjs` porta la escalera de supresion completa (opted-out, ya-migrado, no-interactivo, hijo, mostrado-este-proceso, estado-no-escribible, corrupto+3d, tope de por vida=4, no-elegible, mostrar con [3,7,14]d clamp 14d) y `rigel-v2-native-nudge-state.mjs` el estado durable v1; `rigel-v2-native-cli-nudge.mjs` compone el toast de inicio (encendido por defecto, kill switch `nativeEditionNudge.enabled=false`). Contrato positivo/negativo por rama + estado.",
-    futureEvidence: "`rigel-v2-native-nudge-core.mjs`; `rigel-v2-native-nudge-state.mjs`; `rigel-v2-native-cli-nudge.mjs`; `rigel-v2-native-nudge.test.mjs`; `rigel-v2-native-cli-nudge.test.mjs`",
+      "CAPA RETIRADA en V2 por decision del mantenedor: el nudge V1 de `hooks/native-edition-nudge/` ofrecia instalar otra edicion del producto, y el producto ya no empuja a nadie a instalarla. El port nativo completo (escalera de supresion, estado durable v1 y toast de inicio) y sus dos contratos se eliminan del runtime, y el compositor del CLI queda solo con el aviso de nombre heredado, el toast de tareas, btw y el panel. No sobrevive ninguna superficie que prometa el aviso ni un comando que lo reabra, y un archivo de estado residual de una instalacion previa es inerte porque nada lo lee.",
+    futureEvidence:
+      "Sin contrato V2 que pueda demostrar paridad: la capacidad no se entrega por decision del mantenedor y no se restaura. Evidencia de la retirada: `profiles/gabo/opencode/sidebar-decoupling-audit.test.mjs` (las superficies compuestas ya no incluyen el aviso) y `profiles/gabo/qa-v2-t25-live-surfaces.mjs` (veredicto retired: una sesion raiz elegible no muestra el aviso).",
   },
 
   "bash-file-read-guard": {

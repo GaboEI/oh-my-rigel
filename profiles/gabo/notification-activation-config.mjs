@@ -165,8 +165,8 @@ function isOurRuntimeEntry(entry, { runtimeDir, familyRoot }) {
  * `cli.json`.
  *
  * The package always registers: the companion composes several independent
- * surfaces (legacy-name notice, native-edition nudge, task toasts, the visual
- * panel), and each surface applies its own gate. Session notification is
+ * surfaces (legacy-name notice, task toasts, the btw picker, the visual panel),
+ * and each surface applies its own gate. Session notification is
  * host-owned (row 57), so this function composes no notification surface and
  * never writes the host builtin notifier disable marker
  * (`-opencode.notifications`).

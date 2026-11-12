@@ -755,10 +755,10 @@
     },
     "sugerencia-de-edicion-nativa": {
       "nombre": "Native editing suggestion",
-      "que_es": "Offers to switch to native editing just once.",
-      "modo_de_activacion": "Automatic",
-      "como_se_usa": "Automatic: the notice about switching to native editing mode is shown only once; you can accept it or silence it and it won't insist again.",
-      "cuando_sirve": "It suggests native editing mode at the start; if you're not interested, you silence it and the chat goes on as usual.",
+      "que_es": "Offered to switch to native editing just once; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: no notice or suggestion appears in a new session, so the chat goes on as usual.",
+      "cuando_sirve": "Not applicable: nothing proposes a change at the start, and your daily use is unchanged.",
       "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },

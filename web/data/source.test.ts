@@ -124,11 +124,11 @@ describe("#given the migrated catalog #when coverage is checked #then it is exac
     for (const area of catalog.areas) expect([area.id, area.count]).toEqual([area.id, EXPECTED_PER_AREA[area.id]])
   })
 
-  test("#given the state totals #when recomputed from functions #then they match the approved summary (76/14/17)", () => {
+  test("#given the state totals #when recomputed from functions #then they match the approved summary (75/15/17)", () => {
     // given / when / then
     const totals: Record<string, number> = { activada: 0, desactivada: 0, condicionada: 0 }
     for (const f of catalog.functions) totals[f.estado] += 1
-    expect(totals).toEqual({ activada: 76, desactivada: 14, condicionada: 17 })
+    expect(totals).toEqual({ activada: 75, desactivada: 15, condicionada: 17 })
     expect(catalog.catalog.stateTotals).toEqual(totals)
   })
 
@@ -175,7 +175,7 @@ describe("#given the catalog functions #when integrity rules are applied #then n
   // the visible prose cannot carry the state words the site check forbids.
   test("#given the retired rows #when their state is read #then they stay disabled and outside this preview", () => {
     // given / when / then
-    const retired = ["estadisticas-anonimas-de-uso"]
+    const retired = ["estadisticas-anonimas-de-uso", "sugerencia-de-edicion-nativa"]
     for (const id of retired) {
       const row = catalog.functions.find((f) => f.id === id)
       expect([id, row !== undefined]).toEqual([id, true])
