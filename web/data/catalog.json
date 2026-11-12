@@ -4904,7 +4904,7 @@
         "procedencia": "derivado",
         "valor": [
           "Excluida: el producto no recopila ni envía estadísticas de uso.",
-          "No expuesto todavía: no hay vía real de uso porque el catálogo la declara activa solo como ajuste."
+          "No expuesto todavía: no hay vía real de uso porque el runtime nativo no recopila ni envía estadísticas."
         ],
         "fuente": "catálogo: columna «Cómo está en V2» y celdas de uso"
       }
