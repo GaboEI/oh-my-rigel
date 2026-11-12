@@ -1,5 +1,9 @@
 # Telemetry
 
+> Rigel V2 does not collect or send usage statistics. The native runtime holds no
+> usage-collection code, so there is nothing to turn on or off there; everything
+> below describes the Oh My Opencode (OmO) product that this page comes from.
+
 OmO sends anonymous usage data so we can see which features people use and what breaks. It is on by default, you can turn it off at any time, and OmO works the same either way.
 
 ## What is sent

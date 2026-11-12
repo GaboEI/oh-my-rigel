@@ -111,10 +111,11 @@ export default {
   },
   "native-edition-nudge": {
     classification: "Migrar",
-    status: "Migrado",
+    status: "Incompatible (con evidencia)",
     rationale:
-      "El aviso de TUI de `features/native-edition-nudge/` que ofrece instalar la edicion nativa se migra con su dialogo, acciones y estado de snooze al runtime nativo V2: `applyNativeEditionNudgeAction` porta las cuatro acciones (install sin escritura de estado; guide +7d; later snoozed +7d; never) y `rigel-v2-native-cli-nudge.mjs` registra el comando `/native` (alias omo-native) con el dialogo de seleccion sobre el mismo store durable.",
-    futureEvidence: "`rigel-v2-native-cli-nudge.mjs`; `rigel-v2-native-cli-nudge.test.mjs`; `rigel-v2-native-nudge-core.mjs`; `rigel-v2-native-nudge-state.mjs`",
+      "CAPA RETIRADA en V2 por decision del mantenedor: la feature V1 `features/native-edition-nudge/` ofrecia instalar otra edicion del producto, y el compositor del TUI ya no la ofrece ni la empuja. El aviso que imprime `rigel-v2 install` es otra superficie y queda fuera de esta retirada. El port nativo (las cuatro acciones del dialogo, el estado de snooze y el comando `/native` con su alias) se elimina del runtime junto con sus contratos; el compositor del CLI queda solo con el aviso de nombre heredado, el toast de tareas, btw y el panel. No sobrevive ninguna superficie que ofrezca la edicion nativa ni dialogo que la proponga, y el estado residual de una instalacion previa es inerte porque nada lo lee.",
+    futureEvidence:
+      "Sin contrato V2 que pueda demostrar paridad: la capacidad no se entrega por decision del mantenedor y no se restaura. Evidencia de la retirada: `profiles/gabo/opencode/sidebar-decoupling-audit.test.mjs` (las superficies compuestas ya no incluyen el aviso) y `profiles/gabo/qa-v2-t25-live-surfaces.mjs` (veredicto retired: una sesion raiz elegible no muestra el aviso).",
   },
   "opencode-runtime-skills": {
     classification: "Migrar",

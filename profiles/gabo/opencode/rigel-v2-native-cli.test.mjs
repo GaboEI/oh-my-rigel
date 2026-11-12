@@ -48,7 +48,7 @@ describe("#given the composed companion CLI plugin", () => {
     const fake = fakeContext()
     const dispose = plugin.setup(fake.api)
     expect(typeof dispose).toBe("function")
-    // Legacy notice + task toast + nudge each subscribe at least one event.
+    // Legacy notice and task toast each subscribe at least one event.
     expect(fake.handlers.size).toBeGreaterThan(0)
     expect(fake.layers.length).toBeGreaterThan(0)
     expect(() => dispose()).not.toThrow()

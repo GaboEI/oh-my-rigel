@@ -10,7 +10,6 @@
  * Composition order and each surface's own gate:
  *   - host-native notification          authoritative; never duplicated by this companion.
  *   - `oh-my-rigel.legacy-plugin-notice` legacy plugin-name detection + toast; default-on.
- *   - `oh-my-rigel.native-edition-nudge` one-time native-edition nudge + /native dialog; default-on.
  *   - `oh-my-rigel.task-toast`          task progress/completion toasts; default-on.
  *   - `oh-my-rigel.btw`                 the /btw side-session picker; default-on.
  *   - `oh-my-rigel.panel`               the read-only sidebar panel; headless self-skip.
@@ -28,7 +27,6 @@ import { join } from "node:path"
 import { buildRoster } from "./rigel-v2-panel-model.mjs"
 import { parseJsoncText, readLiveAgentOverridesSource } from "./rigel-v2-native-config.mjs"
 import { createLegacyNoticeCliSurface } from "./rigel-v2-native-cli-legacy-notice.mjs"
-import { createNudgeCliSurface } from "./rigel-v2-native-cli-nudge.mjs"
 import { createTaskToastCliSurface } from "./rigel-v2-native-cli-task-toast.mjs"
 import { createBtwCliSurface } from "./rigel-v2-native-cli-btw.mjs"
 import { createPanelSurface } from "./rigel-v2-panel-surface.mjs"
@@ -106,8 +104,8 @@ function describeError(error) {
 
 /**
  * Build the composed CLI plugin. `overrides` carries the per-surface test seams
- * (`legacyPluginNotice`, `nativeEditionNudge`, `taskToast`, `btw`, `panel`); the
- * live configuration is read by each surface from `context.options`.
+ * (`legacyPluginNotice`, `taskToast`, `btw`, `panel`); the live configuration is
+ * read by each surface from `context.options`.
  */
 export function createCompanionCliPlugin(overrides = {}) {
   return {
@@ -116,7 +114,6 @@ export function createCompanionCliPlugin(overrides = {}) {
       const roster = readPanelRoster(context, overrides.panel?.roster)
       const surfaces = [
         createLegacyNoticeCliSurface(overrides.legacyPluginNotice ?? {}),
-        createNudgeCliSurface(overrides.nativeEditionNudge ?? {}),
         createTaskToastCliSurface(overrides.taskToast ?? {}),
         createBtwCliSurface(overrides.btw ?? {}),
         createPanelSurface({ ...overrides.panel, roster }),

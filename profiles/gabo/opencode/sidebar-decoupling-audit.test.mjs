@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url"
  * This guards the three decoupling invariants a later edit could silently undo:
  * no `rigel-v2-*sidebar*.mjs` module survives under `opencode/`, the compositor
  * carries neither the retired symbol nor the retired module specifier, and the
- * compositor still composes exactly the four protected surfaces in their
+ * compositor still composes exactly the three protected surfaces in their
  * protected order.
  */
 
@@ -22,17 +22,18 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const COMPOSITOR = "rigel-v2-native-cli.mjs"
 const compositorSource = fs.readFileSync(path.join(HERE, COMPOSITOR), "utf8")
 
-// The four surfaces the composed `./tui` entry must keep, in composition order.
-// The host owns session notification, so no Rigel notifier surface is composed.
+// The three surfaces the composed `./tui` entry must keep, in composition order.
+// The host owns session notification, so no Rigel notifier surface is composed,
+// and the native-edition nudge was retired (row 60), so no surface may push a
+// reader toward another edition of the product.
 const PROTECTED_SURFACES = [
   "createLegacyNoticeCliSurface",
-  "createNudgeCliSurface",
   "createTaskToastCliSurface",
   "createBtwCliSurface",
 ]
 
-// The composed entry keeps the four protected surfaces and appends the read-only
-// visual panel as a fifth, order-preserving surface.
+// The composed entry keeps the three protected surfaces and appends the read-only
+// visual panel as a fourth, order-preserving surface.
 const COMPOSED_SURFACES = [...PROTECTED_SURFACES, "createPanelSurface"]
 
 // Name-based on purpose: it must never match `rigel-v2-native.mjs`, whose
@@ -104,7 +105,7 @@ describe("native sidebar decoupling audit", () => {
   })
 
   describe("#given the composed ./tui entry", () => {
-    test("#then it composes exactly the four protected surfaces plus the read-only panel, in order", () => {
+    test("#then it composes exactly the three protected surfaces plus the read-only panel, in order", () => {
       expect(composedSurfaceFactories(compositorSource)).toEqual(COMPOSED_SURFACES)
     })
   })

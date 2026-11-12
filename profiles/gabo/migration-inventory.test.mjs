@@ -66,8 +66,8 @@ const EXPECTED_STATUS_ROWS = [
   // T25 final closure: the last real runtime gaps, each pinned so a
   // regeneration cannot silently downgrade the audited terminal status.
   ["legacy-plugin-toast", "Migrado"],
-  ["native-edition-nudge", "Migrado"],
-  ["native-edition-nudge", "Migrado"],
+  ["native-edition-nudge", "Incompatible (con evidencia)"],
+  ["native-edition-nudge", "Incompatible (con evidencia)"],
   ["btw-side", "Migrado"],
   // PR #43 late review: OpenGateway has no V2 catalog or parity test, so the row
   // closes as a proven incompatibility instead of a builtin equivalence.
