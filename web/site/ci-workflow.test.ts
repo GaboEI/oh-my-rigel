@@ -96,3 +96,48 @@ describe("#given the web publication workflow #when its test gate is inspected #
     expect(/continue-on-error\s*:\s*true/.test(WORKFLOW)).toBe(false)
   })
 })
+
+// Audit 66: `profiles/gabo/validate-profile.mjs` is the shipped profile's policy contract
+// (optional-MCP isolation, portable paths, quarantined V1 bridge, pinned SSH supply chain), yet no
+// workflow invoked it, so a policy regression could merge behind green CI. This pins the wiring
+// itself exactly like the publication gates above: the rigel-compatibility job must run the
+// validator from the repository root, and its step outcome must feed
+// script/ci-leg-tests-guard.mjs, so an accidentally skipped gate fails the leg instead of passing.
+const CI_WORKFLOW = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8")
+
+const ciJobBlock = (name: string) =>
+  CI_WORKFLOW.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z][a-z0-9-]*:\\n|$)`))?.[1] ?? ""
+// A step entry starts at six spaces + "- "; everything below it belongs to that step.
+const ciJobSteps = (job: string) => job.split(/^ {6}- /m).slice(1)
+
+const PROFILE_VALIDATION_COMMAND = "node profiles/gabo/validate-profile.mjs"
+const rigelJob = ciJobBlock("rigel-compatibility")
+const profileValidationStep =
+  ciJobSteps(rigelJob).find((step) => step.includes(`run: ${PROFILE_VALIDATION_COMMAND}`)) ?? ""
+const profileValidationStepId = profileValidationStep.match(/^ {8}id: (\S+)$/m)?.[1] ?? ""
+
+describe("#given the Oh My Rigel CI workflow #when the profile policy gate is inspected #then the hermetic validator runs and reports its outcome", () => {
+  test("#given the rigel-compatibility job #when its steps are read #then the profile validator runs from the repository root", () => {
+    // given / when / then
+    expect(rigelJob).not.toBe("")
+    expect(profileValidationStep).not.toBe("")
+    // The script path is relative, so a `working-directory` would move it off the repo root.
+    expect(/working-directory\s*:/.test(profileValidationStep)).toBe(false)
+  })
+
+  test("#given the validation step #when its slot is read #then it declares the id the leg guard accounts for", () => {
+    // given / when / then
+    expect(profileValidationStepId).not.toBe("")
+  })
+
+  test("#given the leg guard #when its outcome accounting is read #then a skipped validation step fails the leg", () => {
+    // given / when
+    const guardStep =
+      ciJobSteps(rigelJob).find((step) => step.includes("script/ci-leg-tests-guard.mjs")) ?? ""
+
+    // then
+    expect(guardStep).not.toBe("")
+    expect(/if: always\(\)/.test(guardStep)).toBe(true)
+    expect(guardStep).toContain(`steps.${profileValidationStepId}.outcome`)
+  })
+})

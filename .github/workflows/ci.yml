@@ -635,6 +635,16 @@ jobs:
         if: needs.ci-mode.outputs.run_heavy == 'true'
         run: node script/rigel-native-settings-ci.mjs
 
+      # `profiles/gabo/validate-profile.mjs` is the shipped profile's static policy contract
+      # (optional-MCP isolation, portable paths, a single native runtime, pinned SSH supply
+      # chain). It reads only checked-in files through its own module root and imports nothing
+      # but Node builtins and its sibling files, so it needs no HOME state, network access, or
+      # OpenCode launch and can gate the profile from the repository root.
+      - name: Validate the gabo profile policy contract
+        id: rigel-profile-validation
+        if: needs.ci-mode.outputs.run_heavy == 'true'
+        run: node profiles/gabo/validate-profile.mjs
+
       # A leg whose test steps were all skipped must never look like a pass.
       - name: Check that this leg ran its tests
         if: always()
@@ -642,7 +652,7 @@ jobs:
         env:
           LEG_OS: ubuntu-latest
           LEG_JOB_STATUS: ${{ job.status }}
-          TEST_OUTCOMES: ${{ steps.rigel-tests.outcome }} ${{ steps.rigel-setting-tests.outcome }}
+          TEST_OUTCOMES: ${{ steps.rigel-tests.outcome }} ${{ steps.rigel-setting-tests.outcome }} ${{ steps.rigel-profile-validation.outcome }}
           RUN_HEAVY: ${{ needs.ci-mode.outputs.run_heavy }}
           FULL_MATRIX: ${{ needs.ci-mode.outputs.full_matrix }}
           WINDOWS_MATRIX: ${{ needs.ci-mode.outputs.windows_matrix }}
@@ -658,6 +668,7 @@ jobs:
           JOB_SUMMARY_DETAILS: |
             - Pins the fork's native V2 runtime suite (`profiles/gabo/opencode`) into CI.
             - Runs the hermetic unit/contract layer; the live lab acceptance lane stays local, gated on `opencode-v2-lab.service`.
+            - Validates the shipped `profiles/gabo` profile policy contract (`node profiles/gabo/validate-profile.mjs`) from the repository root.
             - Runs the native `/rigel_setting` suites inside a disposable sandbox (isolation built by `profiles/gabo/isolated-v2-env.mjs`, never the runner's HOME/XDG state).
           JOB_SUMMARY_NEXT: Inspect the first failing native V2 runtime or contract test in profiles/gabo/opencode.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
