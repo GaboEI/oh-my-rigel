@@ -11,9 +11,9 @@
  * surface.
  *
  * The CLI owns the ported command logic (argument validation, platform gating,
- * the native-edition hint, the star courtesy, worktree sweep, sg provisioning,
- * capabilities refresh) and delegates only the actual install or uninstall to
- * the authorized lab refresh wrapper and to the real adapter packages
+ * the star courtesy, worktree sweep, sg provisioning, capabilities refresh) and
+ * delegates only the actual install or uninstall to the authorized lab refresh
+ * wrapper and to the real adapter packages
  * (`@oh-my-opencode/omo-codex/install`, `@oh-my-opencode/omo-senpi/install`).
  * It never launches OpenCode, never executes the retired activation scripts,
  * and never touches V1 state.

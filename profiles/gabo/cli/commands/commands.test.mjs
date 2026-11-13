@@ -96,11 +96,25 @@ describe("#given the install command", () => {
     expect(ok.text()).toContain("native-dev")
   })
 
-  test("#when a dry-run opencode plan is requested #then it prints the plan and the native-edition hint", async () => {
+  test("#when a dry-run opencode plan is requested #then it prints the authorized lab-refresh plan only", async () => {
     const io = captureIo()
     expect(await installCommand.run(["--dry-run"], io)).toBe(0)
+    expect(io.text()).toContain("Plan for platform opencode:")
     expect(io.text()).toContain("apply-v2-runtime-service.sh")
-    expect(io.text()).toMatch(/OmO Native/)
+    expect(io.text()).not.toContain("OmO Native")
+    expect(io.text()).not.toContain("install --platform=native")
+    expect(io.text()).not.toContain("migrating-from-opencode")
+  })
+
+  test("#when the dry-run plan is requested as JSON #then the plan and steps are emitted with no native-edition hint", async () => {
+    const io = captureIo()
+    expect(await installCommand.run(["--dry-run", "--json"], io)).toBe(0)
+    const payload = JSON.parse(io.text())
+    expect(payload.platform).toBe("opencode")
+    expect(payload.dryRun).toBe(true)
+    expect(payload.steps.map((step) => step.kind)).toEqual(["lab-refresh"])
+    expect(payload.steps[0].path).toContain("apply-v2-runtime-service.sh")
+    expect(Object.hasOwn(payload, "nativeEditionHint")).toBe(false)
   })
 
   test("#when the opencode platform is installed #then it runs only the authorized lab refresh wrapper pinned to the lab", async () => {
@@ -181,14 +195,28 @@ describe("#given the uninstall command", () => {
 })
 
 describe("#given the ulw-loop command", () => {
-  test("#when a component bin exists #then it resolves, and when absent #then it fails", async () => {
+  test("#when a component bin exists #then it resolves that binary", async () => {
     const binDir = tempDir("rigel-bin-")
     writeFileSync(join(binDir, "omo-ulw-loop"), "#!/bin/sh\n")
     const found = captureIo({ env: { CODEX_LOCAL_BIN_DIR: binDir } })
     expect(await ulwLoopCommand.run([], found)).toBe(0)
-    expect(found.text()).toContain("omo-ulw-loop")
-    const missing = captureIo({ env: { CODEX_LOCAL_BIN_DIR: tempDir("rigel-bin-empty-") } })
-    expect(await ulwLoopCommand.run([], missing)).toBe(1)
+    expect(found.text()).toContain(join(binDir, "omo-ulw-loop"))
+  })
+
+  test("#when no component is installed #then it fails without recommending another product", async () => {
+    const io = captureIo({
+      home: tempDir("rigel-home-"),
+      env: {
+        CODEX_HOME: tempDir("rigel-codex-home-"),
+        CODEX_LOCAL_BIN_DIR: tempDir("rigel-codex-bin-"),
+        OMO_ULW_LOOP_DELEGATED: "",
+      },
+    })
+    expect(await ulwLoopCommand.run([], io)).toBe(1)
+    expect(io.errors()).toContain("not installed")
+    expect(io.errors()).not.toContain("Run:")
+    expect(io.errors().toLowerCase()).not.toContain("npx")
+    expect(io.errors().toLowerCase()).not.toContain("lazycodex")
   })
 
   test("#when the delegation sentinel is set #then it is a no-op success", async () => {

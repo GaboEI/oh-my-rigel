@@ -84,7 +84,7 @@ export const ulwLoopCommand = {
         }
         return 0
       }
-      return fail(io, "Codex ulw-loop is not installed. Run: npx lazycodex-ai@latest install --no-tui")
+      return fail(io, "Codex ulw-loop is not installed.")
     }
     if (options.json === true) {
       writeJson(io, { delegated: false, command: resolved })
