@@ -200,7 +200,7 @@ describe("#given the ulw-loop command", () => {
     writeFileSync(join(binDir, "omo-ulw-loop"), "#!/bin/sh\n")
     const found = captureIo({ env: { CODEX_LOCAL_BIN_DIR: binDir } })
     expect(await ulwLoopCommand.run([], found)).toBe(0)
-    expect(found.text()).toContain(join(binDir, "omo-ulw-loop"))
+    expect(JSON.parse(found.text())).toEqual({ executable: join(binDir, "omo-ulw-loop"), argsPrefix: [] })
   })
 
   test("#when no component is installed #then it fails without recommending another product", async () => {
