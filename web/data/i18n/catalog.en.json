@@ -278,11 +278,11 @@
     },
     "consultar-el-progreso-del-plan": {
       "nombre": "Check plan progress",
-      "que_es": "Shows how far the active plan has advanced from a terminal.",
-      "modo_de_activacion": "Terminal",
-      "como_se_usa": "Terminal: command `omo boulder` (with `--json` if you prefer clean data); you check without touching the chat.",
-      "cuando_sirve": "You open another terminal tab to see how much of the plan has advanced without disturbing the chat.",
-      "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
+      "que_es": "Showed how far the active plan had advanced from a terminal; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: this preview offers no plan progress lookup, so you follow progress inside the chat.",
+      "cuando_sirve": "Not applicable: nothing shows plan progress outside the chat, and your daily use is unchanged.",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "conservar-contexto-al-compactar": {
@@ -404,10 +404,10 @@
     },
     "revision-de-comentarios": {
       "nombre": "Comment review",
-      "que_es": "Blocks low-quality auto-generated comments.",
+      "que_es": "Flags low-quality auto-generated comments in an edit; it warns, it does not block.",
       "modo_de_activacion": "External requirement",
-      "como_se_usa": "External requirement: the comment review utility must be installed (it ships separately); without it, this does nothing. When present, it acts automatically; exceptions are marked in the code itself (`// @allow` on a line, or the exclusion marker in the file header).",
-      "cuando_sirve": "The agent drops a vague auto-generated comment and the guard blocks it before it reaches the commit.",
+      "como_se_usa": "External requirement: the review utility ships separately and Rigel V2 never downloads it; without it there is no warning. When present, it reviews the comments your edit newly adds and appends the warning to the tool output without stopping the edit from applying. Exceptions are marked in the code itself (`// @allow` on a line, or the exclusion marker in the file header).",
+      "cuando_sirve": "The agent drops a vague auto-generated comment and you see the warning while reviewing the edit; nothing stops, so the call stays yours.",
       "requisitos": "It activates if the review tool is installed; it accepts marked exceptions.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
@@ -458,11 +458,11 @@
     },
     "aviso-de-escritura-no-confirmada": {
       "nombre": "Unconfirmed write warning",
-      "que_es": "Declared surface to warn if a write doesn't confirm its data; not delivered in V2.",
-      "modo_de_activacion": "Automatic",
-      "como_se_usa": "Not delivered: the warning is not emitted; the rule exists but no live producer triggers it, so in V2 you will not see this warning.",
-      "cuando_sirve": "Does not apply while there is no real emitter of unconfirmed writes.",
-      "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
+      "que_es": "Warned if a write did not confirm its data; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: the earlier rule was withdrawn and no live producer emits the warning any more, so it never appears in a session.",
+      "cuando_sirve": "Not applicable: there is no producer emitting the warning, and your daily use is unchanged.",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "recuperacion-de-errores-de-edicion": {
@@ -719,12 +719,12 @@
     },
     "limpieza-de-copias-de-trabajo": {
       "nombre": "Worktree cleanup",
-      "que_es": "Removes repository copies that are no longer used.",
-      "modo_de_activacion": "Terminal",
-      "como_se_usa": "Terminal: command `omo worktree-sweep` (by default it only reports; with `--apply` it actually removes; supports `--older-than` and `--json`).",
-      "cuando_sirve": "After three weeks of branches and experiments, you clean up the already merged copies without deleting anything live.",
-      "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
-      "valores_por_defecto": "Terminal: command `omo worktree-sweep` (by default it only reports;"
+      "que_es": "Removed repository copies that were no longer used; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: this preview publishes no worktree cleanup, so you remove those copies by hand.",
+      "cuando_sirve": "Not applicable: nothing removes the already merged copies for you, and your daily use is unchanged.",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
+      "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "notificacion-al-terminar-o-pedir-permiso": {
       "nombre": "Notification on completion or permission request",
@@ -759,7 +759,7 @@
       "modo_de_activacion": "Not exposed yet",
       "como_se_usa": "Not exposed yet: no notice or suggestion appears in a new session, so the chat goes on as usual.",
       "cuando_sirve": "Not applicable: nothing proposes a change at the start, and your daily use is unchanged.",
-      "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "aviso-de-instalacion-antigua": {
@@ -800,11 +800,11 @@
     },
     "servicio-alternativo-de-inteligencia-artificial": {
       "nombre": "Alternative artificial intelligence service",
-      "que_es": "Adds an extra model catalog.",
-      "modo_de_activacion": "External requirement",
-      "como_se_usa": "External requirement: store a valid credential for the extra service; then the additional model catalog appears and you choose them like any other.",
-      "cuando_sirve": "There's a specific model your main provider doesn't have: you connect the extra service and use it when it's worth it.",
-      "requisitos": "Only if you store a valid credential.",
+      "que_es": "Added an extra model catalog; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: this preview connects no extra model catalog, so you pick among the models that already appear.",
+      "cuando_sirve": "Not applicable: there is no extra service to connect, and your daily use is unchanged.",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "catalogo-y-capacidades-de-modelos": {
@@ -836,11 +836,11 @@
     },
     "programa-controlado-con-ordenes-escritas": {
       "nombre": "Program controlled with written commands",
-      "que_es": "Lets you install, check, and maintain the product by typing commands in a terminal.",
-      "modo_de_activacion": "Terminal",
-      "como_se_usa": "Terminal: the main command is `omo` followed by the subcommand (the documents also use the alternative name `oh-my-openagent`; both refer to the same program).",
-      "cuando_sirve": "You install, check, and maintain the product from a terminal, without opening the chat at all.",
-      "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
+      "que_es": "Grouped installing, checking and maintaining the product into one written-command program; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: this preview has no such written-command program, so those tasks have no shortcut here.",
+      "cuando_sirve": "Not applicable: that command program is not available, and your daily use is unchanged.",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "diagnostico-de-salud": {
@@ -872,20 +872,20 @@
     },
     "instalacion-para-otras-ediciones": {
       "nombre": "Installation for other editions",
-      "que_es": "Installs the Codex edition, the native edition, or the development edition.",
-      "modo_de_activacion": "Terminal with condition",
-      "como_se_usa": "Terminal with a condition: they install with the same installer by choosing an edition or channel (the installation guide describes how to choose channel and version); some editions require explicit authorization before installing.",
-      "cuando_sirve": "On the test machine you only want the light edition and you install it by choosing that channel; the other edition doesn't come in without your permission.",
-      "requisitos": "Some require an explicit authorization.",
+      "que_es": "Installed other editions of the product; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: this preview publishes no installation for other editions, so that choice does not appear.",
+      "cuando_sirve": "Not applicable: there is no other-edition installation to choose, and your daily use is unchanged.",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "bucle-de-trabajo-de-codex": {
       "nombre": "Codex work loop",
-      "que_es": "Runs the loop of the Codex edition.",
-      "modo_de_activacion": "Terminal with condition",
-      "como_se_usa": "Terminal with a condition: if that component is installed, `omo ulw-loop` passes your arguments to the continuous work loop; without the component, that command isn't available.",
-      "cuando_sirve": "You need long looped work from that edition for overnight tests: you launch it and it keeps running.",
-      "requisitos": "It activates if the component is available.",
+      "que_es": "Ran the work loop of the Codex edition; it is not part of this preview.",
+      "modo_de_activacion": "Not exposed yet",
+      "como_se_usa": "Not exposed yet: this preview publishes no Codex work loop, so there is no loop to launch from here.",
+      "cuando_sirve": "Not applicable: there is no work loop from that edition to launch, and your daily use is unchanged.",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "gestion-y-migracion-de-configuracion": {
@@ -984,7 +984,7 @@
       "modo_de_activacion": "Not exposed yet",
       "como_se_usa": "Not exposed yet: there is no setting or notice that turns on usage collection, because this preview collects and sends no statistics.",
       "cuando_sirve": "Not applicable: there is nothing to collect and nothing to turn off, so your daily use is unchanged.",
-      "requisitos": "The catalogue declares no external requirement for this function; it activates automatically, via a setting, keyword, command or panel (see modo_de_activacion).",
+      "requisitos": "The function is not part of this preview, so it has no activation prerequisites in Rigel V2.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "registro-y-recibos-de-estado": {

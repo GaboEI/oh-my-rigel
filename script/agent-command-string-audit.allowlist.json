@@ -92,16 +92,12 @@
     "script/qa/codex-marketplace-e2e.sh: =omo",
     "script/verify-omo-ai-payload.mjs: omo doctor",
     "script/qa/omo-native-parity-smoke.mjs: omo doctor",
-    "web/data/catalog.json: omo boulder x2",
     "web/data/catalog.json: omo doctor x2",
     "web/data/catalog.json: omo get-local-version x2",
-    "web/data/catalog.json: omo ulw-loop x2",
     "web/data/catalog.json: omo version x2",
     "web/data/cli.json: omo doctor",
-    "web/data/i18n/catalog.en.json: omo boulder",
     "web/data/i18n/catalog.en.json: omo doctor",
     "web/data/i18n/catalog.en.json: omo get-local-version",
-    "web/data/i18n/catalog.en.json: omo ulw-loop",
     "web/data/i18n/catalog.en.json: omo version",
     "web/site/check.mjs: omo cleanup x2"
   ]

@@ -71,6 +71,10 @@ const EXPECTED_STATUS_ROWS = [
   // PR7b: the lab CLI no longer prints the native-edition hint, so the row
   // closes as a withdrawn layer instead of staying pinned migrated.
   ["native-edition-hint", "Incompatible (con evidencia)"],
+  // PR7c: the V1 fsync-skip warning has no producer in V2 (the write path is
+  // host-owned), so the ported rule was withdrawn from the composed chain. The
+  // row closes as a retired layer instead of staying pinned migrated.
+  ["fsync-skip-warning", "Incompatible (con evidencia)"],
   ["btw-side", "Migrado"],
   // PR #43 late review: OpenGateway has no V2 catalog or parity test, so the row
   // closes as a proven incompatibility instead of a builtin equivalence.
