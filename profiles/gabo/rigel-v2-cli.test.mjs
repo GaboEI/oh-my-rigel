@@ -92,16 +92,25 @@ describe("#given the Rigel V2 CLI install command", () => {
     expect(result.stdout).toContain("native-dev")
   })
 
-  test("#when a dry-run plan is requested #then it prints the opencode plan and the native-edition hint", () => {
+  test("#when a dry-run plan is requested as JSON #then the plan and steps are emitted with no native-edition hint", () => {
     const result = cli(["install", "--dry-run", "--json"], { RIGEL_V2_LAB_ROOT: tempDir("rigel-cli-lab-") })
     expect(result.status).toBe(0)
-    expect(result.stdout).toMatch(/opencode|apply-v2-agent-layer/)
+    const payload = JSON.parse(result.stdout)
+    expect(payload.platform).toBe("opencode")
+    expect(payload.dryRun).toBe(true)
+    expect(payload.steps.map((step) => step.kind)).toEqual(["lab-refresh"])
+    expect(payload.steps[0].path).toContain("apply-v2-runtime-service.sh")
+    expect(Object.hasOwn(payload, "nativeEditionHint")).toBe(false)
   })
 
-  test("#when install --dry-run runs without --json #then the native-edition hint is printed", () => {
-    const result = cli(["install", "--dry-run"])
+  test("#when install --dry-run runs without --json #then only the plan is printed and no other-edition install is suggested", () => {
+    const result = cli(["install", "--dry-run"], { RIGEL_V2_LAB_ROOT: tempDir("rigel-cli-lab-") })
     expect(result.status).toBe(0)
-    expect(result.stdout).toMatch(/OmO Native/)
+    expect(result.stdout).toContain("Plan for platform opencode:")
+    expect(result.stdout).toContain("apply-v2-runtime-service.sh")
+    expect(result.stdout).not.toContain("OmO Native")
+    expect(result.stdout).not.toContain("install --platform=native")
+    expect(result.stdout).not.toContain("migrating-from-opencode")
   })
 
   test("#when the codex platform is planned #then the codex installer is named", () => {
@@ -174,10 +183,34 @@ describe("#given the Rigel V2 CLI remaining commands", () => {
     expect(result.stdout).toContain("ast-grep")
   })
 
-  test("#when ulw-loop runs #then it resolves the component or reports it missing", () => {
-    const result = cli(["ulw-loop"], { CODEX_LOCAL_BIN_DIR: tempDir("rigel-codex-bin-") })
-    expect([0, 1]).toContain(result.status)
-    expect(`${result.stdout}${result.stderr}`.length).toBeGreaterThan(0)
+  test("#when no ulw-loop component is installed #then it fails with a concise message and no other-product install advice", () => {
+    const result = cli(["ulw-loop"], {
+      HOME: tempDir("rigel-home-"),
+      CODEX_HOME: tempDir("rigel-codex-home-"),
+      CODEX_LOCAL_BIN_DIR: tempDir("rigel-codex-bin-"),
+      OMO_ULW_LOOP_DELEGATED: "",
+    })
+    expect(result.status).toBe(1)
+    const output = `${result.stdout}${result.stderr}`
+    expect(output).toContain("not installed")
+    expect(output).not.toContain("Run:")
+    expect(output.toLowerCase()).not.toContain("npx")
+    expect(output.toLowerCase()).not.toContain("lazycodex")
+  })
+
+  test("#when a local ulw-loop component bin exists #then it resolves that binary", () => {
+    const binDir = tempDir("rigel-codex-bin-")
+    writeFileSync(join(binDir, "omo-ulw-loop"), "#!/bin/sh\n")
+    const result = cli(["ulw-loop", "--json"], {
+      HOME: tempDir("rigel-home-"),
+      CODEX_HOME: tempDir("rigel-codex-home-"),
+      CODEX_LOCAL_BIN_DIR: binDir,
+      OMO_ULW_LOOP_DELEGATED: "",
+    })
+    expect(result.status).toBe(0)
+    const payload = JSON.parse(result.stdout)
+    expect(payload.delegated).toBe(false)
+    expect(payload.command.executable).toBe(join(binDir, "omo-ulw-loop"))
   })
 
   test("#when the `cleanup` alias is used #then it runs the uninstall command", () => {

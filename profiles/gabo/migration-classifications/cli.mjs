@@ -74,7 +74,7 @@ export default {
     classification: "Adaptar",
     status: "Migrado",
     rationale:
-      "El comando ulw-loop de Codex existe como comando del arnes de laboratorio: `rigel-v2 ulw-loop` resuelve el bin del componente (CODEX_LOCAL_BIN_DIR / cache de Codex / sentinel de delegación) con una implementación propia, no importando el owner V1. Probado positivo (bin presente -> resuelto) y negativo (ausente -> exit 1; sentinel -> no-op).",
+      "El comando ulw-loop de Codex existe como comando del arnes de laboratorio: `rigel-v2 ulw-loop` resuelve el bin del componente (CODEX_LOCAL_BIN_DIR / cache de Codex / sentinel de delegación) con una implementación propia, no importando el owner V1. Probado positivo (bin presente -> resuelto) y negativo (ausente -> exit 1 con un mensaje conciso que ya no recomienda instalar otro producto; sentinel -> no-op).",
     futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (ulw-loop); `profiles/gabo/cli/commands/ulw-loop.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
   },
   "config-manager": {
@@ -205,10 +205,11 @@ export default {
   },
   "native-edition-hint": {
     classification: "Migrar",
-    status: "Migrado",
+    status: "Incompatible (con evidencia)",
     rationale:
-      "El aviso de la edición OmO Native existe como comando del arnes de laboratorio: `rigel-v2 install` imprime el hint (comando de instalación + guía) cuando la edición nativa no está presente. Probado positivo (el hint aparece en el dry-run) y negativo (no se imprime al instalar native/native-dev).",
-    futureEvidence: "`profiles/gabo/rigel-v2-cli.test.mjs` (native-edition hint); `profiles/gabo/cli/commands/install.mjs`; `profiles/gabo/cli/commands/commands.test.mjs`",
+      "CAPA RETIRADA en V2 por decision del mantenedor: el hint de la edición OmO Native se retira del arnes de laboratorio. La salida de `rigel-v2 install` ya no imprime el aviso entre ediciones (comando de instalación + guía) ni expone el campo JSON `nativeEditionHint`, en el plan de dry-run ni en la instalación real. Lo que sigue en alcance es el resto del comando: el refresco autorizado del laboratorio y los flujos internos de los adaptadores Codex y Senpi, que no cambian. Ninguna ruta del CLI ofrece ya instalar otra edición.",
+    futureEvidence:
+      "Sin contrato V2 que pueda demostrar paridad: la capacidad no se entrega por decision del mantenedor y no se restaura. Evidencia de la retirada: `profiles/gabo/cli/commands/install.mjs` (sin constantes ni impresión del hint y sin campo `nativeEditionHint`), `profiles/gabo/rigel-v2-cli.test.mjs` y `profiles/gabo/cli/commands/commands.test.mjs` (el dry-run, con y sin `--json`, no contiene `OmO Native`, `install --platform=native` ni la guía).",
   },
   "openai-only-model-catalog": {
     classification: "Adaptar",

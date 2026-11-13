@@ -68,6 +68,9 @@ const EXPECTED_STATUS_ROWS = [
   ["legacy-plugin-toast", "Migrado"],
   ["native-edition-nudge", "Incompatible (con evidencia)"],
   ["native-edition-nudge", "Incompatible (con evidencia)"],
+  // PR7b: the lab CLI no longer prints the native-edition hint, so the row
+  // closes as a withdrawn layer instead of staying pinned migrated.
+  ["native-edition-hint", "Incompatible (con evidencia)"],
   ["btw-side", "Migrado"],
   // PR #43 late review: OpenGateway has no V2 catalog or parity test, so the row
   // closes as a proven incompatibility instead of a builtin equivalence.

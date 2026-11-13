@@ -1,8 +1,8 @@
 // Rigel V2 CLI `install`.
 //
 // Owns the ported install surface of this fork: platform validation, the
-// native-dev opt-in gate, plan resolution, the native-edition hint and the star
-// courtesy. It delegates the actual install to the real adapters
+// native-dev opt-in gate, plan resolution and the star courtesy. It delegates
+// the actual install to the real adapters
 // (`@oh-my-opencode/omo-codex/install`, `@oh-my-opencode/omo-senpi/install`) and
 // the real Rigel activation scripts. It never launches OpenCode.
 import path from "node:path"
@@ -21,18 +21,6 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const AUTHORIZED_REFRESH = "apply-v2-runtime-service.sh"
 const NATIVE_DEV_FLAGS = ["OMO_ENABLE_NATIVE_DEV_PLATFORM", "OMO_ENABLE_SENPI_PLATFORM"]
 const PLATFORMS = ["opencode", "codex", "both", "native", "native-dev"]
-
-// Ported from the V1 native-edition hint. The command is the installer entry,
-// which is the only spelling correct even when a global `omo` is stale.
-const NATIVE_EDITION_INSTALL_COMMAND = "bunx oh-my-openagent install --platform=native"
-const NATIVE_EDITION_GUIDE_URL =
-  "https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/guide/migrating-from-opencode.md"
-const NATIVE_EDITION_HINT_LINES = [
-  "omo also ships as OmO Native: the same omo as one omo command, with no OpenCode host required.",
-  `Try it next to this install: ${NATIVE_EDITION_INSTALL_COMMAND}, then run omo.`,
-  "This install keeps working as-is.",
-  `Guide: ${NATIVE_EDITION_GUIDE_URL}`,
-]
 
 const STAR_REPOSITORIES = {
   opencode: ["code-yeongyu/oh-my-openagent"],
@@ -64,10 +52,6 @@ function resolveSteps(io, platform) {
   return steps
 }
 
-function shouldShowNativeEditionHint(platform) {
-  return platform !== "native" && platform !== "native-dev"
-}
-
 function isolatedLabRoot(io) {
   return path.resolve(io.env.RIGEL_V2_LAB_ROOT ?? path.join(io.home, ".local", "share", "opencode-v2-lab"))
 }
@@ -89,10 +73,6 @@ function isolatedRefreshEnv(io) {
     RIGEL_V2_HOME: isolatedLabHome(io),
     RIGEL_V2_CONFIG: isolatedLabConfig(io),
   }
-}
-
-function printHint(io) {
-  for (const line of NATIVE_EDITION_HINT_LINES) io.stdout.write(`${line}\n`)
 }
 
 async function runStarWorkflow(io, platform) {
@@ -127,7 +107,6 @@ export const installCommand = {
     }
 
     const steps = resolveSteps(io, platform)
-    const showHint = shouldShowNativeEditionHint(platform)
     const dryRun = options["dry-run"] === true
     const starRepositories = options.star === true ? STAR_REPOSITORIES[platform] : []
     const codexHome = options["codex-home"] === undefined
@@ -136,7 +115,7 @@ export const installCommand = {
 
     if (dryRun) {
       if (options.json === true) {
-        writeJson(io, { ok: true, platform, dryRun: true, steps, star: starRepositories, nativeEditionHint: showHint })
+        writeJson(io, { ok: true, platform, dryRun: true, steps, star: starRepositories })
         return 0
       }
       io.stdout.write(`Plan for platform ${platform}:\n`)
@@ -145,7 +124,6 @@ export const installCommand = {
         if (step.kind === "codex-installer") io.stdout.write(`- run the Codex installer into ${codexHome}\n`)
         if (step.kind === "senpi-installer") io.stdout.write(`- run the Senpi installer into ${io.home}\n`)
       }
-      if (showHint) printHint(io)
       for (const repository of starRepositories) {
         io.stdout.write(`- star: gh api --silent --method PUT /user/starred/${repository}\n`)
       }
@@ -185,11 +163,10 @@ export const installCommand = {
 
     if (options.json === true) {
       const ok = starResults.every((entry) => entry.ok)
-      writeJson(io, { ok, platform, dryRun: false, steps, star: starResults, nativeEditionHint: showHint })
+      writeJson(io, { ok, platform, dryRun: false, steps, star: starResults })
       return 0
     }
     io.stdout.write(`Installed platform ${platform}.\n`)
-    if (showHint) printHint(io)
     return 0
   },
 }
