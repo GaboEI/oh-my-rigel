@@ -505,9 +505,9 @@
       "nombre": "Interactive terminal",
       "que_es": "Manages terminal sessions for commands that need interaction.",
       "modo_de_activacion": "External requirement",
-      "como_se_usa": "External requirement: install a terminal organizer (for example, `tmux`) and turn on the `tmux` section of your config; without both, it doesn't appear. After that, you request it in chat.",
+      "como_se_usa": "You ask for it in chat and work with terminals that belong to your session: start, send, read, stop and list. tmux-style verbs are translated into those actions: `new-session` starts, `send-keys` sends, `list-sessions` lists and `kill-session` stops, while `capture-pane` is blocked and `kill-server` is prohibited. A terminal survives the turn, so after an interruption the same session can still read it and stop it. With `shell` set to `ask`, every start and every send waits for your approval; with `deny`, nothing starts.",
       "cuando_sirve": "The agent needs to leave an editor or a live process running while it keeps working in another terminal.",
-      "requisitos": "It activates if you have a program installed that keeps and arranges several terminals in one window.",
+      "requisitos": "It needs the managed OpenCode V2 service mode with the host's persistent terminal API available, and the server process must have no password selector in its environment. A server started outside that managed service without the API, or an environment carrying `OPENCODE_PASSWORD` or `OPENCODE_SERVER_PASSWORD`, leaves the tool unavailable.",
       "valores_por_defecto": "The catalogue declares no defaults other than the function state (recorded in `estado`)."
     },
     "etiquetas-de-pregunta": {

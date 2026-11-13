@@ -301,6 +301,10 @@ test("treats deny as a thrown error, allow as a pass, and ask as blocked pending
   await expect(allow.before({ tool: "look_at" })).resolves.toBeUndefined()
   const ask = createNativeToolPermissionGate({ globalGates: [{ pattern: "call_omo_agent", effect: "ask" }] })
   await expect(ask.before({ tool: "call_omo_agent" })).rejects.toMatchObject({ code: TOOL_PERMISSION_APPROVAL_REQUIRED })
+  // `interactive_bash` has no prompt path at the tool-name layer: `ask` stays a
+  // hard block, so its real approval is the tool's own `context.permission.assert`.
+  const askBash = createNativeToolPermissionGate({ globalGates: [{ pattern: "interactive_bash", effect: "ask" }] })
+  await expect(askBash.before({ tool: "interactive_bash" })).rejects.toMatchObject({ code: TOOL_PERMISSION_APPROVAL_REQUIRED })
 })
 
 test("lets an agent allow override a global tools default-deny (V1 re-enable)", async () => {

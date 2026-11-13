@@ -71,7 +71,7 @@ const SERVICE_STATE_DIR = "opencode"
 const SERVICE_FILE_NAME = "service.json"
 const SERVICE_USERNAME = "opencode"
 const SESSION_QUERY_KEYS = ["limit", "order", "search", "parentID", "directory", "project", "subpath", "cursor"]
-const TERMINAL_BODY_KEYS = ["command", "args", "title", "env", "size"]
+const TERMINAL_BODY_KEYS = ["command", "args", "title", "env", "cwd", "size"]
 const SHELL_BODY_KEYS = ["command", "cwd", "timeout", "metadata"]
 
 function typedError(code, message) {

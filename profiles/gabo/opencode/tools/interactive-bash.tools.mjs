@@ -36,11 +36,15 @@ export const PROHIBITED_TMUX_SUBCOMMANDS = [
   "kill-server",
 ]
 
-export const INTERACTIVE_BASH_DESCRIPTION = `WARNING: This is TMUX ONLY. Pass tmux subcommands directly (without 'tmux' prefix).
+export const INTERACTIVE_BASH_DESCRIPTION = `Runs commands in the persistent interactive terminal owned by this session. This is NOT tmux: there is no tmux server and no tmux session to address.
 
-Examples: new-session -d -s omo-dev, send-keys -t omo-dev "vim" Enter
+Two input forms, exactly one per call:
+- action: start (launch a shell), send (write input), read (print terminal output), stop (close it), list (this session's terminals).
+- tmux_command: the V1 input, without the 'tmux' prefix. Only these verbs are translated: new-session -> start, send-keys -> send, list-sessions -> list, kill-session -> stop. A '-t <name>' target is not forwarded; the command acts on this session's terminal. Any other tmux verb or option is unsupported and returns an error, never an emulation.
 
-For TUI apps needing ongoing interaction (vim, htop, pudb). One-shot commands -> use Bash with &.`
+Examples: tmux_command "new-session -d -s omo-dev", then action send with input "npm test" followed by a newline to run it; tmux_command "send-keys -t omo-dev echo hi Enter".
+
+Restrictions: capture-pane, save-buffer, show-buffer, pipe-pane (and their short aliases) are blocked, and kill-server is prohibited. A terminal belongs to the session that started it; another session's terminal is refused. One-shot commands -> use Bash with &.`
 
 const GLOBAL_TMUX_OPTIONS_WITH_ARGS = new Set(["-L", "-S", "-f", "-c", "-T"])
 
@@ -449,14 +453,18 @@ export const INTERACTIVE_BASH_TOOL_INPUT = {
 }
 
 // Per-session default terminal id. Module-level so every tool instance shares
-// the binding; an explicit `target` always overrides it.
+// the binding; an explicit `target` always overrides it. The map is only a
+// convenience: every id it yields is still checked against the calling
+// session's own terminal list before use.
 const SESSION_TERMINALS = new Map()
 
+// The calling session id. There is no default: a terminal is created and
+// addressed per session, so a call that cannot name its session fails closed.
 function resolveSessionID(toolContext, getSessionID) {
   const fromContext = typeof toolContext?.sessionID === "string" ? toolContext.sessionID : ""
   if (fromContext) return fromContext
   const fromGetter = typeof getSessionID === "function" ? getSessionID() : ""
-  return typeof fromGetter === "string" && fromGetter ? fromGetter : "omo-session"
+  return typeof fromGetter === "string" ? fromGetter : ""
 }
 
 function describeError(error) {
@@ -471,6 +479,25 @@ function terminalFailure(result) {
   return "terminal action failed"
 }
 
+const PERMISSION_UNAVAILABLE_MESSAGE = "Error: interactive_bash permission service is unavailable; refusing to touch the terminal"
+
+// Terminal ids are server-global, so ownership is read from the calling session's
+// own terminal list. An unreadable list fails closed. Returns an error string or
+// undefined when the session owns the terminal.
+async function terminalOwnershipError(port, ptyID) {
+  let result
+  try {
+    result = await port.list()
+  } catch (error) {
+    return `Error: ${describeError(error)}`
+  }
+  if (!result?.ok) return `Error: ${terminalFailure(result)}`
+  const terminals = Array.isArray(result.terminals) ? result.terminals : []
+  return terminals.some((terminal) => terminal?.id === ptyID)
+    ? undefined
+    : `Error: terminal '${ptyID}' does not belong to this session`
+}
+
 /**
  * Create the `interactive_bash` ToolDefinition for the V2 `tool.transform`
  * editor.
@@ -481,11 +508,31 @@ function terminalFailure(result) {
  *   port, driven by the `action` interface and by the tmux verbs that map onto
  *   it. The V1-compatible `tmux_command` input still works.
  */
-export function createInteractiveBashTool({ runner, tmuxPath = "tmux", timeoutMs = DEFAULT_TIMEOUT_MS, terminalFactory, getSessionID } = {}) {
+export function createInteractiveBashTool({ runner, tmuxPath = "tmux", timeoutMs = DEFAULT_TIMEOUT_MS, terminalFactory, getSessionID, permission } = {}) {
   const hasRunner = Boolean(runner) && typeof runner.run === "function"
   const hasTerminalFactory = typeof terminalFactory === "function"
   if (!hasRunner && !hasTerminalFactory) {
     throw new TypeError("createInteractiveBashTool requires a runner with run() or a terminalFactory")
+  }
+
+  // Every shell-capable step on the persistent terminal (start, and every write)
+  // is asserted through the official V2 `context.permission` service with the
+  // `shell` action, so the host's own prompt/deny/abort applies. A denial or an
+  // abort rejects and propagates; nothing touches the PTY before it resolves. A
+  // missing service fails closed. The Rigel tool-name `interactive_bash` gate stays
+  // as deny defense-in-depth: its name-level `ask` is a hard block pending
+  // approval, never a prompt, so the real approval path is this assertion.
+  async function assertShellPermission({ toolContext, sessionID, resources, metadata }) {
+    if (typeof permission?.assert !== "function") return PERMISSION_UNAVAILABLE_MESSAGE
+    await permission.assert({
+      sessionID,
+      agent: toolContext?.agent,
+      source: { type: "tool", messageID: toolContext?.messageID, id: toolContext?.id },
+      action: "shell",
+      resources,
+      metadata: { tool: INTERACTIVE_BASH_TOOL_NAME, ...metadata },
+    })
+    return undefined
   }
 
   async function runTmuxRunner(parts) {
@@ -510,6 +557,7 @@ export function createInteractiveBashTool({ runner, tmuxPath = "tmux", timeoutMs
     }
     const action = typeof input.action === "string" ? input.action : ""
     const sessionID = resolveSessionID(toolContext, getSessionID)
+    if (!sessionID) return "Error: interactive_bash needs the calling session id; refusing to address a terminal without it"
     let port
     try {
       port = terminalFactory(sessionID)
@@ -522,6 +570,13 @@ export function createInteractiveBashTool({ runner, tmuxPath = "tmux", timeoutMs
 
     if (action === "start") {
       const command = typeof input.command === "string" && input.command ? input.command : "/bin/bash"
+      const denied = await assertShellPermission({
+        toolContext,
+        sessionID,
+        resources: [command],
+        metadata: { action: "start", command, cwd: input.cwd },
+      })
+      if (denied) return denied
       let result
       try {
         result = await port.start({ command, args: [], title: input.command ?? "interactive", env: {}, cwd: input.cwd })
@@ -534,34 +589,45 @@ export function createInteractiveBashTool({ runner, tmuxPath = "tmux", timeoutMs
       return `interactive_bash started\nterminal: ${typeof ptyID === "string" && ptyID ? ptyID : "unknown"}`
     }
 
-    const target = typeof input.target === "string" && input.target ? input.target : SESSION_TERMINALS.get(sessionID)
+    if (action === "send" || action === "read" || action === "stop") {
+      const requested = typeof input.target === "string" && input.target ? input.target : SESSION_TERMINALS.get(sessionID)
+      if (!requested) return "Error: no active terminal for this session; run action 'start' first"
+      // A terminal id is server-global: only one the calling session owns may be
+      // addressed, whether it came from `target` or from this tool's own memory.
+      const ownershipError = await terminalOwnershipError(port, requested)
+      if (ownershipError) return ownershipError
+      const target = requested
 
-    if (action === "send") {
-      if (!target) return "Error: no active terminal for this session; run action 'start' first"
-      let result
-      try {
-        result = await port.write({ ptyID: target, data: typeof input.input === "string" ? input.input : "" })
-      } catch (error) {
-        return `Error: ${describeError(error)}`
+      if (action === "send") {
+        const data = typeof input.input === "string" ? input.input : ""
+        const denied = await assertShellPermission({
+          toolContext,
+          sessionID,
+          resources: [data],
+          metadata: { action: "send", ptyID: target },
+        })
+        if (denied) return denied
+        let result
+        try {
+          result = await port.write({ ptyID: target, data })
+        } catch (error) {
+          return `Error: ${describeError(error)}`
+        }
+        return result?.ok ? "ok" : `Error: ${terminalFailure(result)}`
       }
-      return result?.ok ? "ok" : `Error: ${terminalFailure(result)}`
-    }
 
-    if (action === "read") {
-      if (!target) return "Error: no active terminal for this session; run action 'start' first"
-      let result
-      try {
-        result = await port.snapshot({ ptyID: target })
-      } catch (error) {
-        return `Error: ${describeError(error)}`
+      if (action === "read") {
+        let result
+        try {
+          result = await port.snapshot({ ptyID: target })
+        } catch (error) {
+          return `Error: ${describeError(error)}`
+        }
+        if (!result?.ok) return `Error: ${terminalFailure(result)}`
+        const text = typeof result.text === "string" ? result.text : ""
+        return text || "(no output)"
       }
-      if (!result?.ok) return `Error: ${terminalFailure(result)}`
-      const text = typeof result.text === "string" ? result.text : ""
-      return text || "(no output)"
-    }
 
-    if (action === "stop") {
-      if (!target) return "Error: no active terminal for this session; run action 'start' first"
       let result
       try {
         result = await port.remove({ ptyID: target })

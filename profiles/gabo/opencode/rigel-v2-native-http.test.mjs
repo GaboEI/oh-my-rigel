@@ -395,6 +395,7 @@ describe("createServerApi request shapes", () => {
           args: ["-lc", "ls"],
           title: "t",
           env: { A: "1" },
+          cwd: "/work/dir",
           size: { cols: 80, rows: 24 },
           ignored: true,
         })
@@ -406,6 +407,7 @@ describe("createServerApi request shapes", () => {
           args: ["-lc", "ls"],
           title: "t",
           env: { A: "1" },
+          cwd: "/work/dir",
           size: { cols: 80, rows: 24 },
         })
       })

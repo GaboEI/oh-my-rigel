@@ -15,9 +15,11 @@ function typedError(code, message) {
   return { code, message: String(message ?? "") }
 }
 
+// A connect ticket travels in the WebSocket URL query. Platform errors may quote
+// that URL, so every message that leaves this module is scrubbed of it.
 function errorMessage(error) {
-  if (error instanceof Error) return error.message
-  return String(error ?? "unknown error")
+  const message = error instanceof Error ? error.message : String(error ?? "unknown error")
+  return message.replace(/ticket=[^&\s"']*/gi, "ticket=[redacted]")
 }
 
 function clampUint16(value) {
@@ -142,7 +144,7 @@ function awaitSocket({ openSocket, url, frame, timeoutMs, closeGraceMs, end }) {
     })
     listen(socket, "error", (event) => {
       closeNow()
-      settle(end(typedError("v2_terminal_write_error", event?.message ?? "Persistent PTY socket error.")))
+      settle(end(typedError("v2_terminal_write_error", errorMessage(event?.message ?? "Persistent PTY socket error."))))
     })
     listen(socket, "close", () => {
       settle(end(typedError("v2_terminal_write_error", "Persistent PTY socket closed before the input frame was sent.")))
@@ -153,10 +155,10 @@ function awaitSocket({ openSocket, url, frame, timeoutMs, closeGraceMs, end }) {
 export function createPersistentTerminalPort({ serverApi, sessionID, openSocket, closeGraceMs } = {}) {
   const end = (error) => ({ ok: false, error })
 
-  async function start({ command, args = [], title, env = {}, size } = {}) {
+  async function start({ command, args = [], title, env = {}, cwd, size } = {}) {
     let result
     try {
-      result = await serverApi.createTerminal(sessionID, { command, args, title, env, size })
+      result = await serverApi.createTerminal(sessionID, { command, args, title, env, cwd, size })
     } catch (error) {
       return end(typedError("v2_terminal_start_error", errorMessage(error)))
     }
